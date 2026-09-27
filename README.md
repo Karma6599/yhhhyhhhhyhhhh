@@ -37,7 +37,7 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 
 | file | funcs | notes |
 |---|---|---|
-| `anti_afk.c` | 3 | |
+| `anti_afk.c` | 3 | **RECONSTRUCTED** — `anti_afk_plan_tick()` (context snapshot + movement detection dist-sq>63 + plan queue submit with callback record + JSON log), `anti_afk_plan_ready()` (plan validation: epoch/context match, 500ms window, scaled-position tolerance 1e-5, 350ms cooldown), `anti_afk_flag_clear()` (clears bit 0 of the game AFK flag at +0x40 after probe-word verification) |
 | `aura.c` | 8 | — exports: `nexus_evasion_prediction_snapshot_v1()`, `nexus_evasion_hold_snapshot_v1()`, `nexus_evasion_aura_snapshot_v1()`, `nexus_evasion_runtime_aura_route_v1()`, `JNI_OnLoad()` |
 | `autododge.c` | 23 | — exports: `nexus_evasion_functions_snapshot_v1()`, `nexus_evasion_dodge_profile()`, `nexus_autododge_set_enabled()`, `nexus_autododge_set_replay_block()`, `nexus_evasion_resolve_slot()` |
 | `autofarm.c` | 8 | — exports: `nexus_evasion_handler_status_v1()`, `nexus_evasion_snapshot_keys_v1()` |
@@ -48,13 +48,13 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `esp.c` | 1 | **RECONSTRUCTED** — `evasion_key_is_visual_only()`: the ESP feature-family classifier consumed by the core activation gates (espEnabled / espShowTracer / espTeamFilter*) |
 | `follow.c` | 2+118 | **RECONSTRUCTED** — UI provider pump + the full 118-slot UI query table recovered from .data.rel.ro (nexus_sx_* / nexus_vis_* / nexus_dodge_* keys with min/max/defaults): `ui_provider_poll()` walks 8 backend slots x 118 keys with range validation into the shadow values + revision counter, then refreshes all 168 action records; `ui_values_set_key()` bulk setter |
 | `hold_fire.c` | 8 | — exports: `nexus_evasion_hold_register_v1()`, `nexus_evasion_hold_lease_v1()`, `nexus_evasion_hold_recheck_v1()` |
-| `killaura.c` | 4 | |
+| `killaura.c` | 4 | **RECONSTRUCTED** — `evasion_key_forces_pass()` (7 always-pass keys), `evasion_brawler_bitmap_index()` (3-bit aim bitmap: killauraEnabled/killauraMainAttack/aopPredictEnabled over first 69 feature keys), `evasion_aura_route_compose()` (route tag {1,0x28} + epoch + 3 registry identities, gated on adapter-ready bits + prediction version + status), `killaura_channels_snapshot()` (6-key triple snapshot: autofarm/killaura/super/gadget channels with HP-threshold safety and 120ms fire-interval clamp) |
 | `map_editor.c` | 8 | — exports: `nexus_menu_editor_open()`, `nexus_menu_editor_action()`, `nexus_menu_editor_pump()`, `nexus_menu_editor_scroll_revision()` — unlocks the hidden map editor (20 cmds incl. save/placement bypasses) |
 | `outline.c` | 5 | |
 | `prediction.c` | 3 | **RECONSTRUCTED** — predictor-version gating: `evasion_prediction_alias_ok()` (generic property gate for the gates fallback), `evasion_prediction_version_ok()` (aopTargetMode in [0,3), predict-off fast pass, aopPredictVersion in 1..2 under dep-bit 2), `evasion_prediction_dependency_ok()` wrapper |
 | `smart_aim.c` | 4 | |
 | `spectate.c` | 5 | |
-| `speed_fly.c` | 3 | — exports: `nexus_script_port_client_performance_apply()` |
+| `speed_fly.c` | 3 | **RECONSTRUCTED** — `nexus_script_port_client_performance_apply()` (FPSLimit < 145 via script port, errno-preserving); `speed_hook_body()` = the BL-hook body injected at game+0xf86758: forwards the original call to game+0xe7af70, verifies hook word + trampoline identity, gates on speedExploitEnabled triple + plan coherence, then replays the game movement-advance (value/50 units + (value%50)*20 sub-units) within the pacing budget; `projectile_controller_switch()` (ulti/speedy projectile controller handoff with name validation) |
 | `spin.c` | 18 | — exports: `nexus_evasion_get_port_state()`, `nexus_evasion_spin_snapshot_v1()`, `nexus_evasion_get_requested()`, `nexus_evasion_get_effective()`, `nexus_evasion_get_port_state()` |
 | `trophies.c` | 7 | |
 | `visual_tweaks.c` | 60 | — exports: `nexus_script_port_query()`, `nexus_script_port_set()`, `nexus_script_port_reset()`, `nexus_script_port_camera_snapshot()`, `nexus_script_port_hud_snapshot()`, `nexus_script_port_chat_snapshot()` +5 more |

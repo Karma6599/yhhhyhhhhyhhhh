@@ -1,268 +1,331 @@
-/*
- * Anti-AFK — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: AFK evasion automation.
- */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
-/* ===== FUN_0015ec50 @ 0015ec50 [libNexusEvasionRuntime69252.so] ===== */
+static pid_t gettid_(void) { return (pid_t)syscall(SYS_gettid); }
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+extern void log_event(const char *category, const char *event, const char *json);
 
-void FUN_0015ec50(long param_1)
+extern uintptr_t g_game_base;
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern uintptr_t runtime_read_handle(void);
+extern uintptr_t reader_open_ctx(uintptr_t world, uintptr_t ctrl);
+extern int runtime_gate_a(int mode);
+extern int runtime_gate_b(void);
+extern int plan_busy_check(void);
+extern int game_read_scaled_position(uintptr_t game_base, uintptr_t ctrl,
+                                     void *read_fn, int flags, void *out);
+extern int resolve_field_ptr(uintptr_t addr, uintptr_t *out);
 
+extern pthread_once_t g_snapshot_plus_once;
+extern long (*snapshot_plus_active_fn)(void);
+extern void snapshot_plus_once_init(void);
+extern void *g_snapshot_keys_fn;
+extern int   g_snapshot_keys_ready;
+
+typedef int (*snapshot_keys_fn_t)(const char *const *keys, int32_t *triples,
+                                  int count, int64_t *epoch, int32_t *status);
+typedef int (*game_read_fn_t)(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+
+#define SNAPSHOT_TRIPLE_EFFECTIVE 1
+#define SNAPSHOT_TRIPLE_FLAGS     2
+#define SNAPSHOT_FLAG_ACTIVE      2
+
+extern uint32_t g_runtime_thread;
+extern uint32_t g_battle_active;
+extern uint32_t g_perf_active;
+
+extern uint64_t g_ctx_token;
+extern uint64_t g_ctx_3;
+extern uint64_t g_ctx_2;
+extern uint64_t g_ctx_a;
+extern uint64_t g_ctx_b;
+extern uint64_t g_ctx_c;
+extern uint64_t g_ctx_ctrl;
+extern int32_t  g_ctx_x;
+extern int32_t  g_ctx_y;
+
+extern uint64_t g_plan_stamp;
+extern uint64_t g_plan_base;
+extern uint64_t g_plan_peer_check;
+extern uint64_t g_plan_mode;
+extern uint64_t g_plan_zero;
+extern uint64_t g_plan_ok;
+
+extern uint8_t g_afk_visual_gate;
+extern uintptr_t g_afk_probe_addr;
+extern uint32_t g_afk_probe_word;
+
+extern uint64_t g_afk_prev_token;
+extern uint64_t g_afk_prev_ctx2;
+extern uint64_t g_afk_last_ms;
+extern int32_t  g_afk_prev_x;
+extern int32_t  g_afk_prev_y;
+extern uint64_t g_afk_queued;
+extern uint8_t  g_afk_moved_valid;
+
+typedef struct {
+    uint64_t token;
+    uint64_t ctx_3;
+    uint64_t epoch;
+    uint64_t deadline_ms;
+    uint64_t ctx_a;
+    uint64_t ctx_b;
+    uint64_t ctx_c;
+    uint64_t ctrl;
+    uint64_t position_handle;
+    uint64_t ctx_2;
+    uint64_t reserved_50;
+    uint64_t reserved_58;
+    int32_t  x;
+    int32_t  y;
+    uint64_t active;
+    uint64_t flags;
+    uint64_t moved;
+    uint64_t last_ms;
+} afk_plan_t;
+
+extern afk_plan_t g_afk_plan;
+extern uint64_t g_afk_plan_queue[64];
+
+extern int plan_submit(uint64_t *queue, afk_plan_t *plan, const void *callbacks);
+
+extern void plan_thunk_1(void);
+extern void plan_thunk_2(void);
+extern void plan_thunk_3(void);
+extern void plan_thunk_4(void);
+extern void plan_thunk_5(void);
+
+static uint64_t monotonic_ms(void)
 {
-  long lVar1;
-  uint uVar2;
-  uint uVar3;
-  int iVar4;
-  int iVar5;
-  undefined8 uVar6;
-  uint local_148;
-  undefined4 uStack_144;
-  long local_140;
-  char acStack_138 [4];
-  int local_134;
-  int local_130;
-  char *local_80;
-  undefined8 uStack_78;
-  undefined *puStack_70;
-  undefined *puStack_68;
-  undefined *local_60;
-  undefined *puStack_58;
-  undefined *local_50;
-  long local_48;
-  
-  iVar5 = DAT_00209cd8;
-  lVar1 = tpidr_el0;
-  local_48 = *(long *)(lVar1 + 0x28);
-  if ((((param_1 != 0) && (*(int *)(param_1 + 0x24) != 0)) && (DAT_00209cd8 != 0)) &&
-     ((iVar4 = gettid(), iVar5 == iVar4 && (DAT_0020f6cc != 0)))) {
-    local_148 = 0xffffffff;
-    local_80 = "antiAfkEnabled";
-    if (((((int)DAT_00214938 == 1) &&
-         ((iVar5 = (*DAT_00214930)(&local_80,acStack_138,1,&local_140,&local_148), iVar5 == 1 &&
-          (local_140 != 0)))) && (local_148 == 0)) &&
-       ((((local_130 == 2 && (local_134 == 1)) &&
-         (uVar6 = FUN_00150bf0(DAT_0020f670,DAT_0020f680), (int)uVar6 != 0)) &&
-        (((iVar5 = FUN_001428fc(uVar6,DAT_0020f708 + 0x58,&local_148,8), uVar3 = DAT_0020f750,
-          uVar2 = DAT_0020f74c, iVar5 != 0 && (0x11fff < CONCAT44(uStack_144,local_148) + 0x2000U))
-         && ((local_148 & 7) == 0)))))) {
-      if ((DAT_002285e0 == DAT_0020f6f8) && (DAT_002285e8 == DAT_0020f690)) {
-        DAT_002288d0 = DAT_002285e8;
-        if (DAT_00228880 == '\x01') {
-          DAT_002288f8 = (uint)(0x3f < (ulong)(((long)(int)DAT_0020f750 - (long)DAT_002285fc) *
-                                               ((long)(int)DAT_0020f750 - (long)DAT_002285fc) +
-                                              ((long)(int)DAT_0020f74c - (long)DAT_002285f8) *
-                                              ((long)(int)DAT_0020f74c - (long)DAT_002285f8)));
-        }
-        else {
-          DAT_002288f8 = 0;
-        }
-      }
-      else {
-        DAT_002288f8 = 0;
-        DAT_002285f0 = 0;
-        DAT_00228880 = '\0';
-        DAT_002288d0 = DAT_0020f690;
-      }
-      DAT_002288a0 = *(undefined8 *)(param_1 + 0x28);
-      DAT_002288f4 = 1;
-      if (DAT_00215a60 == '\x01') {
-        if (DAT_00228398 == DAT_0020f650) {
-          DAT_002288f4 = 1;
-          if (((DAT_002283a0 == DAT_0020f6f8) && (DAT_00228480 != 2)) && (DAT_00228534 == 0)) {
-            DAT_002288f4 = (uint)(DAT_0022856c != 0);
-          }
-        }
-        else {
-          DAT_002288f4 = 1;
-        }
-      }
-      uRam00000000002288c0 = DAT_0020f680;
-      _DAT_002288b8 = DAT_0020f678;
-      DAT_00228898 = local_140;
-      DAT_002288a8 = DAT_0020f670;
-      DAT_002288b0 = DAT_0020f708;
-      DAT_00228888 = DAT_0020f6f8;
-      DAT_00228890 = DAT_0020f6f0;
-      DAT_002288dc = 0;
-      DAT_002288d4 = 0;
-      DAT_002288e8 = DAT_0020f74c;
-      DAT_002288ec = DAT_0020f750;
-      uStack_78 = _UNK_001c5808;
-      local_80 = _DAT_001c5800;
-      puStack_68 = PTR_FUN_001c5818;
-      puStack_70 = PTR_FUN_001c5810;
-      DAT_002288f0 = 1;
-      DAT_00228900 = DAT_002285f0;
-      puStack_58 = PTR_FUN_001c5828;
-      local_60 = PTR_FUN_001c5820;
-      local_50 = PTR_FUN_001c5830;
-      DAT_002288c8 = CONCAT44(uStack_144,local_148);
-      iVar5 = FUN_00199bbc(&DAT_002287d8,&DAT_00228888,&local_80);
-      if (iVar5 != 0) {
-        snprintf(acStack_138,0xb4,",\"queued\":%llu,\"x\":%d,\"y\":%d,\"local_moves\":0",
-                 DAT_00228870,(ulong)uVar2,(ulong)uVar3);
-        FUN_001417c8("anti_afk","idle_current_position",acStack_138);
-      }
-      goto LAB_0015ee04;
-    }
-  }
-  FUN_00199bbc(&DAT_002287d8,0,0);
-LAB_0015ee04:
-  if (*(long *)(lVar1 + 0x28) != local_48) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-  }
-  return;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
-/* ===== FUN_00168d08 @ 00168d08 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00168d08(undefined8 param_1,long *param_2,int param_3)
-
+static int snapshot_single(const char *key, int32_t *triple,
+                           int64_t *epoch, int32_t *status)
 {
-  long lVar1;
-  int iVar2;
-  int iVar3;
-  ulong uVar4;
-  ulong uVar5;
-  float fVar6;
-  timespec local_98;
-  int local_88;
-  float local_64;
-  float local_60;
-  int local_54;
-  int local_50;
-  undefined4 uStack_4c;
-  long local_48;
-  char *local_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  iVar2 = clock_gettime(1,&local_98);
-  iVar3 = DAT_00209cd8;
-  if (iVar2 == 0) {
-    uVar5 = CONCAT44(local_98.tv_sec._4_4_,(undefined4)local_98.tv_sec) * 1000 +
-            CONCAT44(local_98.tv_nsec._4_4_,(int)local_98.tv_nsec) / 1000000;
-  }
-  else {
-    uVar5 = 0;
-  }
-  if ((((param_3 == 2) && (DAT_00209cd8 != 0)) && (iVar2 = gettid(), iVar3 == iVar2)) &&
-     ((int)DAT_001dfff0 != 0)) {
-    local_50 = -1;
-    local_40 = "antiAfkEnabled";
-    if ((((((int)DAT_00214938 == 1) &&
-          (iVar3 = (*DAT_00214930)(&local_40,&local_98,1,&local_48,&local_50), iVar3 == 1)) &&
-         ((local_48 != 0 && ((local_50 == 0 && ((int)local_98.tv_nsec == 2)))))) &&
-        (local_98.tv_sec._4_4_ == 1)) && (local_48 == param_2[2])) {
-      uVar4 = 0;
-      if ((((uVar5 < (ulong)param_2[3]) || (500 < uVar5 - param_2[3])) ||
-          (uVar4 = FUN_00158080(0), (int)uVar4 == 0)) || (uVar4 = FUN_00168fe8(), (int)uVar4 == 0))
-      goto LAB_00168fc0;
-      iVar3 = FUN_00168c90();
-      if (((iVar3 == 0) && (DAT_0020f6f8 == *param_2)) && (DAT_0020f6f0 == param_2[1])) {
-        uVar4 = FUN_00150bf0(param_2[4],param_2[7]);
-        if (((int)uVar4 == 0) ||
-           (uVar4 = FUN_00189c88(DAT_001e0978,param_2[7],FUN_001428fc,0,&local_98), (int)uVar4 == 0)
-           ) goto LAB_00168fc0;
-        if ((local_88 == (int)param_2[9]) &&
-           ((fVar6 = ABS(local_64 + (float)DAT_002288e8 / -300.0),
-            fVar6 == 1e-05 || fVar6 < 1e-05 != NAN(fVar6) &&
-            (fVar6 = ABS(local_60 + (float)DAT_002288ec / -300.0),
-            fVar6 == 1e-05 || fVar6 < 1e-05 != NAN(fVar6))))) {
-          uVar4 = FUN_0013a78c(param_2[5] + 0x58,&local_40);
-          if ((int)uVar4 == 0) goto LAB_00168fc0;
-          if (local_40 == (char *)param_2[8]) {
-            uVar4 = FUN_0013a78c(local_40 + 0x20,&local_50);
-            if ((int)uVar4 != 0) {
-              iVar3 = FUN_001428fc(uVar4,CONCAT44(uStack_4c,local_50) + 0xc,&local_54,4);
-              uVar4 = 0;
-              if (((iVar3 != 0) && (-1 < local_54)) && (local_54 < 0x1e)) {
-                uVar4 = (ulong)(uVar5 <= DAT_002285f0 - 1U || 0x15e < uVar5 - DAT_002285f0);
-              }
-            }
-            goto LAB_00168fc0;
-          }
+    if (__atomic_load_n(&g_snapshot_keys_ready, __ATOMIC_ACQUIRE) != 1
+        || g_snapshot_keys_fn == NULL)
+        return 0;
+
+    pthread_once(&g_snapshot_plus_once, snapshot_plus_once_init);
+    if (snapshot_plus_active_fn == NULL || snapshot_plus_active_fn() != 1)
+        return 0;
+
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+    return query(&key, triple, 1, epoch, status) == 1;
+}
+
+int anti_afk_plan_ready(uint64_t mode, const uint64_t *plan, int kind)
+{
+    (void)mode;
+    uint64_t now_ms = monotonic_ms();
+
+    if (kind != 2 || g_runtime_thread == 0 || g_runtime_thread != (uint32_t)gettid_())
+        return 0;
+    if (g_perf_active == 0)
+        return 0;
+
+    int32_t triple[3];
+    int32_t status = -1;
+    int64_t epoch = 0;
+    if (!snapshot_single("antiAfkEnabled", triple, &epoch, &status))
+        return 0;
+    if (epoch == 0 || status != 0
+        || triple[SNAPSHOT_TRIPLE_FLAGS] != SNAPSHOT_FLAG_ACTIVE
+        || triple[SNAPSHOT_TRIPLE_EFFECTIVE] != 1
+        || (uint64_t)epoch != plan[2])
+        return 0;
+
+    if (now_ms < plan[3] || now_ms - plan[3] > 500)
+        return 0;
+    if (runtime_gate_a(0) == 0 || runtime_gate_b() == 0)
+        return 0;
+    if (plan_busy_check() != 0)
+        return 0;
+
+    if (g_ctx_token != plan[0] || g_ctx_3 != plan[1])
+        return 0;
+
+    uintptr_t handle = reader_open_ctx(plan[4], plan[7]);
+    if (handle == 0)
+        return 0;
+
+    struct {
+        uint64_t field_0;
+        int32_t  ctx_2;
+        float    x;
+        float    y;
+    } pos = { 0, 0, 0.0f, 0.0f };
+
+    if (game_read_scaled_position(g_game_base, plan[7],
+                                  (void *)game_read, 0, &pos) == 0)
+        return 0;
+
+    if (pos.ctx_2 != (int32_t)plan[9])
+        return 0;
+
+    float dx = pos.x + (float)g_afk_plan.x / -300.0f;
+    if (!(dx == 1e-5f || dx < 1e-5f))
+        return 0;
+    float dy = pos.y + (float)g_afk_plan.y / -300.0f;
+    if (!(dy == 1e-5f || dy < 1e-5f))
+        return 0;
+
+    uintptr_t resolved = 0;
+    if (resolve_field_ptr(plan[5] + 0x58, &resolved) == 0)
+        return 0;
+    if (resolved != plan[8])
+        return 0;
+
+    uintptr_t counter_obj = 0;
+    if (resolve_field_ptr(resolved + 0x20, &counter_obj) == 0)
+        return 0;
+
+    int32_t counter = -1;
+    if (game_read(handle, counter_obj + 0xc, &counter, 4) == 0
+        || counter < 0 || counter >= 0x1e)
+        return 0;
+
+    return (now_ms <= g_afk_last_ms - 1) || (now_ms - g_afk_last_ms > 350);
+}
+
+void anti_afk_plan_tick(void *frame)
+{
+    if (frame == NULL || *(int32_t *)((char *)frame + 0x24) == 0)
+        goto cancel;
+    if (g_runtime_thread == 0 || g_runtime_thread != (uint32_t)gettid_())
+        goto cancel;
+    if (g_battle_active == 0)
+        goto cancel;
+
+    int32_t triple[3];
+    int32_t status = -1;
+    int64_t epoch = 0;
+    if (!snapshot_single("antiAfkEnabled", triple, &epoch, &status))
+        goto cancel;
+    if (epoch == 0 || status != 0
+        || triple[SNAPSHOT_TRIPLE_FLAGS] != SNAPSHOT_FLAG_ACTIVE
+        || triple[SNAPSHOT_TRIPLE_EFFECTIVE] != 1)
+        goto cancel;
+
+    uintptr_t handle = reader_open_ctx(g_ctx_a, g_ctx_c);
+    if (handle == 0)
+        goto cancel;
+
+    uint64_t position_handle = 0;
+    if (game_read(handle, g_ctx_b + 0x58, &position_handle, 8) == 0)
+        goto cancel;
+    if (position_handle + 0x2000 <= 0x11fff || (position_handle & 7) != 0)
+        goto cancel;
+
+    if (g_afk_prev_token == g_ctx_token && g_afk_prev_ctx2 == g_ctx_2) {
+        g_afk_plan.ctx_2 = g_afk_prev_ctx2;
+        if (g_afk_moved_valid == 1) {
+            int64_t dx = (int64_t)g_ctx_y - (int64_t)g_afk_prev_y;
+            int64_t dy = (int64_t)g_ctx_x - (int64_t)g_afk_prev_x;
+            g_afk_plan.moved = (uint64_t)(dx * dx + dy * dy > 63);
+        } else {
+            g_afk_plan.moved = 0;
         }
-      }
+    } else {
+        g_afk_plan.moved = 0;
+        g_afk_last_ms = 0;
+        g_afk_moved_valid = 0;
+        g_afk_plan.ctx_2 = g_ctx_2;
     }
-  }
-  uVar4 = 0;
-LAB_00168fc0:
-  if (*(long *)(lVar1 + 0x28) == local_38) {
+
+    g_afk_plan.deadline_ms = *(uint64_t *)((char *)frame + 0x28);
+    g_afk_plan.flags = 1;
+    if (g_afk_visual_gate == 1) {
+        if (g_plan_peer_check == g_plan_base) {
+            g_afk_plan.flags = 1;
+            if (g_plan_stamp == g_ctx_token && g_plan_mode != 2 && g_plan_zero == 0)
+                g_afk_plan.flags = (g_plan_ok != 0);
+        } else {
+            g_afk_plan.flags = 1;
+        }
+    }
+
+    g_afk_plan.ctx_c = g_ctx_c;
+    g_afk_plan.ctx_b = g_ctx_b;
+    g_afk_plan.epoch = (uint64_t)epoch;
+    g_afk_plan.ctx_a = g_ctx_a;
+    g_afk_plan.ctx_b = g_ctx_b;
+    g_afk_plan.token = g_ctx_token;
+    g_afk_plan.ctx_3 = g_ctx_3;
+    g_afk_plan.reserved_50 = 0;
+    g_afk_plan.reserved_58 = 0;
+    g_afk_plan.x = g_ctx_x;
+    g_afk_plan.y = g_ctx_y;
+    g_afk_plan.active = 1;
+    g_afk_plan.last_ms = g_afk_last_ms;
+    g_afk_plan.position_handle = position_handle;
+
+    static const struct {
+        uint64_t zero;
+        int (*validate)(uint64_t mode, const uint64_t *plan, int kind);
+        void (*thunk_1)(void);
+        void (*thunk_2)(void);
+        void (*thunk_3)(void);
+        void (*thunk_4)(void);
+        void (*thunk_5)(void);
+    } callbacks = {
+        0,
+        anti_afk_plan_ready,
+        plan_thunk_1,
+        plan_thunk_2,
+        plan_thunk_3,
+        plan_thunk_4,
+        plan_thunk_5,
+    };
+
+    if (plan_submit(g_afk_plan_queue, &g_afk_plan, &callbacks) != 0) {
+        char json[0xb4];
+        snprintf(json, sizeof json,
+                 ",\"queued\":%llu,\"x\":%d,\"y\":%d,\"local_moves\":0",
+                 (unsigned long long)g_afk_queued, g_ctx_x, g_ctx_y);
+        log_event("anti_afk", "idle_current_position", json);
+    }
     return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar4);
+
+cancel:
+    plan_submit(g_afk_plan_queue, NULL, NULL);
 }
 
-/* ===== FUN_00173b54 @ 00173b54 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00173b54(long param_1)
-
+void anti_afk_flag_clear(void *target)
 {
-  long lVar1;
-  int iVar2;
-  undefined8 uVar3;
-  long local_50;
-  int local_44;
-  int local_40;
-  int local_3c;
-  int local_38;
-  char *local_30;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  if (param_1 != 0) {
-    local_44 = -1;
-    local_30 = "antiAfkEnabled";
-    if (((((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-          (iVar2 = (*DAT_00214930)(&local_30,&local_40,1,&local_50,&local_44), iVar2 == 1)) &&
-         ((local_50 != 0 && (local_44 == 0)))) &&
-        ((local_38 == 2 && ((local_3c == 1 && (uVar3 = FUN_001550fc(), (int)uVar3 != 0)))))) &&
-       ((iVar2 = FUN_001428fc(uVar3,DAT_0022b6f8,&local_40,4), iVar2 != 0 &&
-        (local_40 == DAT_0022b864)))) {
-      *(ulong *)(param_1 + 0x40) = *(ulong *)(param_1 + 0x40) & 0xfffffffffffffffe;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
+    if (target == NULL)
+        return;
 
+    int32_t triple[3];
+    int32_t status = -1;
+    int64_t epoch = 0;
+    if (!snapshot_single("antiAfkEnabled", triple, &epoch, &status))
+        return;
+    if (epoch == 0 || status != 0
+        || triple[SNAPSHOT_TRIPLE_FLAGS] != SNAPSHOT_FLAG_ACTIVE
+        || triple[SNAPSHOT_TRIPLE_EFFECTIVE] != 1)
+        return;
+
+    uintptr_t handle = runtime_read_handle();
+    if (handle == 0)
+        return;
+
+    uint32_t probe = 0;
+    if (game_read(handle, g_afk_probe_addr, &probe, 4) == 0)
+        return;
+    if (probe != g_afk_probe_word)
+        return;
+
+    *(uint64_t *)((char *)target + 0x40) &= ~1ull;
+}

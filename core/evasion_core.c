@@ -1128,6 +1128,25 @@ int32_t evasion_prop_dependency_gated(const char *name)
     return p ? (int32_t)p->active : -1;
 }
 
+int32_t evasion_prop_state_index(const char *name)
+{
+    const nexus_property_t *p = find_property(name);
+    return p ? p->state_index : -1;
+}
+
+int32_t evasion_prop_order(const char *name)
+{
+    for (int i = 0; i < EV_PROPERTY_WALK_COUNT; i++)
+        if (strcmp(nexus_properties[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+uint64_t evasion_state_revision(void)
+{
+    return state_revision;
+}
+
 static void state_lock_acquire(void)
 {
     int expected;
