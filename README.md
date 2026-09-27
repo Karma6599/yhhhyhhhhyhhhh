@@ -31,23 +31,7 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `ui/` | mod-menu subsystem split by concern |
 | `core/` | shared plumbing: GL hooks, observers, script host, runtime |
 | `scripts/` | the actual JS layer (bridge bootstrap + the 3 server scripts) |
-| `reconstructed/` | clean-room reconstructions — compilable C with real tables extracted from the binaries |
 | `docs/` | `feature_list.json` + `menu_wire.json` (full embedded menu config) + [`debug_menu.md`](docs/debug_menu.md) + extracted tables |
-
-## reconstructed/ (in progress)
-
-Clean, compilable reconstructions (`gcc -Wall -Wextra` clean) with the original
-binary's data tables recovered via relocation parsing:
-
-| file | what it covers | status |
-|---|---|---|---|
-| `evasion_core.c` | libNexusEvasion69252.so control plane: property store + set/get dispatcher (`FUN_0010ec90`), menu-backend protocol (`0x11c4a8/0x11c560/0x11c72c`), dodge-version key resolver, projectile intercept quadratic, segment-distance math, full JNI surface, pin/spray periodic binder | done |
-
-Recovered data tables (see `docs/evasion_property_table.json`, `docs/evasion_query_table.json`):
-
-- **144-slot property sheet** (`.data.rel.ro @ 0x21698`): 71 features + 73 params with state indexes, clamp ranges, defaults, coercion classes; aliases share state slots (`koltModEnabled` is a typo-alias of `coltModEnabled`)
-- **168-slot action table** (`@ 0x22d38`): slot == wire actionId, 101 named; tokens 2=toggle / 3=slider-pair / 4=mode; slots 95-104 carry the dodge-blacklist brawler bits 0-9
-- **118-slot query table** (`@ 0x24238`): rich-UI query ids `0x10000+slot`
 
 ## features/ (233 menu entries total: 182 free / 51 Nexus+ paid)
 
@@ -92,7 +76,7 @@ Recovered data tables (see `docs/evasion_property_table.json`, `docs/evasion_que
 
 | file | funcs | notes |
 |---|---|---|
-| `evasion_core.c` | 20 | — exports: `nexus_evasion_set_feature()`, `nexus_evasion_set_parameter()`, `nexus_evasion_intercept()`, `nexus_evasion_segment_distance()`, `nexus_evasion_menu_backend_v1()`, `JNI_OnLoad()` +5 more |
+| `evasion_core.c` | 24 | **RECONSTRUCTED** (replaces raw pseudocode) — libNexusEvasion69252.so control plane with the binary's real tables recovered via relocation parsing (`docs/evasion_property_table.json`, `docs/evasion_query_table.json`): 144-slot property sheet, 168-slot action table, 118-slot query table; set/get dispatcher, menu-backend protocol, intercept math, full JNI surface; gcc -Wall -Wextra clean — exports: `nexus_evasion_set_feature()`, `nexus_evasion_set_parameter()`, `nexus_evasion_intercept()`, `nexus_evasion_segment_distance()`, `nexus_evasion_menu_backend_v1()`, `JNI_OnLoad()` |
 | `game_state_readers.c` | 14 | |
 | `gl_hooks.c` | 175 | — exports: `nexus_evasion_get_requested()`, `nexus_evasion_get_effective()`, `nexus_evasion_initialize()`, `nexus_evasion_restore_v1()`, `nexus_evasion_unbind()`, `nexus_evasion_reset()` +48 more |
 | `memory_observers.c` | 7 | — exports: `nexus_evasion_unbind()` |
