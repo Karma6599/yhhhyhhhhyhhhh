@@ -31,7 +31,7 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `ui/` | mod-menu subsystem split by concern |
 | `core/` | shared plumbing: GL hooks, observers, script host, runtime |
 | `scripts/` | the actual JS layer (bridge bootstrap + the 3 server scripts) |
-| `docs/` | `feature_list.json` + `menu_wire.json` (full embedded menu config) |
+| `docs/` | `feature_list.json` + `menu_wire.json` (full embedded menu config) + [`debug_menu.md`](docs/debug_menu.md) |
 
 ## features/ (233 menu entries total: 182 free / 51 Nexus+ paid)
 
@@ -106,6 +106,23 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
   the public QuickJS `2024-01-13-frida` build; only the Nexus host layer is in
   `core/script_bindings.c`.
 - `ui/misc.c` = string-less C++ internals (STL/templates) that could not be attributed.
+
+## Hidden / debug menus
+
+The 233 wire entries include surfaces beyond the ordinary cheat toggles — full breakdown
+in [`docs/debug_menu.md`](docs/debug_menu.md):
+
+- **BSD debug popup** (40 cmds, `0x27020+`): the game's own dev menu re-exposed — hidden
+  screens (Fame, ESPorts, Prestige, Brawl TV...), audio control, quality cycles, latency
+  diagnostics, TID-key display, soft reload. Dispatched by `nexus_menu_debug_action`.
+- **Map editor popup** (20 cmds, `0x28FC0+`): unlocks the game's internal map editor with
+  save-validation / placement-zone bypasses and the full tile palette. Dispatched by
+  `nexus_menu_editor_action`.
+- **151 tweak-flag layer**: 41 UpperCamelCase game-property patches (`ShowFPSCounter`,
+  `HideSuperAim`, ...) resolved by the strcmp dispatcher `FUN_001381e0`, plus 110
+  lowerCamelCase cheat-engine flags consumed by the native feature modules.
+- `assets/nexus-lab/` is **not** a menu — it's a Shield anti-cheat research lab package
+  (5th module `libNexusBase69252.so`, 23 experimental clone profiles, no game hooks).
 
 ## Menu entries by category (from the embedded wire config)
 
