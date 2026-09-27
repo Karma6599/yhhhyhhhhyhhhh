@@ -1,269 +1,365 @@
 /*
- * Bolt Mod (autopilot) — Feature
+ * bolt_mod - Bolt autopilot (mixed: reconstructed attack engine + raw pathing remainder)
  * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: Bolt autopilot: wall avoidance, prediction, safe exit, steering smoothness.
+ * Layout note: FUN_00112940 (adapter-family classifier), FUN_0015fe20 (auto-attack tick),
+ * FUN_0016944c (armed check) and FUN_00169b3c (guarded-write verify) are reconstructed below.
+ * Still raw at the end: FUN_00167544, the 0x700-line wall-avoidance pathing engine
+ * (smooth movement with the wall grid at DAT_00215aac/ab8/ac0/b00/b04, aim vector
+ * DAT_002284b0/b4, threat state 0x228728-0x2287a8 family).
  */
 
-/* ===== FUN_00112940 @ 00112940 [libNexusEvasion69252.so] ===== */
+#define _GNU_SOURCE 1
 
-char * FUN_00112940(char *param_1)
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <stdlib.h>
 
+extern void log_event(const char *category, const char *event, const char *json);
+
+extern uintptr_t g_game_base;
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern uintptr_t runtime_read_handle(void);
+extern uintptr_t reader_open_ctx(uintptr_t world, uintptr_t ctrl);
+extern int runtime_gate_b(void);
+extern int game_read_scaled_position(uintptr_t game_base, uintptr_t ctrl,
+                                     void *read_fn, int flags, void *out);
+extern int bolt_wall_probe(uintptr_t world, void *read_fn, int flags, void *out_flags);
+
+extern pthread_once_t g_snapshot_plus_once;
+extern long (*snapshot_plus_active_fn)(void);
+extern void snapshot_plus_once_init(void);
+extern void *g_snapshot_keys_fn;
+extern int   g_snapshot_keys_ready;
+
+typedef int (*snapshot_keys_fn_t)(const char *const *keys, int32_t *triples,
+                                  int count, int64_t *epoch, int32_t *status);
+typedef uintptr_t (*game_read_fn_t)(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+
+#define SNAPSHOT_TRIPLE_EFFECTIVE 1
+#define SNAPSHOT_TRIPLE_FLAGS     2
+#define SNAPSHOT_FLAG_ACTIVE      2
+
+extern uint64_t g_ctx_a;
+extern uint64_t g_ctx_c;
+extern uint64_t g_ctx_bolt_marker;
+extern uint64_t g_ctx_own_x;
+extern uint64_t g_ctx_own_y;
+extern uint64_t g_ctx_own_radius;
+extern uint32_t g_ctx_hp_cur;
+extern uint32_t g_ctx_hp_max;
+extern uint64_t g_ctx_2;
+extern uint32_t g_ctx_enemy_count;
+extern uintptr_t g_ctx_enemy_list;
+
+extern uint64_t g_plan_mode;
+extern uint64_t g_plan_base;
+extern uint64_t g_plan_peer_check;
+extern uint64_t g_plan_aux;
+extern uint64_t g_plan_kind;
+extern uint64_t g_bolt_record_epoch;
+extern uint64_t g_bolt_record_stamp;
+extern uint64_t g_bolt_target_id;
+extern float    g_bolt_aim_x;
+extern float    g_bolt_aim_y;
+extern uint64_t g_bolt_state_word;
+extern uint64_t g_bolt_sub_state;
+extern uint64_t g_bolt_state_c14;
+extern uint64_t g_bolt_last_fire_ms;
+extern uint64_t g_bolt_busy;
+extern uint64_t g_bolt_state_f0;
+
+extern int bolt_target_position(uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+extern int bolt_write_apply(void *payload);
+
+#define BOLT_ARMED_MARKER 17000010u
+
+#define BOLT_GAME_ATTACK_OFF 0xb2e994u
+
+int evasion_key_adapter_family(const char *name)
 {
-  int iVar1;
-  
-  if (param_1 != (char *)0x0) {
-    iVar1 = strcmp(param_1,"isXrayEnabled");
-    if ((((((iVar1 == 0) || (iVar1 = strcmp(param_1,"xRayEnabled"), iVar1 == 0)) ||
-          (iVar1 = strcmp(param_1,"xrayEnabled"), iVar1 == 0)) ||
-         (((iVar1 = strcmp(param_1,"xrayShowTargetName"), iVar1 == 0 ||
-           (iVar1 = strcmp(param_1,"antiAfkEnabled"), iVar1 == 0)) ||
-          ((iVar1 = strcmp(param_1,"hitboxRenderer"), iVar1 == 0 ||
-           ((iVar1 = strcmp(param_1,"enemyTracer"), iVar1 == 0 ||
-            (iVar1 = strcmp(param_1,"dynaJumpEnabled"), iVar1 == 0)))))))) ||
-        (((iVar1 = strcmp(param_1,"attackRangeIndicator"), iVar1 == 0 ||
-          ((((((iVar1 = strcmp(param_1,"ballAssistEnabled"), iVar1 == 0 ||
-               (iVar1 = strcmp(param_1,"coltModEnabled"), iVar1 == 0)) ||
-              (iVar1 = strcmp(param_1,"koltModEnabled"), iVar1 == 0)) ||
-             ((iVar1 = strcmp(param_1,"autofarmEnabled"), iVar1 == 0 ||
-              (iVar1 = strcmp(param_1,"autofarmAttackEnemies"), iVar1 == 0)))) ||
-            ((iVar1 = strcmp(param_1,"characterOutlineEnabled"), iVar1 == 0 ||
-             ((iVar1 = strcmp(param_1,"boltModEnabled"), iVar1 == 0 ||
-              (iVar1 = strcmp(param_1,"boltWallAvoidEnabled"), iVar1 == 0)))))) ||
-           (iVar1 = strcmp(param_1,"boltPredictionEnabled"), iVar1 == 0)))) ||
-         (((iVar1 = strcmp(param_1,"boltAutoAttackEnabled"), iVar1 == 0 ||
-           (iVar1 = strcmp(param_1,"boltSafeExitEnabled"), iVar1 == 0)) ||
-          (iVar1 = strcmp(param_1,"trophiesAboveHead"), iVar1 == 0)))))) ||
-       (((iVar1 = strcmp(param_1,"kitNaniModEnabled"), iVar1 == 0 ||
-         (iVar1 = strcmp(param_1,"killauraSuper"), iVar1 == 0)) ||
-        (iVar1 = strcmp(param_1,"killauraGadget"), iVar1 == 0)))) {
-      param_1 = (char *)0x1;
-    }
-    else {
-      iVar1 = strcmp(param_1,"speedLocalMoveEnabled");
-      param_1 = (char *)(ulong)(iVar1 == 0);
-    }
-  }
-  return param_1;
+    if (name == NULL)
+        return 0;
+
+    if (strcmp(name, "isXrayEnabled") == 0 ||
+        strcmp(name, "xRayEnabled") == 0 ||
+        strcmp(name, "xrayEnabled") == 0 ||
+        strcmp(name, "xrayShowTargetName") == 0 ||
+        strcmp(name, "antiAfkEnabled") == 0 ||
+        strcmp(name, "hitboxRenderer") == 0 ||
+        strcmp(name, "enemyTracer") == 0 ||
+        strcmp(name, "dynaJumpEnabled") == 0 ||
+        strcmp(name, "attackRangeIndicator") == 0 ||
+        strcmp(name, "ballAssistEnabled") == 0 ||
+        strcmp(name, "coltModEnabled") == 0 ||
+        strcmp(name, "koltModEnabled") == 0 ||
+        strcmp(name, "autofarmEnabled") == 0 ||
+        strcmp(name, "autofarmAttackEnemies") == 0 ||
+        strcmp(name, "characterOutlineEnabled") == 0 ||
+        strcmp(name, "boltModEnabled") == 0 ||
+        strcmp(name, "boltWallAvoidEnabled") == 0 ||
+        strcmp(name, "boltPredictionEnabled") == 0 ||
+        strcmp(name, "boltAutoAttackEnabled") == 0 ||
+        strcmp(name, "boltSafeExitEnabled") == 0 ||
+        strcmp(name, "trophiesAboveHead") == 0 ||
+        strcmp(name, "kitNaniModEnabled") == 0 ||
+        strcmp(name, "killauraSuper") == 0 ||
+        strcmp(name, "killauraGadget") == 0)
+        return 1;
+
+    return strcmp(name, "speedLocalMoveEnabled") == 0;
 }
 
-/* ===== FUN_0015fe20 @ 0015fe20 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0015fe20(long param_1)
-
+static uint64_t monotonic_ms(void)
 {
-  uint uVar1;
-  long lVar2;
-  undefined4 uVar3;
-  float fVar4;
-  float fVar5;
-  int iVar6;
-  undefined8 uVar7;
-  ulong uVar8;
-  uint *puVar9;
-  ulong uVar10;
-  ushort uVar11;
-  float fVar12;
-  undefined1 auVar13 [16];
-  undefined1 auVar14 [16];
-  float fVar15;
-  float fVar16;
-  float fVar17;
-  float fVar18;
-  float __y;
-  long *local_1e8;
-  code *pcStack_1e0;
-  code *local_1d8;
-  code *pcStack_1d0;
-  long local_1c8;
-  undefined8 uStack_1c0;
-  long local_1b8;
-  char *local_1b0 [2];
-  uint local_1a0;
-  undefined4 local_198;
-  undefined4 uStack_194;
-  int local_184;
-  float local_17c;
-  float fStack_178;
-  undefined4 local_174;
-  char local_170;
-  char local_16f;
-  long local_160;
-  timespec local_158 [11];
-  undefined8 local_a0;
-  undefined1 auStack_98 [8];
-  long local_90;
-  
-  lVar2 = tpidr_el0;
-  local_90 = *(long *)(lVar2 + 0x28);
-  iVar6 = clock_gettime(1,local_158);
-  if (iVar6 == 0) {
-    uVar10 = CONCAT44(local_158[0].tv_sec._4_4_,(undefined4)local_158[0].tv_sec) * 1000 +
-             CONCAT44(local_158[0].tv_nsec._4_4_,(int)local_158[0].tv_nsec) / 1000000;
-  }
-  else {
-    uVar10 = 0;
-  }
-  if (param_1 != 0) {
-    iVar6 = DAT_0020f694 + -1000000;
-    if (999999 < DAT_0020f694 + 0xfefc99c0U) {
-      iVar6 = DAT_0020f694;
-    }
-    if (iVar6 == 0xf4246a) {
-      local_1e8 = (long *)CONCAT44(local_1e8._4_4_,0xffffffff);
-      local_1b0[0] = "boltModEnabled";
-      if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-          (iVar6 = (*DAT_00214930)(local_1b0,local_158,1,&local_160,&local_1e8), iVar6 == 1)) &&
-         (((local_160 != 0 && ((int)local_1e8 == 0)) &&
-          (((int)local_158[0].tv_nsec == 2 && (local_158[0].tv_sec._4_4_ == 1)))))) {
-        local_1e8 = (long *)CONCAT44(local_1e8._4_4_,0xffffffff);
-        local_1b0[0] = "boltAutoAttackEnabled";
-        if ((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-           ((iVar6 = (*DAT_00214930)(local_1b0,local_158,1,&local_160,&local_1e8), iVar6 == 1 &&
-            ((((((local_160 != 0 && ((int)local_1e8 == 0)) && ((int)local_158[0].tv_nsec == 2)) &&
-               ((local_158[0].tv_sec._4_4_ == 1 && (iVar6 = FUN_001550fc(), iVar6 != 0)))) &&
-              (local_160 == DAT_00228648)) &&
-             (((DAT_00228640 == DAT_0020f650 && (DAT_0022862c != 0)) && (DAT_00228394 == 0x84)))))))
-           ) {
-          auVar13._12_4_ = DAT_00214c14;
-          auVar13._8_4_ = DAT_00214c10;
-          auVar13._4_4_ = DAT_00214cf8;
-          auVar13._0_4_ = DAT_00228480;
-          auVar14._8_8_ = _UNK_00112868;
-          auVar14._0_8_ = _DAT_00112860;
-          auVar14 = NEON_cmeq(auVar13,auVar14,4);
-          uVar11 = NEON_umaxv(CONCAT26(CONCAT11(~auVar14[0xd],~auVar14[0xc]),
-                                       CONCAT24(CONCAT11(~auVar14[9],~auVar14[8]),
-                                                CONCAT22(CONCAT11(~auVar14[5],~auVar14[4]),
-                                                         CONCAT11(~auVar14[1],~auVar14[0])))),2);
-          if ((((((((uVar11 & 1) == 0) && (DAT_00228488 == 3)) && (DAT_00228398 == DAT_00228640)) &&
-                ((DAT_00214cf0 != DAT_00228640 &&
-                 ((uVar10 <= DAT_00228c50 - 1 || (0x351 < uVar10 - DAT_00228c50)))))) &&
-               (iVar6 = FUN_00168fe8(), iVar6 != 0)) &&
-              ((iVar6 = FUN_001bc828(DAT_0020f670,FUN_001428fc,0,&local_170), iVar6 != 0 &&
-               (local_170 == '\0')))) &&
-             ((local_16f == '\0' && (uVar8 = (ulong)DAT_0020f6c8, DAT_0020f6c8 != 0)))) {
-            puVar9 = (uint *)(DAT_0020f6c0 + 0x10);
-            do {
-              if (*puVar9 == DAT_0022862c) {
-                if (*(long *)(puVar9 + -4) != 0) {
-                  uVar1 = *puVar9;
-                  iVar6 = FUN_00189c88(DAT_001e0978,*(long *)(puVar9 + -4),FUN_001428fc,0,local_1b0)
-                  ;
-                  if ((((iVar6 != 0) && (local_1a0 == uVar1)) && (local_184 != 0)) &&
-                     (iVar6 = FUN_0017fba8(DAT_0020f698,DAT_0020f69c,local_198,uStack_194),
-                     fVar5 = fStack_178, fVar4 = local_17c, iVar6 == 0)) {
-                    fVar18 = local_17c - DAT_0020f6b4;
-                    __y = fStack_178 - DAT_0020f6b8;
-                    fVar12 = hypotf(fVar18,__y);
-                    fVar15 = (float)NEON_ucvtf(DAT_0020f6bc);
-                    fVar17 = (float)NEON_ucvtf(local_174);
-                    fVar15 = fVar15 / 300.0;
-                    fVar17 = fVar17 / 300.0;
-                    if (fVar15 <= 0.25) {
-                      fVar15 = 0.25;
-                    }
-                    if (fVar17 <= 0.25) {
-                      fVar17 = 0.25;
-                    }
-                    fVar15 = (float)NEON_fminnm(fVar15,0x3f99999a);
-                    fVar17 = (float)NEON_fminnm(fVar17,0x3f99999a);
-                    fVar16 = -1.0;
-                    if (fVar12 != 0.0001 && fVar12 < 0.0001 == NAN(fVar12)) {
-                      fVar16 = (float)NEON_fmadd(DAT_002284b0,fVar18,__y * DAT_002284b4);
-                      fVar16 = fVar16 / fVar12;
-                    }
-                    fVar18 = fVar15 + fVar17 + 3.25;
-                    if (((fVar12 == fVar18 || fVar12 < fVar18 != (NAN(fVar12) || NAN(fVar18))) &&
-                        ((0.15 <= fVar16 ||
-                         (fVar15 = fVar15 + fVar17 + 0.85,
-                         fVar12 == fVar15 || fVar12 < fVar15 != (NAN(fVar12) || NAN(fVar15)))))) &&
-                       (uVar7 = FUN_00169714(fVar4,fVar5,0), (int)uVar7 != 0)) {
-                      local_a0 = CONCAT44((int)(fStack_178 * 300.0),(int)(local_17c * 300.0));
-                      iVar6 = FUN_001428fc(uVar7,DAT_0020f670 + 0xfac,auStack_98,8);
-                      if (iVar6 != 0) {
-                        local_1e8 = &local_1c8;
-                        local_1b8 = local_160;
-                        pcStack_1e0 = FUN_001428fc;
-                        local_1c8 = DAT_0020f670;
-                        uStack_1c0 = DAT_0020f680;
-                        local_1d8 = FUN_00154ec4;
-                        pcStack_1d0 = FUN_00169b3c;
-                        iVar6 = FUN_0018a084(&local_1e8,DAT_0020f670,auStack_98,&local_a0);
-                        if (iVar6 == 1) {
-                          iVar6 = FUN_00169b3c(&local_1c8);
-                          uVar3 = DAT_0020d158;
-                          if (iVar6 != 0) {
-                            DAT_00214cf8 = 5;
-                            DAT_0020d158 = 1;
-                            DAT_00214c10 = 1;
-                            DAT_00228c50 = uVar10;
-                            uVar10 = (*(code *)(DAT_001e0978 + 0xb2e994))(local_1c8,uStack_1c0);
-                            DAT_00214cf8 = 0;
-                            DAT_00214c10 = 0;
-                            DAT_00214cf0 = DAT_0020f650;
-                            DAT_0020d158 = uVar3;
-                            snprintf((char *)local_158,0xb4,",\"target_gid\":%u,\"result\":%d",
-                                     (ulong)local_1a0,uVar10 & 0xffffffff);
-                            FUN_001417c8("bolt_fire","original_wrapper",local_158);
-                          }
-                        }
-                        else if (iVar6 == -1) {
-                    /* WARNING: Subroutine does not return */
-                          abort();
-                        }
-                      }
-                    }
-                  }
-                }
-                break;
-              }
-              puVar9 = puVar9 + 0x10;
-              uVar8 = uVar8 - 1;
-            } while (uVar8 != 0);
-          }
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static int snapshot_single(const char *key, int32_t *triple,
+                           int64_t *epoch, int32_t *status)
+{
+    if (__atomic_load_n(&g_snapshot_keys_ready, __ATOMIC_ACQUIRE) != 1
+        || g_snapshot_keys_fn == NULL)
+        return 0;
+
+    pthread_once(&g_snapshot_plus_once, snapshot_plus_once_init);
+    if (snapshot_plus_active_fn == NULL || snapshot_plus_active_fn() != 1)
+        return 0;
+
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+    return query(&key, triple, 1, epoch, status) == 1;
+}
+
+static int bolt_marker_armed(void)
+{
+    uint32_t marker = (uint32_t)g_ctx_bolt_marker;
+    uint32_t adjusted = marker - 1000000u;
+    if (marker + 0xfefc99c0u > 999999u)
+        adjusted = marker;
+    return adjusted == 0xf4246au;
+}
+
+static int feature_active(const char *key, int64_t *epoch_out)
+{
+    int32_t triple[3];
+    int32_t status = -1;
+    int64_t epoch = 0;
+
+    if (!snapshot_single(key, triple, &epoch, &status))
+        return 0;
+    if (epoch == 0 || status != 0
+        || triple[SNAPSHOT_TRIPLE_FLAGS] != SNAPSHOT_FLAG_ACTIVE
+        || triple[SNAPSHOT_TRIPLE_EFFECTIVE] != 1)
+        return 0;
+
+    if (epoch_out)
+        *epoch_out = epoch;
+    return 1;
+}
+
+int bolt_mod_armed(void)
+{
+    if (!bolt_marker_armed())
+        return 0;
+
+    int64_t epoch;
+    if (!feature_active("boltModEnabled", &epoch))
+        return 0;
+
+    return feature_active("boltAutoAttackEnabled", NULL)
+        && runtime_read_handle() != 0;
+}
+
+int bolt_write_verify(void *payload)
+{
+    uint64_t *rec = payload;
+
+    if (runtime_read_handle() == 0)
+        return 0;
+    if (!bolt_marker_armed())
+        return 0;
+
+    int64_t epoch;
+    if (!feature_active("boltModEnabled", &epoch))
+        return 0;
+    if ((uint64_t)epoch != rec[2])
+        return 0;
+
+    if (!feature_active("boltAutoAttackEnabled", &epoch))
+        return 0;
+    if ((uint64_t)epoch != rec[2])
+        return 0;
+
+    return reader_open_ctx((uintptr_t)rec[0], rec[1]) != 0;
+}
+
+typedef struct {
+    uint64_t *payload;
+    game_read_fn_t read;
+    int (*apply)(void *payload);
+    int (*verify)(void *payload);
+    uint64_t payload_slots[8];
+} bolt_guarded_record_t;
+
+extern int remote_guarded_apply(void *record, uintptr_t target,
+                                const void *in, void *out);
+
+void bolt_auto_attack_tick(void *frame)
+{
+    uint64_t now_ms = monotonic_ms();
+
+    if (frame == NULL)
+        return;
+    if (!bolt_marker_armed())
+        return;
+
+    int64_t epoch;
+    if (!feature_active("boltModEnabled", &epoch))
+        return;
+    if (!feature_active("boltAutoAttackEnabled", &epoch))
+        return;
+
+    uintptr_t handle = runtime_read_handle();
+    if (handle == 0)
+        return;
+    if ((uint64_t)epoch != g_bolt_record_epoch)
+        return;
+    if (g_bolt_record_stamp != g_plan_base || g_bolt_target_id == 0)
+        return;
+    if (g_plan_aux != 0x84)
+        return;
+
+    uint32_t lanes[4] = { (uint32_t)g_plan_mode, (uint32_t)g_bolt_state_word,
+                          (uint32_t)g_bolt_sub_state, (uint32_t)g_bolt_state_c14 };
+    uint32_t tag[4] = { 2, 0, 0, 0 };
+    if (memcmp(lanes, tag, sizeof tag) != 0)
+        return;
+    if (g_plan_kind != 3 || g_plan_peer_check != g_bolt_record_stamp)
+        return;
+    if (g_bolt_state_f0 == g_bolt_record_stamp)
+        return;
+    if (now_ms <= g_bolt_last_fire_ms - 1 || now_ms - g_bolt_last_fire_ms > 0x351)
+        return;
+    if (runtime_gate_b() == 0)
+        return;
+
+    uint8_t wall_flags[2];
+    if (bolt_wall_probe(g_ctx_a, (void *)game_read, 0, wall_flags) == 0)
+        return;
+    if (wall_flags[0] != 0 || wall_flags[1] != 0)
+        return;
+
+    if (g_ctx_enemy_count == 0)
+        return;
+
+    uint32_t *entry = (uint32_t *)(g_ctx_enemy_list + 0x10);
+    for (uint32_t i = (uint32_t)g_ctx_enemy_count; i != 0; i--, entry += 0x10) {
+        if (*entry != (uint32_t)g_bolt_target_id)
+            continue;
+
+        uint64_t entity = *(uint64_t *)((char *)entry - 0x10);
+        if (entity == 0)
+            break;
+
+        uint32_t target_id = *entry;
+        struct {
+            uint64_t field_0;
+            uint32_t gid;
+            uint32_t field_c;
+            float    x;
+            float    y;
+        } pos = { 0, 0, 0, 0.0f, 0.0f };
+
+        if (game_read_scaled_position(g_game_base, entity,
+                                      (void *)game_read, 0, &pos) == 0)
+            break;
+        if (pos.gid != target_id || pos.field_c == 0)
+            break;
+
+        uint32_t nav[2] = { 0, 0 };
+        if (bolt_target_position((uint32_t)g_ctx_own_radius,
+                                 target_id, nav[0], nav[1]) == 0)
+            break;
+
+        float dx = pos.x - (float)(int32_t)g_ctx_own_x;
+        float dy = pos.y - (float)(int32_t)g_ctx_own_y;
+        float dist = hypotf(dx, dy);
+
+        float r_own = (float)(uint32_t)g_ctx_own_radius / 300.0f;
+        float r_tgt = (float)pos.field_c / 300.0f;
+        if (r_own <= 0.25f)
+            r_own = 0.25f;
+        if (r_tgt <= 0.25f)
+            r_tgt = 0.25f;
+        r_own = fminf(r_own, 1.2f);
+        r_tgt = fminf(r_tgt, 1.2f);
+
+        float aim = -1.0f;
+        if (dist >= 0.0001f) {
+            aim = (g_bolt_aim_x * dx + dy * g_bolt_aim_y) / dist;
         }
-      }
-    }
-  }
-  if (*(long *)(lVar2 + 0x28) == local_90) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
 
+        float reach = r_own + r_tgt + 3.25f;
+        int in_range = dist <= reach;
+        if (!in_range && aim >= 0.15f)
+            in_range = dist <= (r_own + r_tgt + 0.85f);
+        if (!in_range)
+            break;
+
+        uintptr_t target_handle = (uintptr_t)bolt_target_position(
+            (uint32_t)g_ctx_own_radius, target_id, nav[0], nav[1]);
+        if (target_handle == 0)
+            break;
+
+        int32_t xy[2] = { (int32_t)(pos.x * 300.0f), (int32_t)(pos.y * 300.0f) };
+        uint64_t pair_word = 0;
+        if (game_read(target_handle, g_ctx_a + 0xfac, &pair_word, 8) == 0)
+            break;
+
+        uint64_t payload[3] = { g_ctx_a, g_ctx_c, (uint64_t)epoch };
+        bolt_guarded_record_t record;
+        record.payload = payload;
+        record.read = game_read;
+        record.apply = bolt_write_apply;
+        record.verify = bolt_write_verify;
+
+        int result = remote_guarded_apply(&record, g_ctx_a, &pair_word, xy);
+        if (result == 1) {
+            if (bolt_write_verify(payload) != 0) {
+                uint64_t saved_busy = g_bolt_busy;
+                g_bolt_state_word = 5;
+                g_bolt_busy = 1;
+                g_bolt_sub_state = 1;
+                g_bolt_last_fire_ms = now_ms;
+
+                uint64_t attack_result = ((uint64_t (*)(uint64_t, uint64_t))
+                    (g_game_base + BOLT_GAME_ATTACK_OFF))(payload[0], payload[1]);
+
+                g_bolt_state_word = 0;
+                g_bolt_sub_state = 0;
+                g_bolt_state_f0 = g_plan_base;
+                g_bolt_busy = saved_busy;
+
+                char json[0xb4];
+                snprintf(json, sizeof json,
+                         ",\"target_gid\":%u,\"result\":%d",
+                         pos.gid, (uint32_t)attack_result);
+                log_event("bolt_fire", "original_wrapper", json);
+            }
+        } else if (result == -1) {
+            abort();
+        }
+        break;
+    }
+}
 /* ===== FUN_00167544 @ 00167544 [libNexusEvasionRuntime69252.so] ===== */
 
 /* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
@@ -968,107 +1064,5 @@ LAB_00168358:
   }
                     /* WARNING: Subroutine does not return */
   __stack_chk_fail();
-}
-
-/* ===== FUN_0016944c @ 0016944c [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0016944c(void)
-
-{
-  long lVar1;
-  bool bVar2;
-  int iVar3;
-  long local_60;
-  int local_54;
-  undefined1 auStack_50 [4];
-  int local_4c;
-  int local_48;
-  char *local_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  iVar3 = DAT_0020f694 + -1000000;
-  if (999999 < DAT_0020f694 + 0xfefc99c0U) {
-    iVar3 = DAT_0020f694;
-  }
-  if (iVar3 == 0xf4246a) {
-    local_54 = -1;
-    local_40 = "boltModEnabled";
-    if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-        (iVar3 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar3 == 1)) &&
-       (((local_60 != 0 && (local_54 == 0)) && ((local_48 == 2 && (local_4c == 1)))))) {
-      local_54 = -1;
-      local_40 = "boltAutoAttackEnabled";
-      if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-          ((iVar3 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar3 == 1 &&
-           (((local_60 != 0 && (local_54 == 0)) && (local_48 == 2)))))) && (local_4c == 1)) {
-        iVar3 = FUN_001550fc();
-        bVar2 = iVar3 != 0;
-        goto LAB_001695a4;
-      }
-    }
-  }
-  bVar2 = false;
-LAB_001695a4:
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(bVar2);
-}
-
-/* ===== FUN_00169b3c @ 00169b3c [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00169b3c(undefined8 *param_1)
-
-{
-  long lVar1;
-  int iVar2;
-  ulong uVar3;
-  long local_60;
-  int local_54;
-  undefined1 auStack_50 [4];
-  int local_4c;
-  int local_48;
-  char *local_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  uVar3 = FUN_001550fc();
-  if ((int)uVar3 != 0) {
-    iVar2 = DAT_0020f694 + -1000000;
-    if (999999 < DAT_0020f694 + 0xfefc99c0U) {
-      iVar2 = DAT_0020f694;
-    }
-    if (iVar2 == 0xf4246a) {
-      local_54 = -1;
-      local_40 = "boltModEnabled";
-      if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-          (iVar2 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar2 == 1)) &&
-         (((local_60 != 0 && (local_54 == 0)) &&
-          ((local_48 == 2 && ((local_4c == 1 && (local_60 == param_1[2])))))))) {
-        local_54 = -1;
-        local_40 = "boltAutoAttackEnabled";
-        if (((int)DAT_00214938 == 1) &&
-           (((((DAT_00214930 != (code *)0x0 &&
-               (iVar2 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar2 == 1)) &&
-              (local_60 != 0)) && ((local_54 == 0 && (local_48 == 2)))) &&
-            ((local_4c == 1 && (local_60 == param_1[2])))))) {
-          iVar2 = FUN_00150bf0(*param_1,param_1[1]);
-          uVar3 = (ulong)(iVar2 != 0);
-          goto LAB_00169cbc;
-        }
-      }
-    }
-    uVar3 = 0;
-  }
-LAB_00169cbc:
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar3);
 }
 
