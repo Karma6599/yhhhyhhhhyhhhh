@@ -335,15 +335,16 @@ Dispatched via `nexus_menu_server_action`.
 
 All addresses are file/RVA offsets in libNexusUI69252.so / libNexusEvasionRuntime69252.so.
 
-| What | Symbol / address | Behaviour |
-|---|---|---|
-| Debug command dispatcher | `nexus_menu_debug_action` @ libNexusUI `0x3a154` region (line 39188 of export) | validates actionId in `[0x27020, 0x27048)`, checks 40-bit availability bitmap `DAT_0028a404`, maps slot→internal command id via table `DAT_0019cf48` (stride 10), enforces single-in-flight + game-thread ready |
-| Editor command dispatcher | `nexus_menu_editor_action` @ libNexusUI (line 40172 of export) | same pattern for `[0x28FC0, 0x290D4)` |
-| Tweak-flag resolver | `FUN_001381e0` @ libNexusEvasionRuntime `0x1381e0` | strcmp ladder over the 41 game-property keys → bitfields (`DAT_0020afa0` bits 3/4/8/0x10/0x20, `DAT_00209a78`, `DAT_00214938` typed globals); sub-resolvers `FUN_0017f95c`, `FUN_0017fa00` |
-| Menu action pipeline | `nexus_menu_actions` / `nexus_menu_action_status` | generic wire action executor + status query |
-| Debug open/pump | `nexus_menu_debug_open`, `nexus_menu_debug_pump` | open hidden screens, pump pending open requests ("OPENING...", "SCREEN COULD NOT BE OPENED") |
-| Diagnostics | `nexus_menu_diagnostics`, `nexus_rich_diagnostics` | state JSON: phase/built/planned/strings/projection/binding |
-| Script ports | `nexus_script_port_client_debug_apply`, `nexus_script_port_client_debug_snapshot` | QuickJS-side apply/snapshot of client debug state |
+| What | Symbol / address | Behaviour | Repo location |
+|---|---|---|---|
+| Debug command dispatcher | `nexus_menu_debug_action` @ libNexusUI `0x1874ac` | validates actionId in `[0x27020, 0x27048)`, checks 40-bit availability bitmap `DAT_0028a404`, maps slot→internal command id via table `DAT_0019cf48` (stride 10), enforces single-in-flight + game-thread ready | `features/debug_menu.c` |
+| Editor command dispatcher | `nexus_menu_editor_action` @ libNexusUI `0x1889ec` | same pattern for `[0x28FC0, 0x290D4)` | `features/map_editor.c` |
+| Tweak-flag resolver | `FUN_001381e0` @ libNexusEvasionRuntime `0x1381e0` | strcmp ladder over the 41 game-property keys → bitfields (`DAT_0020afa0` bits 3/4/8/0x10/0x20, `DAT_00209a78`, `DAT_00214938` typed globals); sub-resolvers `FUN_0017f95c`, `FUN_0017fa00` | `features/visual_tweaks.c` (sub-resolver `FUN_0017fa00` in `core/runtime_core.c`) |
+| Menu action pipeline | `nexus_menu_actions` / `nexus_menu_action_status` | generic wire action executor + status query; routes debug/editor actionIds to the bridges | `ui/menu_engine.c` |
+| Debug open/pump | `nexus_menu_debug_open`, `nexus_menu_debug_pump` | open hidden screens, pump pending open requests ("OPENING...", "SCREEN COULD NOT BE OPENED") | `features/debug_menu.c` |
+| Editor open/pump/scroll | `nexus_menu_editor_open`, `nexus_menu_editor_pump`, `nexus_menu_editor_scroll_revision` | editor lifecycle + palette scroll revision | `features/map_editor.c` |
+| Diagnostics | `nexus_menu_diagnostics`, `nexus_rich_diagnostics` | state JSON: phase/built/planned/strings/projection/binding | `features/debug_menu.c`, `ui/renderer.c` |
+| Script ports | `nexus_script_port_client_debug_apply`, `nexus_script_port_client_debug_snapshot` | QuickJS-side apply/snapshot of client debug state | `core/gl_hooks.c` (via `ui/menu_engine.c` pipeline) |
 
 ### Slot mapping rule
 

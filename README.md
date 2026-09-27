@@ -44,10 +44,12 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `ball.c` | 6 | |
 | `bolt_mod.c` | 5 | |
 | `brawler_mods.c` | 8 | |
+| `debug_menu.c` | 8 | — exports: `nexus_menu_debug_open()`, `nexus_menu_debug_action()`, `nexus_menu_debug_pump()`, `nexus_menu_diagnostics()` — bridge to the game's own 40-command dev menu (see [docs/debug_menu.md](docs/debug_menu.md)) |
 | `esp.c` | 1 | |
 | `follow.c` | 2 | |
 | `hold_fire.c` | 8 | — exports: `nexus_evasion_hold_register_v1()`, `nexus_evasion_hold_lease_v1()`, `nexus_evasion_hold_recheck_v1()` |
 | `killaura.c` | 4 | |
+| `map_editor.c` | 8 | — exports: `nexus_menu_editor_open()`, `nexus_menu_editor_action()`, `nexus_menu_editor_pump()`, `nexus_menu_editor_scroll_revision()` — unlocks the hidden map editor (20 cmds incl. save/placement bypasses) |
 | `outline.c` | 5 | |
 | `prediction.c` | 2 | |
 | `smart_aim.c` | 4 | |
@@ -64,7 +66,7 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 |---|---|---|
 | `activation_plus.c` | 7 | — exports: `nexus_rich_plus_layout()`, `nexus_rich_header_entitlement()`, `nexus_rich_set_plus_state()`, `nexus_rich_set_plus_state()`, `nexus_rich_plus_layout()`, `nexus_rich_header_entitlement()` |
 | `fonts.c` | 3 | — exports: `nexus_script_port_fonts_open()`, `nexus_script_port_fonts_open()` |
-| `menu_engine.c` | 114 | — exports: `nexus_rich_main_row()`, `nexus_menu_init()`, `nexus_menu_start()`, `nexus_menu_status()`, `nexus_menu_diagnostics()`, `nexus_menu_register_backend()` +67 more |
+| `menu_engine.c` | 98 | — exports: `nexus_rich_main_row()`, `nexus_menu_init()`, `nexus_menu_start()`, `nexus_menu_status()`, `nexus_menu_register_backend()` +54 more (debug/editor bridges moved to `features/`) |
 | `misc.c` | 411 | — exports: `nexus_ui_performance_mode()`, `nexus_ui_performance_mode()` |
 | `renderer.c` | 44 | — exports: `nexus_script_port_ui_reload_request()`, `nexus_release_ui_frame_v1()`, `nexus_script_port_ui_graphics_cycle()`, `nexus_rich_asset()`, `nexus_rich_color()`, `nexus_rich_launcher_geometry()` +21 more |
 | `themes.c` | 12 | — exports: `nexus_menu_theme_preview()`, `nexus_menu_theme_scroll_revision()`, `nexus_menu_theme_preview_report()`, `nexus_menu_theme_open()`, `nexus_menu_theme_pump()`, `nexus_menu_main_view()` +5 more |
