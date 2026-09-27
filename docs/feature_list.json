@@ -1,0 +1,2133 @@
+{
+ "categories": [
+  {
+   "id": "main",
+   "label": "Main",
+   "icon": "sliders"
+  },
+  {
+   "id": "combat",
+   "label": "Combat",
+   "icon": "crosshair"
+  },
+  {
+   "id": "visual",
+   "label": "Visual",
+   "icon": "eye"
+  },
+  {
+   "id": "utility",
+   "label": "Utility",
+   "icon": "wrench"
+  },
+  {
+   "id": "settings",
+   "label": "Settings",
+   "icon": "gear"
+  },
+  {
+   "id": "plus",
+   "label": "Nexus+",
+   "icon": "star"
+  }
+ ],
+ "entries": [
+  {
+   "key": "menu.killaura",
+   "label": "Kill aura",
+   "category": "combat",
+   "paid": false,
+   "screen": 75,
+   "control": 4,
+   "description": "Настройка автоматического выбора цели и атаки."
+  },
+  {
+   "key": "menu.autododge",
+   "label": "Auto dodge",
+   "category": "combat",
+   "paid": false,
+   "screen": 68,
+   "control": 4,
+   "description": "Настройка уклонения от снарядов."
+  },
+  {
+   "key": "menu.follow",
+   "label": "Follow",
+   "category": "utility",
+   "paid": true,
+   "screen": 70,
+   "control": 4,
+   "description": "Настройка следования за союзником."
+  },
+  {
+   "key": "menu.aim",
+   "label": "Smart aim",
+   "category": "combat",
+   "paid": false,
+   "screen": 65,
+   "control": 4,
+   "description": "Настройка прицеливания с упреждением."
+  },
+  {
+   "key": "menu.xray",
+   "label": "X-Ray",
+   "category": "combat",
+   "paid": true,
+   "screen": 88,
+   "control": 4,
+   "description": "Настройка направления выстрела к выбранной цели."
+  },
+  {
+   "key": "menu.hold",
+   "label": "Hold fire",
+   "category": "utility",
+   "paid": false,
+   "screen": 84,
+   "control": 4,
+   "description": "Настройка удержания атаки и прицеливания."
+  },
+  {
+   "key": "menu.spin",
+   "label": "Spin",
+   "category": "combat",
+   "paid": true,
+   "screen": 83,
+   "control": 4,
+   "description": "Локальное вращение персонажа или движение по кругу."
+  },
+  {
+   "key": "killauraEnabled",
+   "label": "Kill aura",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически выбирает противника для атаки."
+  },
+  {
+   "key": "aopPredictEnabled",
+   "label": "Prediction",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Учитывает движение цели при прицеливании."
+  },
+  {
+   "key": "killauraMainAttack",
+   "label": "Main attack",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Использует основную атаку для Kill aura."
+  },
+  {
+   "key": "killauraNoWall",
+   "label": "Wall check",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Не направляет автоматические выстрелы в стены."
+  },
+  {
+   "key": "killauraNoBall",
+   "label": "Ignore ball",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает мяч из целей автоматической атаки."
+  },
+  {
+   "key": "autododgeEnabled",
+   "label": "Auto dodge",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Уклоняется от приближающихся снарядов."
+  },
+  {
+   "key": "aopAimEnabled",
+   "label": "Smart aim",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Прицеливается с учётом движения противника."
+  },
+  {
+   "key": "isSpinEnabled",
+   "label": "Spin",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Вращает персонажа или перемещает его по кругу."
+  },
+  {
+   "key": "followEnabled",
+   "label": "Follow",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Следует за ближайшим живым союзником."
+  },
+  {
+   "key": "followClosestAllyEnabled",
+   "label": "Closest ally",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Выбирает ближайшего живого союзника для следования."
+  },
+  {
+   "key": "ballAssistEnabled",
+   "label": "Ball assist",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Помогает направить мяч в ворота противника."
+  },
+  {
+   "key": "holdToShootEnabled",
+   "label": "Hold fire",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Удерживает ввод основной атаки."
+  },
+  {
+   "key": "isXrayEnabled",
+   "label": "X-Ray",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Направляет выстрел к зафиксированной цели."
+  },
+  {
+   "key": "espEnabled",
+   "label": "ESP",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает дополнительную информацию о противниках."
+  },
+  {
+   "key": "characterOutlineEnabled",
+   "label": "Character outline",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Выделяет края моделей персонажей."
+  },
+  {
+   "key": "attackRangeIndicator",
+   "label": "Attack range",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает дальность основной атаки."
+  },
+  {
+   "key": "hitboxRenderer",
+   "label": "Hitboxes",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает границы столкновения персонажей."
+  },
+  {
+   "key": "enemyTracer",
+   "label": "Enemy tracer",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Проводит линии к живым противникам."
+  },
+  {
+   "key": "trophiesAboveHead",
+   "label": "Trophies",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает реальные трофеи игрока над его ником в бою."
+  },
+  {
+   "key": "pinEnabled",
+   "label": "Auto pin",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически отправляет пины."
+  },
+  {
+   "key": "sprayEnabled",
+   "label": "Auto spray",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически использует спрей."
+  },
+  {
+   "key": "antiAfkEnabled",
+   "label": "Anti-AFK",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Предотвращает отключение за бездействие."
+  },
+  {
+   "key": "nexus_auto_play_again_enabled",
+   "label": "Auto play again",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически запускает следующий бой после результатов."
+  },
+  {
+   "key": "aopTargetMode",
+   "label": "Target mode",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Balanced учитывает расстояние, движение и здоровье; Nearest предпочитает ближнюю цель; Stable target сохраняет порядок целей."
+  },
+  {
+   "key": "combatAuraRange",
+   "label": "Attack range",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Ограничивает дальность поиска цели для Kill aura."
+  },
+  {
+   "key": "combatFireInterval",
+   "label": "Fire interval",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт паузу между автоматическими атаками."
+  },
+  {
+   "key": "aopReactionMs",
+   "label": "Reaction delay",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт задержку реакции автоматического прицеливания."
+  },
+  {
+   "key": "aopLeadScale",
+   "label": "Lead strength",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует силу упреждения движущейся цели."
+  },
+  {
+   "key": "menu.autofarm",
+   "label": "Auto farm",
+   "category": "utility",
+   "paid": true,
+   "screen": 71,
+   "control": 4,
+   "description": "Настройка автоматического прохождения боёв."
+  },
+  {
+   "key": "autofarmEnabled",
+   "label": "Auto farm",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически играет бои с выбранными настройками."
+  },
+  {
+   "key": "nexus_autofarm_post_delay_ms",
+   "label": "Result delay",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт задержку перехода после завершения боя."
+  },
+  {
+   "key": "nexus_autofarm_click_gap_ms",
+   "label": "Click interval",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт паузу между действиями на экране результатов."
+  },
+  {
+   "key": "autofarmAttackEnemies",
+   "label": "Attack enemies",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Позволяет Auto farm атаковать противников."
+  },
+  {
+   "key": "nexus_autofarm_follow_target",
+   "label": "Follow ally",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Позволяет Auto farm следовать за союзником."
+  },
+  {
+   "key": "followDistance",
+   "label": "Follow distance",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт дистанцию до выбранного союзника."
+  },
+  {
+   "key": "dodgeReactionPercent",
+   "label": "Dodge reaction",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует быстроту реакции на опасный снаряд."
+  },
+  {
+   "key": "dodgeSafetyPercent",
+   "label": "Safety margin",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует запас безопасного расстояния при уклонении."
+  },
+  {
+   "key": "dodgePowerPercent",
+   "label": "Dodge strength",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует силу корректировки движения при уклонении."
+  },
+  {
+   "key": "dodgeDistancePercent",
+   "label": "Dodge distance",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует длину перемещения при уклонении."
+  },
+  {
+   "key": "dodgeCommitPercent",
+   "label": "Dodge commitment",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует продолжительность выбранного уклонения."
+  },
+  {
+   "key": "dodgeBurstHoldMs",
+   "label": "Burst hold",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт время удержания уклонения от серии снарядов."
+  },
+  {
+   "key": "dodgeVersion",
+   "label": "Dodge logic",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает версию алгоритма уклонения."
+  },
+  {
+   "key": "menu.dodge_defaults",
+   "label": "Dodge defaults",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Восстанавливает настройки уклонения по умолчанию."
+  },
+  {
+   "key": "menu.dodge_reference",
+   "label": "Ignored attacks",
+   "category": "combat",
+   "paid": false,
+   "screen": 90,
+   "control": 4,
+   "description": "Выбор атак, на которые Auto dodge не реагирует."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit0",
+   "label": "Shelly Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit1",
+   "label": "Shelly Super",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit2",
+   "label": "Primo Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit3",
+   "label": "Frank / Rosa",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit4",
+   "label": "Frank Super",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit5",
+   "label": "Emz Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit6",
+   "label": "Buzz Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit7",
+   "label": "Edgar Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit8",
+   "label": "Grom Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "combatDodgeBlacklistMask.bit9",
+   "label": "Bull Attack",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Исключает эту атаку из реакции Auto dodge."
+  },
+  {
+   "key": "xrayShowTargetName",
+   "label": "Target name",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает имя выбранного бойца для X-Ray."
+  },
+  {
+   "key": "xrayTargetMode",
+   "label": "Target mode",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает способ определения цели X-Ray."
+  },
+  {
+   "key": "nexus_autofarm_show_stats",
+   "label": "Session stats",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает результаты текущей сессии Auto farm."
+  },
+  {
+   "key": "menu.outline_config",
+   "label": "Character outline",
+   "category": "visual",
+   "paid": false,
+   "screen": 76,
+   "control": 4,
+   "description": "Настройка цвета и непрозрачности обводки персонажей."
+  },
+  {
+   "key": "outlineOpacity",
+   "label": "Outline opacity",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует непрозрачность обводки персонажей."
+  },
+  {
+   "key": "nexus_sx_outline_color_preset",
+   "label": "Outline color",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Переключает готовые цвета обводки персонажей."
+  },
+  {
+   "key": "menu.quick_menu_config",
+   "label": "Quick menu",
+   "category": "settings",
+   "paid": false,
+   "screen": 81,
+   "control": 4,
+   "description": "Настройка быстрых кнопок игрового меню."
+  },
+  {
+   "key": "nexus_quick_menu_disabled",
+   "label": "Hide quick menu",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Скрывает быстрые карточки главного меню."
+  },
+  {
+   "key": "nexus_quick_menu_style",
+   "label": "Button style",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает оформление быстрых кнопок."
+  },
+  {
+   "key": "nexus_quick_menu_preset",
+   "label": "Quick preset",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает набор быстрых кнопок."
+  },
+  {
+   "key": "nexus_quick_menu_offset_x",
+   "label": "Quick menu X",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Перемещает быстрые кнопки по горизонтали."
+  },
+  {
+   "key": "nexus_quick_menu_offset_y",
+   "label": "Quick menu Y",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 2,
+   "description": "Перемещает быстрые кнопки по вертикали."
+  },
+  {
+   "key": "kitNaniModEnabled",
+   "label": "Nani ulti mod",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Управляет движением Нани левым джойстиком во время полёта Пипа и включает автоматическое уклонение."
+  },
+  {
+   "key": "coltModEnabled",
+   "label": "Colt mod",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Сопровождает цель во время серии выстрелов Кольта."
+  },
+  {
+   "key": "menu.spectate_with_tag",
+   "label": "Spectate by tag",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает просмотр игры участника по его тегу."
+  },
+  {
+   "key": "nexus_social_spectate_as_brawltv",
+   "label": "Spectate as Brawl TV",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Использует режим подключения Brawl TV при просмотре."
+  },
+  {
+   "key": "menu.visual_brawltv",
+   "label": "Visual Brawl TV",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 3,
+   "description": "Изменяет локальное отображение счётчика зрителей."
+  },
+  {
+   "key": "menu.invite_by_tag",
+   "label": "Invite by tag",
+   "category": "utility",
+   "paid": true,
+   "screen": 0,
+   "control": 3,
+   "description": "Приглашает игрока по введённому тегу."
+  },
+  {
+   "key": "menu.activation",
+   "label": "Activation",
+   "category": "settings",
+   "paid": false,
+   "screen": 89,
+   "control": 4,
+   "description": "Открывает ввод ключа и статус активации."
+  },
+  {
+   "key": "menu.bolt_mod_config",
+   "label": "Bolt mod",
+   "category": "combat",
+   "paid": true,
+   "screen": 80,
+   "control": 4,
+   "description": "Настройка автопилота и атаки Болта."
+  },
+  {
+   "key": "boltModEnabled",
+   "label": "Bolt autopilot",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически управляет движением Болта."
+  },
+  {
+   "key": "boltAutoAttackEnabled",
+   "label": "Bolt auto attack",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически атакует цель в подходящей зоне."
+  },
+  {
+   "key": "boltWallAvoidEnabled",
+   "label": "Avoid walls",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Учитывает стены при выборе маршрута Болта."
+  },
+  {
+   "key": "boltPredictionEnabled",
+   "label": "Bolt prediction",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Учитывает движение цели при управлении Болтом."
+  },
+  {
+   "key": "boltSafeExitEnabled",
+   "label": "Safe exit",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Удерживает направление после контакта с целью."
+  },
+  {
+   "key": "boltSmoothPercent",
+   "label": "Steering smoothness",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует плавность поворотов автопилота Болта."
+  },
+  {
+   "key": "boltWallLookahead",
+   "label": "Wall look-ahead",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт расстояние проверки препятствий перед Болтом."
+  },
+  {
+   "key": "boltTargetRange",
+   "label": "Target range",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Ограничивает расстояние выбора цели для Болта."
+  },
+  {
+   "key": "boltExitHoldMs",
+   "label": "Exit hold",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Задаёт длительность удержания направления после контакта."
+  },
+  {
+   "key": "menu.bolt_defaults",
+   "label": "Bolt defaults",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 3,
+   "description": "Восстанавливает настройки Болта по умолчанию."
+  },
+  {
+   "key": "aopAimTargetMode",
+   "label": "Aim target mode",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает способ определения цели Smart aim."
+  },
+  {
+   "key": "menu.nexus_plus",
+   "label": "Nexus+",
+   "category": "settings",
+   "paid": false,
+   "screen": 89,
+   "control": 4,
+   "description": "Открывает возможности и активацию Nexus+."
+  },
+  {
+   "key": "menu.activation_paste",
+   "label": "Paste key",
+   "category": "plus",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Вставляет ключ активации из буфера обмена."
+  },
+  {
+   "key": "menu.activation_submit",
+   "label": "Activate",
+   "category": "plus",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Проверяет введённый ключ активации."
+  },
+  {
+   "key": "menu.activation_bot",
+   "label": "Activation bot",
+   "category": "plus",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает бота активации Nexus Brawl."
+  },
+  {
+   "key": "menu.activation_input",
+   "label": "Enter key",
+   "category": "plus",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает ввод ключа активации."
+  },
+  {
+   "key": "spinSpeed",
+   "label": "Spin speed",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 2,
+   "description": "Регулирует скорость вращения персонажа."
+  },
+  {
+   "key": "dynaJumpEnabled",
+   "label": "Dyna jump",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Автоматически выполняет прыжки Динамайка."
+  },
+  {
+   "key": "aopPredictVersion",
+   "label": "Predictor",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 1,
+   "description": "Выбирает версию алгоритма упреждения."
+  },
+  {
+   "key": "holdToShootAim",
+   "label": "Hold aim",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Удерживает прицеливание вместе с атакой."
+  },
+  {
+   "key": "speedLocalMoveEnabled",
+   "label": "Spectator mode",
+   "category": "visual",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Включает свободную камеру наблюдателя."
+  },
+  {
+   "key": "spinMovementMode",
+   "label": "Online movement",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Переключает локальное вращение на движение по кругу."
+  },
+  {
+   "key": "spinOnlineOnlyIdle",
+   "label": "Only while idle",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Приостанавливает движение по кругу при ручном управлении."
+  },
+  {
+   "key": "aopAimUltimate",
+   "label": "Aim ultimate",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Применяет Smart aim к атакам супером."
+  },
+  {
+   "key": "aopAimGadget",
+   "label": "Aim gadget",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Применяет Smart aim к активной атаке гаджета."
+  },
+  {
+   "key": "UseLowResGraphics",
+   "label": "Max optimization",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Снижает разрешение текстур; изменение перезагружает игру."
+  },
+  {
+   "key": "DisablePinAnimation",
+   "label": "Static pins",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Останавливает анимацию пинов."
+  },
+  {
+   "key": "ShowFPSCounter",
+   "label": "FPS counter",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает текущую частоту кадров в бою."
+  },
+  {
+   "key": "BattleTextChat",
+   "label": "Battle chat",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает полученные сообщения боевого чата."
+  },
+  {
+   "key": "ShowEnemyAmmoStatus",
+   "label": "Enemy ammo",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает оставшиеся заряды противников."
+  },
+  {
+   "key": "HideSuperAim",
+   "label": "Hide super aim",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Скрывает линию прицеливания собственного супера."
+  },
+  {
+   "key": "ShowFastPlayAgainButton",
+   "label": "Fast play again",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает кнопку быстрого перехода к следующему бою."
+  },
+  {
+   "key": "HideBattleBlackBars",
+   "label": "Hide black bars",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Убирает чёрные поля по краям экрана боя."
+  },
+  {
+   "key": "BattleEndInstantExit",
+   "label": "Instant battle exit",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает кнопку выхода на экране результатов."
+  },
+  {
+   "key": "BackgroundMatchmaking",
+   "label": "Background matchmaking",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Оставляет лобби доступным во время поиска боя."
+  },
+  {
+   "key": "DoNotShowBattleHighlight",
+   "label": "Skip highlights",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Пропускает повторы лучших моментов после боя."
+  },
+  {
+   "key": "ShowBattleConnectionIndicator",
+   "label": "Ping",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает задержку соединения с боевым сервером."
+  },
+  {
+   "key": "ShowOwnPlayerCoordinates",
+   "label": "Player coordinates",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает положение персонажа и клетку карты."
+  },
+  {
+   "key": "ShowCharactersInNames",
+   "label": "Brawler names",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Добавляет название бойца к нику со следующего боя."
+  },
+  {
+   "key": "ShamePlayersWithThumbsdownPin",
+   "label": "Mark thumbs-down",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Помечает игроков с пином «палец вниз» со следующего боя."
+  },
+  {
+   "key": "ShowFriendsInBattle",
+   "label": "Mark friends",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Помечает друзей среди участников следующего боя."
+  },
+  {
+   "key": "ShowAllianceMembersInBattle",
+   "label": "Mark club members",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Помечает участников вашего клуба в следующем бою."
+  },
+  {
+   "key": "UseBattleProxy",
+   "label": "Battle proxy",
+   "category": "settings",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Использует настроенный боевой прокси со следующего боя."
+  },
+  {
+   "key": "DisableShake",
+   "label": "Disable shake",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Отключает тряску камеры в бою."
+  },
+  {
+   "key": "ExtendedTrajectory",
+   "label": "Ball trajectory",
+   "category": "combat",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает продолжение траектории и отскоки мяча."
+  },
+  {
+   "key": "HighlightLeonClone",
+   "label": "Highlight Leon clone",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Выделяет клона Леона цветом."
+  },
+  {
+   "key": "EnforceBattleChatButton",
+   "label": "Show chat button",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает кнопку чата непосредственно в бою."
+  },
+  {
+   "key": "ShowDPS",
+   "label": "DPS counter",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает нанесённый урон и урон в секунду."
+  },
+  {
+   "key": "AllyRespawnTimer",
+   "label": "Ally respawn",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает время возрождения напарника в парном столкновении."
+  },
+  {
+   "key": "TeammateHPIndicator",
+   "label": "Teammate HP",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает здоровье напарника на указателе в парном столкновении."
+  },
+  {
+   "key": "DisableSkins",
+   "label": "Disable skins",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Использует базовые облики бойцов со следующего боя."
+  },
+  {
+   "key": "DefaultEnvironments",
+   "label": "Default environments",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Возвращает базовое оформление карт после перезапуска игры."
+  },
+  {
+   "key": "ShowFriendlyRoomOpponents",
+   "label": "Friendly opponents",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает состав противников в дружеской комнате."
+  },
+  {
+   "key": "SlowMode",
+   "label": "Slow mode",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Замедляет локальное воспроизведение игры."
+  },
+  {
+   "key": "TileGrid",
+   "label": "Tile grid",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает границы клеток на карте боя."
+  },
+  {
+   "key": "SmoothHudGraph",
+   "label": "Frame-time graph",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает время отрисовки кадров на графике."
+  },
+  {
+   "key": "ShowBattleCameraButton",
+   "label": "Camera",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает кнопку настройки камеры в бою."
+  },
+  {
+   "key": "BattleServersPopup",
+   "label": "Battle server",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Выбор региона, автоматический режим и проверка пинга."
+  },
+  {
+   "key": "ChromaticName",
+   "label": "Chromatic name",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Применяет хроматическое оформление ника."
+  },
+  {
+   "key": "HideBattlingStatusFromOthers",
+   "label": "Hide battle status",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Скрывает статус участия в бою от других игроков."
+  },
+  {
+   "key": "InstantStarrDropOpening",
+   "label": "Instant Starr Drop",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Ускоряет открытие Starr Drop."
+  },
+  {
+   "key": "FriendListOptimization",
+   "label": "Light friend list",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Упрощает оформление строк списка друзей."
+  },
+  {
+   "key": "LegacyNames",
+   "label": "Legacy brawler names",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает прежние названия бойцов."
+  },
+  {
+   "key": "ThemesPopup",
+   "label": "Themes",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Выбор оформления лобби и музыки."
+  },
+  {
+   "key": "BSDDebugPopup",
+   "label": "BSD debug",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Игровые экраны, локальные предпросмотры и диагностика."
+  },
+  {
+   "key": "FPSLimit",
+   "label": "FPS limit",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Открывает настройку ограничения частоты кадров."
+  },
+  {
+   "key": "HideHomeScreenText",
+   "label": "Hide lobby info",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Скрывает информационный блок Nexus Brawl в лобби."
+  },
+  {
+   "key": "ProfilePopup",
+   "label": "Player profiles",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Поиск профиля по тегу и настройка локального имени."
+  },
+  {
+   "key": "ShowSkinNamesInProfile",
+   "label": "Profile skin names",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает названия обликов в профилях."
+  },
+  {
+   "key": "MapEditorPopup",
+   "label": "Map editor",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Редактор карт, инструменты размещения и модификаторы."
+  },
+  {
+   "key": "Font",
+   "label": "Fonts",
+   "category": "visual",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Открывает выбор игрового шрифта."
+  },
+  {
+   "key": "debug.ABOUT_SCREEN",
+   "label": "About Screen",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает информацию об игре."
+  },
+  {
+   "key": "debug.GENERIC_INFO",
+   "label": "Generic Info",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает демонстрационное информационное окно."
+  },
+  {
+   "key": "debug.ESPORTS",
+   "label": "ESPorts",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает раздел киберспорта."
+  },
+  {
+   "key": "debug.NOTIFICATION_SETTINGS",
+   "label": "Notifications",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает настройки игровых уведомлений."
+  },
+  {
+   "key": "debug.FAME_POPUP",
+   "label": "Fame Preview",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает локальный предпросмотр славы с введённым значением."
+  },
+  {
+   "key": "debug.GOTO_HOME",
+   "label": "Go To Home",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переходит на главный экран."
+  },
+  {
+   "key": "debug.GOTO_QUESTS",
+   "label": "Go To Quests",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает задания."
+  },
+  {
+   "key": "debug.GOTO_BRAWL_PASS",
+   "label": "Go To Brawl Pass",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает Brawl Pass."
+  },
+  {
+   "key": "debug.GOTO_CLUBS",
+   "label": "Go To Clubs",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает раздел клубов."
+  },
+  {
+   "key": "debug.GOTO_PRO_PASS",
+   "label": "Go To Pro Pass",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает соревновательный пропуск."
+  },
+  {
+   "key": "debug.GOTO_CLAN",
+   "label": "Go To Clan",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает страницу клуба."
+  },
+  {
+   "key": "debug.GOTO_SCID_REWARDS",
+   "label": "SCID Rewards",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает информацию о наградах Supercell ID."
+  },
+  {
+   "key": "debug.CHAT_OPTIONS",
+   "label": "Chat Options",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает настройки чата."
+  },
+  {
+   "key": "debug.BRAWLER_UNLOCK_ANIM",
+   "label": "Brawler Reward Preview",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Предпросмотр выбора бойца; нажатие закрывает окно без получения награды."
+  },
+  {
+   "key": "debug.NOT_ENOUGH_GEMS",
+   "label": "Gems Popup",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает демонстрационное окно нехватки кристаллов."
+  },
+  {
+   "key": "debug.FAME_LEVEL_UP_PREVIEW",
+   "label": "Fame Level Up",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает локальную анимацию повышения уровня славы."
+  },
+  {
+   "key": "debug.RANKED_SEASON_END_POPUP",
+   "label": "Ranked Season End",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает предпросмотр итогов рейтингового сезона."
+  },
+  {
+   "key": "debug.MOVIE_PLAYER_POUP",
+   "label": "Movie Player",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает локальный предпросмотр видеоплеера."
+  },
+  {
+   "key": "debug.BRAWL_TV",
+   "label": "Brawl TV Intro",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает вступление Brawl TV; кнопка закрывает предпросмотр."
+  },
+  {
+   "key": "debug.SHOW_PRESTIGE_INTRO",
+   "label": "Prestige Intro",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает вступление престижа; кнопки закрывают предпросмотр."
+  },
+  {
+   "key": "debug.INVITE_FRIEND_CODE",
+   "label": "Invite code",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровое окно приглашения друга по коду."
+  },
+  {
+   "key": "debug.UNLOCK_ACCOUNT_SCREEN",
+   "label": "Account unlock",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровое окно разблокировки аккаунта."
+  },
+  {
+   "key": "debug.SET_COUNTRY",
+   "label": "Country",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает выбор страны в игре."
+  },
+  {
+   "key": "debug.STOP_ALL_SFX",
+   "label": "Stop sound effects",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Останавливает текущие звуковые эффекты."
+  },
+  {
+   "key": "debug.STOP_MUSIC",
+   "label": "Stop music",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Останавливает текущую музыку."
+  },
+  {
+   "key": "debug.PAUSE_MUSIC_TOGGLE",
+   "label": "Pause / resume music",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Приостанавливает музыку или возобновляет её воспроизведение."
+  },
+  {
+   "key": "debug.MUSIC_VOLUME_CYCLE_0_50_100",
+   "label": "Next music volume",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переключает громкость музыки по кругу: 0%, 50%, 100%."
+  },
+  {
+   "key": "debug.BOSS_MUSIC_TOGGLE",
+   "label": "Boss music",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переключает обычную боевую музыку и музыку финальных 30 секунд."
+  },
+  {
+   "key": "debug.GUI_CLOSE_ALL_POPUPS",
+   "label": "Close popups",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Закрывает открытые игровые всплывающие окна."
+  },
+  {
+   "key": "debug.GUI_TEST_FLOATER",
+   "label": "Test message",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Показывает игровое всплывающее сообщение TEST."
+  },
+  {
+   "key": "debug.OPEN_CLAN_POPUP",
+   "label": "Club window",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровое окно клуба."
+  },
+  {
+   "key": "debug.OPEN_TEAMUP_POPUP",
+   "label": "Team window",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровое окно команды."
+  },
+  {
+   "key": "debug.LATENCY_TEST_START",
+   "label": "Latency diagnostics",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровую диагностику задержки соединения."
+  },
+  {
+   "key": "debug.CYCLE_LANGUAGE",
+   "label": "Next language",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает следующий язык игры и перезагружает интерфейс."
+  },
+  {
+   "key": "debug.SHOW_TID_KEYS",
+   "label": "Show / hide text keys",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переключает текст на служебные идентификаторы и перезагружает интерфейс."
+  },
+  {
+   "key": "debug.SKIP_GACHA_ANIM",
+   "label": "Skip gacha animation",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Включает или отключает пропуск игровой анимации открытия награды."
+  },
+  {
+   "key": "debug.GFX_QUALITY_CYCLE",
+   "label": "Next graphics quality",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переключает Low, Mid, High, Highest; сохраняет выбор и перезагружает графику."
+  },
+  {
+   "key": "debug.MEM_QUALITY_CYCLE",
+   "label": "Next memory quality",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Переключает качество ресурсов Low, Mid, High, Highest; сохраняет выбор и перезагружает графику."
+  },
+  {
+   "key": "debug.SOFT_RELOAD_GAME",
+   "label": "Reload game",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Перезагружает игру через общий механизм очистки интерфейса."
+  },
+  {
+   "key": "debug.AA_DIALOG",
+   "label": "Play time dialog",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает игровое окно ограничения времени игры."
+  },
+  {
+   "key": "editor.OPEN_MAP_EDITOR_POPUP",
+   "label": "Open Map Editor",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает выбор карты для редактирования."
+  },
+  {
+   "key": "editor.TOGGLE_GRID",
+   "label": "Grid",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Показывает сетку редактора."
+  },
+  {
+   "key": "editor.PLACEMENT_NEXT",
+   "label": "Mirror Next",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает следующий режим зеркального размещения."
+  },
+  {
+   "key": "editor.PLACEMENT_PREVIOUS",
+   "label": "Mirror Previous",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает предыдущий режим зеркального размещения."
+  },
+  {
+   "key": "editor.PLACEMENT_SET",
+   "label": "Placement Mode",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбор обычного или зеркального размещения объектов."
+  },
+  {
+   "key": "editor.UNDO",
+   "label": "Undo",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Отменяет последнее изменение карты."
+  },
+  {
+   "key": "editor.REDO",
+   "label": "Redo",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Повторяет отменённое изменение карты."
+  },
+  {
+   "key": "editor.SELECT_ERASER",
+   "label": "Eraser",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает ластик редактора."
+  },
+  {
+   "key": "editor.FILL_ALL",
+   "label": "Fill All",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Заполняет карту выбранным объектом после подтверждения."
+  },
+  {
+   "key": "editor.FILL_REGION",
+   "label": "Fill Region",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Заполняет выбранный прямоугольник после проверки координат и подтверждения."
+  },
+  {
+   "key": "editor.ERASE_ALL",
+   "label": "Erase All",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Удаляет объекты со всей карты после подтверждения."
+  },
+  {
+   "key": "editor.SAVE",
+   "label": "Save Map",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Сохраняет текущую карту."
+  },
+  {
+   "key": "editor.CLEAR_ALL",
+   "label": "Clear Map",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Очищает текущую карту после подтверждения."
+  },
+  {
+   "key": "editor.REFRESH_TILE_COUNTS",
+   "label": "Refresh Counts",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Обновляет количество объектов на карте."
+  },
+  {
+   "key": "editor.BYPASS_SAVE_VALIDATION",
+   "label": "Save Validation Bypass",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Пропускает локальную проверку карты при сохранении."
+  },
+  {
+   "key": "editor.BYPASS_PLACEMENT_ZONES",
+   "label": "Placement Zones Bypass",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Разрешает размещение в ограниченных зонах редактора."
+  },
+  {
+   "key": "editor.UNLOCK_FULL_PALETTE",
+   "label": "Full Palette",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Расширяет палитру объектов; требуется заново открыть редактор."
+  },
+  {
+   "key": "editor.MAP_MODIFIERS",
+   "label": "Map Modifiers",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает настройки модификаторов карты."
+  },
+  {
+   "key": "editor.CANCEL_FILL",
+   "label": "Cancel Fill",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Останавливает заполнение; уже изменённые клетки сохраняются."
+  },
+  {
+   "key": "editor.GO_HOME",
+   "label": "Go Home",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Возвращает в лобби после подтверждения выхода."
+  },
+  {
+   "key": "server.automatic",
+   "label": "Automatic",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Автоматически выбирает регион боевого сервера."
+  },
+  {
+   "key": "server.refresh",
+   "label": "Refresh ping",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Повторно измеряет задержку доступных боевых серверов."
+  },
+  {
+   "key": "theme.options",
+   "label": "Theme options",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Открывает дополнительные настройки оформления и музыки."
+  },
+  {
+   "key": "theme.reset",
+   "label": "Reset theme",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Возвращает стандартное оформление лобби."
+  },
+  {
+   "key": "theme.no_music",
+   "label": "No music",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Продолжает выбор темы без фоновой музыки."
+  },
+  {
+   "key": "theme.confirm",
+   "label": "Apply theme",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Применяет выбранные фон и музыку после предпросмотра."
+  },
+  {
+   "key": "theme.random_launch",
+   "label": "Random at launch",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Выбирает случайную тему при запуске игры."
+  },
+  {
+   "key": "theme.random_battle",
+   "label": "Random after battle",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Меняет тему случайным образом после боя."
+  },
+  {
+   "key": "theme.random_music",
+   "label": "Independent music",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Выбирает случайную музыку независимо от фона."
+  },
+  {
+   "key": "theme.previous",
+   "label": "Previous theme",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает предыдущую доступную тему."
+  },
+  {
+   "key": "theme.next",
+   "label": "Next theme",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Выбирает следующую доступную тему."
+  },
+  {
+   "key": "theme.shared",
+   "label": "Shared background",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Использует общий фон для совместимых игровых экранов."
+  },
+  {
+   "key": "theme.legacy",
+   "label": "Legacy background",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 0,
+   "description": "Включает прежний стиль фона игровых экранов."
+  },
+  {
+   "key": "profile.open",
+   "label": "Open profile",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Открывает профиль по введённому тегу игрока."
+  },
+  {
+   "key": "profile.name",
+   "label": "Visual name",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Задаёт имя, отображаемое локально в вашем клиенте."
+  },
+  {
+   "key": "profile.reset_name",
+   "label": "Reset visual name",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Возвращает настоящее имя аккаунта в локальном отображении."
+  },
+  {
+   "key": "profile.reload",
+   "label": "Reload game",
+   "category": "utility",
+   "paid": false,
+   "screen": 0,
+   "control": 3,
+   "description": "Перезагружает игру для применения сохранённого имени."
+  },
+  {
+   "key": "naniAutoDodgeEnabled",
+   "label": "Nani ulti mod",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 0,
+   "description": "Управляет движением Нани левым джойстиком во время полёта Пипа и включает автоматическое уклонение."
+  },
+  {
+   "key": "menu.language",
+   "label": "Language",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Выбирает язык описаний, кнопок и подсказок меню."
+  },
+  {
+   "key": "menu.battle_menu",
+   "label": "Battle Menu",
+   "category": "settings",
+   "paid": false,
+   "screen": 0,
+   "control": 4,
+   "description": "Настраивает быстрое меню во время боя."
+  },
+  {
+   "key": "naniControlMode",
+   "label": "Nani mode",
+   "category": "combat",
+   "paid": true,
+   "screen": 0,
+   "control": 1,
+   "description": "Совместимость старой версии интерфейса."
+  }
+ ]
+}
