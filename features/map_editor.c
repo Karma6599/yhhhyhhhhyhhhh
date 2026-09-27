@@ -1,670 +1,553 @@
-/*
- * Map Editor unlock bridge — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusUI69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - editor.OPEN_MAP_EDITOR_POPUP "Open Map Editor" [free]
- *   - editor.TOGGLE_GRID "Grid" [free]
- *   - editor.PLACEMENT_NEXT "Mirror Next" [free]
- *   - editor.PLACEMENT_PREVIOUS "Mirror Previous" [free]
- *   - editor.PLACEMENT_SET "Placement Mode" [free]
- *   - editor.UNDO "Undo" [free]
- *   - ... +14 more (full table below / docs/debug_menu.md)
- * Bridge that unlocks the stock game's internal map editor ("Map editor" popup, 20 commands).
- * Command table (actionId = slot + base), from the embedded wire:
- *   167968  editor.OPEN_MAP_EDITOR_POPUP               "Open Map Editor" [free]
- *   167969  editor.TOGGLE_GRID                         "Grid" [free]
- *   167970  editor.PLACEMENT_NEXT                      "Mirror Next" [free]
- *   167971  editor.PLACEMENT_PREVIOUS                  "Mirror Previous" [free]
- *   167972  editor.PLACEMENT_SET                       "Placement Mode" [free]
- *   167973  editor.UNDO                                "Undo" [free]
- *   167974  editor.REDO                                "Redo" [free]
- *   167975  editor.SELECT_ERASER                       "Eraser" [free]
- *   167976  editor.FILL_ALL                            "Fill All" [free]
- *   167977  editor.FILL_REGION                         "Fill Region" [free]
- *   167978  editor.ERASE_ALL                           "Erase All" [free]
- *   167979  editor.SAVE                                "Save Map" [free]
- *   167980  editor.CLEAR_ALL                           "Clear Map" [free]
- *   167981  editor.REFRESH_TILE_COUNTS                 "Refresh Counts" [free]
- *   167982  editor.BYPASS_SAVE_VALIDATION              "Save Validation Bypass" [free]
- *   167983  editor.BYPASS_PLACEMENT_ZONES              "Placement Zones Bypass" [free]
- *   167984  editor.UNLOCK_FULL_PALETTE                 "Full Palette" [free]
- *   167985  editor.MAP_MODIFIERS                       "Map Modifiers" [free]
- *   167986  editor.CANCEL_FILL                         "Cancel Fill" [free]
- *   167987  editor.GO_HOME                             "Go Home" [free]
- * Notes:
- *   - nexus_menu_editor_action: dispatches actionId in [0x28FC0,0x290D4) (167968+i) — incl.
- *   - BYPASS_SAVE_VALIDATION, BYPASS_PLACEMENT_ZONES, UNLOCK_FULL_PALETTE, MAP_MODIFIERS.
- *   - nexus_menu_editor_open/pump/scroll_revision: editor lifecycle, pending-request pump,
- *   - scroll revision counter for the tile palette.
- *   - Cross-file references remain in ui/menu_engine.c.
- */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
 
-/* ===== nexus_menu_editor_scroll_revision @ 001888d8 ===== */
+#define EDITOR_CMD_COUNT 20
+#define EDITOR_ACTION_BASE 0x29020u
+#define EDITOR_ACTION_CLOSE 0x29000u
+#define EDITOR_ACTION_CONFIRM 0x29001u
+#define EDITOR_ACTION_VALUE_PLACEMENT 0x29024u
+#define EDITOR_ACTION_VALUE_REGION 0x29029u
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+typedef struct {
+    uint32_t cmd;
+    uint32_t _pad0[3];
+    const char *name;
+    uint32_t flags[4];
+} editor_command_slot_t;
 
-undefined8 nexus_menu_editor_scroll_revision(void)
+static const editor_command_slot_t k_editor_commands[EDITOR_CMD_COUNT] = {
+    {  0, {0,0,0}, "OPEN MAP EDITOR",           {0,0,0,0x1} },
+    {  1, {0,0,0}, "GRID",                      {0,0,0,0x2} },
+    {  2, {0,0,0}, "MIRROR NEXT",               {0,0,0,0x3} },
+    {  3, {0,0,0}, "MIRROR PREVIOUS",           {0,0,0,0x4} },
+    {  4, {0,0,0}, "PLACEMENT MODE",            {0,0,2,0x5} },
+    {  5, {0,0,0}, "UNDO",                      {0,0,0,0x6} },
+    {  6, {0,0,0}, "REDO",                      {0,0,0,0x7} },
+    {  7, {0,0,0}, "ERASER",                    {0,0,0,0x8} },
+    {  8, {0,0,0}, "FILL ALL",                  {0,0,0,0x9} },
+    {  9, {0,0,0}, "FILL REGION",               {0,0,4,0xa} },
+    { 10, {0,0,0}, "ERASE ALL",                 {0,0,0,0xb} },
+    { 11, {0,0,0}, "SAVE MAP",                  {0,0,0,0xc} },
+    { 12, {0,0,0}, "CLEAR MAP",                 {0,0,0,0xd} },
+    { 13, {0,0,0}, "REFRESH COUNTS",            {0,0,0,0xe} },
+    { 14, {0,0,0}, "SAVE VALIDATION BYPASS",    {0,0,0,0xf} },
+    { 15, {0,0,0}, "PLACEMENT ZONES BYPASS",    {0,0,0,0x10} },
+    { 16, {0,0,0}, "FULL PALETTE",              {0,0,0,0x11} },
+    { 17, {0,0,0}, "MAP MODIFIERS",             {0,0,0,0x12} },
+    { 18, {0,0,0}, "CANCEL FILL",               {0,0,0,0x13} },
+    { 19, {0,0,0}, "GO HOME",                   {0,0,0,0x7} },
+};
 
+#define EDITOR_SCREEN_CHAR 'e'
+
+typedef struct {
+    uint32_t magic;
+    uint32_t size;
+    uint64_t session;
+    uint32_t count;
+    uint32_t bitmap;
+    uint32_t flags;
+    uint32_t min_a;
+    uint32_t min_b;
+    uint32_t map_w;
+    uint32_t map_h;
+    uint32_t pad_2c;
+    uint32_t range_lo;
+    uint32_t range_hi;
+    uint32_t pad_38;
+    uint32_t pad_3c;
+} editor_availability_t;
+
+_Static_assert(sizeof(editor_availability_t) == 0x40, "editor_availability_t size");
+
+extern uint64_t g_menu_guard;
+extern int32_t  g_menu_owner_tid;
+extern uint8_t  g_menu_screen_open;
+extern char     g_menu_screen;
+extern uint8_t  g_menu_flag_9f;
+extern uint64_t g_menu_revision;
+
+extern uint32_t g_editor_guard;
+extern uint32_t g_editor_saved_screen;
+extern uint64_t g_editor_state_packed;
+extern uint32_t g_editor_phase;
+extern uint32_t g_editor_slot;
+extern uint64_t g_editor_session;
+extern uint32_t g_editor_slot_bitmap;
+extern int64_t  g_editor_open_rev;
+extern uint64_t g_editor_last_pump_ms;
+extern uint64_t g_editor_dialog;
+extern uint32_t g_editor_rect[4];
+extern char     g_editor_message[0x80];
+extern char     g_editor_banner[0x100];
+extern editor_availability_t g_editor_avail;
+extern uint64_t g_editor_scroll_rev;
+
+extern int menu_guard_busy(int op, uint64_t *guard);
+extern int editor_guard_busy(int op, uint32_t *guard);
+extern int menu_text_set(char *dst, int64_t reserved, size_t cap,
+                         const char *fmt, ...);
+extern int editor_availability_read(void *out, uint32_t size);
+extern uint64_t dialog_session_create(void);
+extern int dialog_value_open(uint64_t handle, const char *name,
+                             const char *fmt, int a, int b);
+extern int dialog_input_poll(uint64_t handle, int32_t *state,
+                             uint8_t *buf, uint32_t cap);
+extern void dialog_session_close(uint64_t handle);
+extern int editor_value_parse(uint32_t cmd, const uint8_t *buf, uint32_t out[4]);
+extern int editor_command_run(uint32_t cmd, uint32_t x1, uint32_t y1,
+                              uint32_t x2, uint32_t y2);
+extern void editor_scroll_bump(int op, uint64_t *rev);
+extern void editor_close_notify(void);
+
+#define EDITOR_PHASE_IDLE 0
+#define EDITOR_PHASE_VALUE 1
+#define EDITOR_PHASE_PENDING 2
+#define EDITOR_PHASE_REVIEW 3
+#define EDITOR_PHASE_DONE 4
+#define EDITOR_PHASE_APPLY 5
+
+uint64_t nexus_menu_editor_scroll_revision(void)
 {
-  undefined8 uVar1;
-  
-  uVar1 = 0;
-  if ((DAT_0028469c != '\0') && (DAT_0028469d == 'e')) {
-    uVar1 = ram0x0022d828;
-  }
-  return uVar1;
+    if (g_menu_screen_open != 0 && g_menu_screen == EDITOR_SCREEN_CHAR)
+        return g_editor_scroll_rev;
+    return 0;
 }
 
-
-/* ===== nexus_menu_editor_open @ 00188908 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_editor_open(int param_1)
-
+uint32_t nexus_menu_editor_open(int owner_tid)
 {
-  ulong uVar1;
-  undefined8 uVar2;
-  
-  uVar1 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar1 & 1) == 0) {
-    uVar2 = 4;
-    if (((0 < param_1) && (DAT_00284694 == param_1)) && (DAT_0028469c != '\0')) {
-      if (DAT_0028469d != 0x65) {
-        DAT_0028cc28 = (uint)DAT_0028469d;
-      }
-      _DAT_0028cc2c = 0;
-      DAT_0028cc3c = 0;
-      DAT_0028cc48 = 0;
-      DAT_0028cc40 = DAT_0028cc40 + 1;
-      DAT_0028cc64 = 0;
-      DAT_0028469f = 0;
-      uVar2 = 1;
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_0028469d = 0x65;
-      FUN_00194010(1,0x22d828);
+    if ((menu_guard_busy(1, &g_menu_guard) & 1) != 0)
+        return 3;
+
+    uint32_t result = 4;
+    if (owner_tid > 0 && g_menu_owner_tid == owner_tid
+        && g_menu_screen_open != 0) {
+
+        if (g_menu_screen != EDITOR_SCREEN_CHAR)
+            g_editor_saved_screen = (uint32_t)(uint8_t)g_menu_screen;
+
+        g_editor_state_packed = 0;
+        g_editor_phase = 0;
+        g_editor_last_pump_ms = 0;
+        memset(g_editor_message, 0, sizeof g_editor_message);
+        g_editor_open_rev++;
+        g_editor_scroll_rev = 0;
+        g_menu_flag_9f = 0;
+        result = 1;
+        g_menu_revision++;
+        g_menu_screen = EDITOR_SCREEN_CHAR;
+        editor_scroll_bump(1, &g_editor_scroll_rev);
     }
-    DAT_00284688 = 0;
-  }
-  else {
-    uVar2 = 3;
-  }
-  return uVar2;
+
+    g_menu_guard = 0;
+    return result;
 }
 
-
-/* ===== nexus_menu_editor_action @ 001889ec ===== */
-
-undefined8 nexus_menu_editor_action(int param_1,int param_2)
-
+static int editor_cmd_available(uint32_t cmd)
 {
-  uint uVar1;
-  uint uVar2;
-  ulong uVar3;
-  char *pcVar4;
-  
-  if (param_1 - 0x29200U < 0xfffffe00) {
-    return 4;
-  }
-  uVar3 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar3 & 1) != 0) {
-    return 3;
-  }
-  if (param_2 < 1) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_00284694 != param_2) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469c == '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469d != 'e') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (param_1 == 0x29000) {
-    DAT_0028cc40 = DAT_0028cc40 + 1;
-    if (DAT_0028cc30 - 3U < 2) {
-      DAT_0028cc3c = 0;
-      DAT_0028cc64 = 0;
-    }
-    else {
-      DAT_0028469d = (char)DAT_0028cc28;
-    }
-    DAT_0028469f = 0;
-    DAT_0028cc30 = 0;
-    DAT_002846a0 = DAT_002846a0 + 1;
-    FUN_00194010(1,0x22d828);
-    DAT_00284688 = 0;
+    if (cmd > 0x13)
+        return 0;
+    if (cmd >= g_editor_avail.count)
+        return 0;
+    if ((g_editor_avail.bitmap >> (cmd & 0x1f) & 1u) == 0)
+        return 0;
     return 1;
-  }
-  if ((int)DAT_0028dce8 == 0) {
-    if (param_1 == 0x29001) {
-      if (DAT_0028cc30 != 4) {
-        DAT_00284688 = 0;
+}
+
+uint32_t nexus_menu_editor_action(uint32_t action_id, int owner_tid)
+{
+    if (action_id - 0x29200u < 0xfffffe00u)
         return 4;
-      }
-      if ((DAT_0028cc3c & 1) == 0) {
-        DAT_00284688 = 0;
+
+    if ((menu_guard_busy(1, &g_menu_guard) & 1) != 0)
+        return 3;
+
+    if (owner_tid < 1 || g_menu_owner_tid != owner_tid
+        || g_menu_screen_open == 0 || g_menu_screen != EDITOR_SCREEN_CHAR) {
+        g_menu_guard = 0;
         return 4;
-      }
-      DAT_0028cc30 = 5;
-      FUN_00183ac8(&DAT_0028cc64,0x80,0x80,"APPLYING...");
     }
-    else {
-      if (DAT_0028cc30 != 0) {
-        DAT_00284688 = 0;
-        return 2;
-      }
-      uVar1 = param_1 - 0x29020;
-      if (0x13 < uVar1) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      if (DAT_0028cc2c == 0) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      if ((DAT_0028cc3c >> (ulong)(uVar1 & 0x1f) & 1) == 0) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      uVar2 = *(uint *)(&DAT_0019dab0 + (ulong)uVar1 * 0x28);
-      if (0x13 < uVar2) {
-        DAT_00284688 = 0;
+
+    if (action_id == EDITOR_ACTION_CLOSE) {
+        g_editor_open_rev++;
+        if (g_editor_phase - 3u < 2u) {
+            g_editor_slot_bitmap = 0;
+            g_editor_scroll_rev = 0;
+        } else {
+            g_menu_screen = (char)(uint8_t)g_editor_saved_screen;
+        }
+        g_menu_flag_9f = 0;
+        g_editor_phase = 0;
+        g_menu_revision++;
+        editor_scroll_bump(1, &g_editor_scroll_rev);
+        g_menu_guard = 0;
+        return 1;
+    }
+
+    if (g_editor_guard == 0) {
+        if (action_id == EDITOR_ACTION_CONFIRM) {
+            if (g_editor_phase != EDITOR_PHASE_DONE) {
+                g_menu_guard = 0;
+                return 4;
+            }
+            if ((g_editor_slot_bitmap & 1u) == 0) {
+                g_menu_guard = 0;
+                return 4;
+            }
+            g_editor_phase = EDITOR_PHASE_APPLY;
+            menu_text_set(g_editor_message, 0x80, 0x80, "APPLYING...");
+        } else {
+            if (g_editor_phase != EDITOR_PHASE_IDLE) {
+                g_menu_guard = 0;
+                return 2;
+            }
+
+            uint32_t slot = action_id - EDITOR_ACTION_BASE;
+            if (slot > 0x13) {
+                g_menu_guard = 0;
+                return 4;
+            }
+            if ((uint32_t)g_editor_state_packed == 0) {
+                g_menu_guard = 0;
+                return 4;
+            }
+            if ((g_editor_slot_bitmap >> (slot & 0x1f) & 1u) == 0) {
+                g_menu_guard = 0;
+                return 4;
+            }
+
+            uint32_t cmd = k_editor_commands[slot].cmd;
+            if (!editor_cmd_available(cmd)) {
+                g_menu_guard = 0;
+                return 0;
+            }
+
+            g_editor_phase = EDITOR_PHASE_VALUE;
+            g_editor_rect[0] = 0;
+            g_editor_rect[1] = 0;
+            g_editor_session = g_editor_avail.session;
+
+            const char *message = "ENTER A VALUE";
+            if (action_id != EDITOR_ACTION_VALUE_PLACEMENT
+                && action_id != EDITOR_ACTION_VALUE_REGION) {
+                if (cmd - 8u < 5u && (0x17u >> ((cmd - 8) & 0x1f) & 1u) != 0) {
+                    g_editor_phase = EDITOR_PHASE_REVIEW;
+                    message = "REVIEW ACTION";
+                } else {
+                    g_editor_phase = EDITOR_PHASE_REVIEW;
+                    if (cmd != 0x13) {
+                        g_editor_phase = EDITOR_PHASE_APPLY;
+                        message = "APPLYING...";
+                    }
+                }
+            }
+
+            g_editor_slot = slot;
+            menu_text_set(g_editor_message, 0x80, 0x80, "%s", message);
+        }
+        g_menu_revision++;
+    }
+
+    g_menu_guard = 0;
+    return 2;
+}
+
+static uint32_t editor_supported(const editor_availability_t *av)
+{
+    if (!(av->magic == 1 && av->size == 0x40 && av->session != 0))
         return 0;
-      }
-      if (DAT_0028cbf8 <= uVar2) {
-        DAT_00284688 = 0;
+    if (!(av->count - 0x15u > 0xffffffebu && av->pad_3c < 4))
         return 0;
-      }
-      if ((DAT_0028cbfc >> (ulong)(uVar2 & 0x1f) & 1) == 0) {
-        DAT_00284688 = 0;
+    if ((av->bitmap >> (av->count & 0x1f)) != 0)
         return 0;
-      }
-      DAT_0028cc30 = 1;
-      DAT_0028cc5c = 0;
-      DAT_0028cc54 = 0;
-      DAT_0028cc38 = DAT_0028cbf0;
-      if ((param_1 != 0x29024) && (param_1 != 0x29029)) {
-        if ((uVar2 - 8 < 5) && ((0x17U >> (ulong)(uVar2 - 8 & 0x1f) & 1) != 0)) {
-          DAT_0028cc30 = 3;
-        }
-        else {
-          DAT_0028cc30 = 3;
-          if (uVar2 != 0x13) {
-            DAT_0028cc30 = 5;
-          }
-        }
-      }
-      pcVar4 = "ENTER A VALUE";
-      if ((param_1 != 0x29024) && (param_1 != 0x29029)) {
-        if ((uVar2 - 8 < 5) && ((0x17U >> (ulong)(uVar2 - 8 & 0x1f) & 1) != 0)) {
-          pcVar4 = "REVIEW ACTION";
-        }
-        else {
-          pcVar4 = "REVIEW ACTION";
-          if (uVar2 != 0x13) {
-            pcVar4 = "APPLYING...";
-          }
-        }
-      }
-      DAT_0028cc34 = uVar1;
-      FUN_00183ac8(&DAT_0028cc64,0x80,0x80,&DAT_001343dc,pcVar4);
-    }
-    DAT_002846a0 = DAT_002846a0 + 1;
-  }
-  DAT_00284688 = 0;
-  return 2;
+    if (!(av->min_a > 1u && av->min_b > 4u && av->map_w > 128u && av->map_h > 128u))
+        return 0;
+    if (!(av->pad_2c < 2u && (av->flags & 0xfffe3fffu) == 0 && av->pad_38 < 2u))
+        return 0;
+    if (!(av->range_lo <= av->range_hi && av->range_hi < 0x4001u))
+        return 0;
+    return (av->pad_38 < 5u) ? 1u : 0u;
 }
 
-
-/* ===== nexus_menu_editor_pump @ 00188d04 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void nexus_menu_editor_pump(int param_1,ulong param_2)
-
+uint32_t nexus_menu_editor_pump(int owner_tid, uint64_t now_ms)
 {
-  char *pcVar1;
-  uint uVar2;
-  long lVar3;
-  undefined1 auVar4 [16];
-  undefined1 auVar5 [16];
-  bool bVar6;
-  uint uVar7;
-  long lVar8;
-  int iVar9;
-  undefined1 uVar10;
-  bool bVar11;
-  int iVar12;
-  int iVar13;
-  uint uVar14;
-  int iVar15;
-  ulong uVar16;
-  ulong uVar17;
-  void *pvVar18;
-  char *pcVar19;
-  undefined4 uVar20;
-  uint uVar21;
-  ushort uVar22;
-  undefined1 auVar23 [16];
-  uint uStack_4fc;
-  int local_4e4;
-  int local_4e0;
-  int iStack_4dc;
-  int iStack_4d8;
-  uint uStack_4d4;
-  undefined8 local_4d0;
-  uint local_4c8;
-  undefined4 uStack_4c4;
-  undefined4 local_4c0;
-  undefined4 uStack_4bc;
-  undefined4 uStack_4b8;
-  uint uStack_4b4;
-  undefined8 local_4b0;
-  undefined8 local_4a8;
-  undefined1 auStack_494 [1028];
-  undefined4 local_90;
-  undefined4 uStack_8c;
-  undefined4 uStack_88;
-  undefined4 uStack_84;
-  long local_78;
-  
-  lVar3 = tpidr_el0;
-  local_78 = *(long *)(lVar3 + 0x28);
-  uVar16 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar16 & 1) != 0) {
-    uVar10 = 3;
-    goto LAB_00188e5c;
-  }
-  if ((param_1 < 1) || (DAT_00284694 != param_1)) {
-    uVar10 = 4;
-    DAT_00284688 = 0;
-    goto LAB_00188e5c;
-  }
-  iVar12 = FUN_00193fe0(1,&DAT_0028dce8);
-  iVar9 = DAT_0028cc50;
-  lVar8 = DAT_0028cc40;
-  iVar15 = DAT_0028cc38;
-  uVar2 = DAT_0028cc34;
-  if (iVar12 != 0) {
-    uVar10 = 3;
-    DAT_00284688 = 0;
-    goto LAB_00188e5c;
-  }
-  uVar7 = DAT_0028cc30;
-  uVar16 = (ulong)DAT_0028cc34;
-  uStack_88 = (undefined4)DAT_0028cc5c;
-  uStack_84 = (undefined4)((ulong)DAT_0028cc5c >> 0x20);
-  local_90 = (undefined4)DAT_0028cc54;
-  uStack_8c = (undefined4)((ulong)DAT_0028cc54 >> 0x20);
-  if ((DAT_0028469c == '\0') || (DAT_0028469d != 'e')) {
-    DAT_0028cc40 = DAT_0028cc40 + 1;
-    DAT_0028cc50 = 0;
-    _DAT_0028cc2c = 0;
-    DAT_0028cc3c = 0;
-    DAT_00284688 = 0;
-    FUN_00191dd0();
-    if (iVar9 != 0) goto LAB_00188e4c;
-LAB_00188e54:
-    uVar10 = 1;
-  }
-  else {
-    bVar11 = true;
-    if (((DAT_0028cc30 == 0) && (DAT_0028cc48 != 0)) && (DAT_0028cc48 <= param_2)) {
-      bVar11 = 0xf9 < param_2 - DAT_0028cc48;
+    if ((menu_guard_busy(1, &g_menu_guard) & 1) != 0)
+        return 3;
+
+    if (owner_tid < 1 || g_menu_owner_tid != owner_tid) {
+        g_menu_guard = 0;
+        return 4;
     }
-    if ((DAT_0028cc50 != 0) && (DAT_0028cc30 == 0)) {
-      DAT_0028cc50 = 0;
-      _DAT_0028cc2c = _DAT_0028cc2c & 0xffffffff;
-      DAT_00284688 = 0;
-      FUN_00191dd0();
-LAB_00188e4c:
-      FUN_0014cc0c(iVar9);
-      goto LAB_00188e54;
+
+    if (editor_guard_busy(1, &g_editor_guard) != 0) {
+        g_menu_guard = 0;
+        return 3;
     }
-    DAT_00284688 = 0;
-    FUN_00191dd0();
-    if (!bVar11) goto LAB_00188e54;
-    iStack_4d8 = 0;
-    uStack_4d4 = 0;
-    local_4e0 = 0;
-    iStack_4dc = 0;
-    local_4c8 = 0;
-    uStack_4c4 = 0;
-    local_4d0 = 0;
-    uStack_4b8 = 0;
-    uStack_4b4 = 0;
-    local_4c0 = 0;
-    uStack_4bc = 0;
-    local_4a8 = 0;
-    local_4b0 = 0;
-    iVar13 = FUN_00191d10(&local_4e0,0x40);
-    iVar12 = iStack_4d8;
-    uVar21 = 0;
-    if (((iVar13 != 0) && (local_4e0 == 1)) && ((iStack_4dc == 0x40 && (iStack_4d8 != 0)))) {
-      uVar21 = 0;
-      if ((0xffffffeb < (uint)local_4d0 - 0x15) && (uStack_4d4 < 4)) {
-        if (local_4d0._4_4_ >> (ulong)((uint)local_4d0 & 0x1f) == 0) {
-          auVar23._4_4_ = local_4c0;
-          auVar23._0_4_ = uStack_4c4;
-          auVar23._8_4_ = uStack_4bc;
-          auVar23._12_4_ = uStack_4b8;
-          uVar14 = 0;
-          auVar23 = NEON_cmhi(auVar23,_DAT_0010fae0,4);
-          uVar22 = NEON_umaxv(CONCAT26(auVar23._12_2_,
-                                       CONCAT24(auVar23._8_2_,CONCAT22(auVar23._4_2_,auVar23._0_2_))
-                                      ),2);
-          uVar21 = 0;
-          if (((((uVar22 & 1) == 0) && (uVar21 = uVar14, uStack_4b4 < 2)) &&
-              ((local_4c8 & 0xfffe3fff) == 0)) && (local_4a8._4_4_ < 2)) {
-            uVar21 = 0;
-            if (((uint)local_4b0 <= local_4b0._4_4_) && (local_4b0._4_4_ < 0x4001)) {
-              uVar21 = (uint)((uint)local_4a8 < 5);
-            }
-          }
-        }
-        else {
-          uVar21 = 0;
-        }
-      }
+
+    uint64_t dialog = g_editor_dialog;
+    int64_t open_rev = g_editor_open_rev;
+    uint64_t session = g_editor_session;
+    uint32_t slot = g_editor_slot;
+    uint32_t phase = g_editor_phase;
+    uint32_t rect[4] = { g_editor_rect[0], g_editor_rect[1],
+                         g_editor_rect[2], g_editor_rect[3] };
+
+    if (g_menu_screen_open == 0 || g_menu_screen != EDITOR_SCREEN_CHAR) {
+        g_editor_open_rev++;
+        g_editor_dialog = 0;
+        g_editor_state_packed = (g_editor_state_packed & 0xffffffff00000000ull);
+        g_editor_slot_bitmap = 0;
+        g_menu_guard = 0;
+        editor_close_notify();
+        if (dialog != 0)
+            dialog_session_close(dialog);
+        return 1;
     }
-    memset(auStack_494,0,0x401);
-    if (uVar7 == 0) {
-switchD_00189070_caseD_4:
-      bVar11 = false;
-      iVar13 = 0;
-      uVar14 = 1;
-      bVar6 = false;
-      uStack_4fc = 0;
+
+    int refresh = 1;
+    if (g_editor_phase == EDITOR_PHASE_IDLE && g_editor_last_pump_ms != 0
+        && g_editor_last_pump_ms <= now_ms)
+        refresh = (now_ms - g_editor_last_pump_ms > 0xf9);
+
+    if (g_editor_dialog != 0 && g_editor_phase == EDITOR_PHASE_IDLE) {
+        g_editor_dialog = 0;
+        g_editor_state_packed &= 0xffffffffull;
+        g_menu_guard = 0;
+        editor_close_notify();
+        dialog_session_close(dialog);
+        return 1;
     }
-    else if ((uVar2 < 0x14) && (bVar11 = false, uVar21 != 0)) {
-      uVar2 = *(uint *)(&DAT_0019dab0 + uVar16 * 0x28);
-      if (uVar2 < 0x14) {
-        iVar13 = 0;
-        uVar14 = 0;
-        bVar6 = false;
-        uStack_4fc = 1;
-        if (uVar2 < (uint)local_4d0) {
-          if (((local_4d0._4_4_ >> (ulong)(uVar2 & 0x1f) & 1) == 0) ||
-             ((uVar2 != 0x12 && (iVar12 != iVar15)))) goto LAB_00188fac;
-          bVar11 = true;
-          uVar14 = 1;
-          bVar6 = false;
-          uStack_4fc = 1;
-          iVar13 = 0;
-          switch(uVar7) {
-          case 1:
-            iVar13 = FUN_0014c510();
-            if (iVar13 == 0) {
-              uVar14 = 0;
-            }
-            else {
-              bVar11 = uVar2 == 9;
-              pcVar19 = "PLACEMENT MODE 0-4";
-              if (bVar11) {
-                pcVar19 = "RECTANGLE x1,y1,x2,y2";
-              }
-              uVar20 = 0x60;
-              if (!bVar11) {
-                uVar20 = 1;
-              }
-              iVar15 = FUN_0014c550(iVar13,pcVar19,&DAT_00134f22,!bVar11,uVar20);
-              uVar14 = (uint)(iVar15 != 0);
-            }
-            bVar11 = false;
-            bVar6 = false;
-            uStack_4fc = uVar14 ^ 1;
-            break;
-          case 2:
-            local_4e4 = 3;
-            uVar14 = FUN_0014c8ac(iVar9,&local_4e4,auStack_494,0x401);
-            bVar11 = false;
-            if ((uVar14 == 0) || (local_4e4 == 3)) {
-              bVar6 = false;
-              uStack_4fc = 1;
-              iVar13 = 0;
-            }
-            else if (local_4e4 == 2) {
-              bVar11 = false;
-              bVar6 = false;
-              uStack_4fc = 1;
-              iVar13 = 0;
-              uVar14 = 2;
-            }
-            else if (local_4e4 == 1) {
-              pvVar18 = memchr(auStack_494,0,0x401);
-              if ((pvVar18 == (void *)0x0) ||
-                 (iVar15 = FUN_001895e0(uVar2,auStack_494,&local_90), iVar15 == 0)) {
-                bVar11 = false;
-                uVar14 = 0;
-                iVar13 = 0;
-                bVar6 = false;
-                uStack_4fc = 1;
-              }
-              else {
-                if ((uVar2 - 8 < 5) && ((0x17U >> (ulong)(uVar2 - 8 & 0x1f) & 1) != 0)) {
-                  bVar11 = true;
+
+    g_menu_guard = 0;
+    editor_close_notify();
+
+    if (!refresh)
+        return 1;
+
+    editor_availability_t avail;
+    memset(&avail, 0, sizeof avail);
+    int got = editor_availability_read(&avail, 0x40);
+
+    uint32_t supported = 0;
+    if (got != 0)
+        supported = editor_supported(&avail);
+
+    uint8_t input_buf[0x401];
+    memset(input_buf, 0, sizeof input_buf);
+
+    uint32_t result_code = 0;
+    uint64_t new_dialog = 0;
+    int progressed = 0;
+    int execute = 0;
+    int close_input = 1;
+
+    if (phase == EDITOR_PHASE_IDLE) {
+        result_code = 1;
+        progressed = 0;
+        execute = 0;
+        close_input = 0;
+    } else if (slot < 0x14 && supported != 0) {
+        uint32_t cmd = k_editor_commands[slot].cmd;
+        if (cmd >= 0x14) {
+            result_code = 0;
+            close_input = 1;
+        } else if (cmd < avail.count
+                   && (avail.bitmap >> (cmd & 0x1f) & 1u) != 0
+                   && (cmd == 0x12 || (uint64_t)avail.session == session)) {
+            progressed = 1;
+            result_code = 1;
+            close_input = 1;
+
+            switch (phase) {
+            case EDITOR_PHASE_VALUE:
+                new_dialog = dialog_session_create();
+                if (new_dialog == 0) {
+                    result_code = 0;
+                } else {
+                    int is_region = (cmd == 9);
+                    const char *prompt = is_region
+                        ? "RECTANGLE x1,y1,x2,y2" : "PLACEMENT MODE 0-4";
+                    uint32_t width = is_region ? 0x60 : 1;
+                    result_code = (uint32_t)(dialog_value_open(
+                        new_dialog, prompt, "", !is_region, width) != 0);
                 }
-                else {
-                  bVar11 = uVar2 == 0x13;
+                progressed = 0;
+                execute = 0;
+                close_input = result_code ^ 1;
+                break;
+
+            case EDITOR_PHASE_PENDING: {
+                int32_t poll_state = 3;
+                result_code = dialog_input_poll(dialog, &poll_state,
+                                                input_buf, 0x401);
+                progressed = 0;
+                if (result_code == 0 || poll_state == 3) {
+                    close_input = 1;
+                } else if (poll_state == 2) {
+                    result_code = 2;
+                    close_input = 1;
+                } else if (poll_state == 1) {
+                    if (memchr(input_buf, 0, 0x401) == NULL
+                        || editor_value_parse(cmd, input_buf, rect) == 0) {
+                        result_code = 0;
+                        close_input = 1;
+                    } else {
+                        int review = (cmd - 8u < 5u
+                                      && (0x17u >> ((cmd - 8) & 0x1f) & 1u) != 0)
+                                     || cmd == 0x13;
+                        execute = !review;
+                        progressed = 1;
+                        result_code = 1;
+                        close_input = 1;
+                    }
+                } else {
+                    result_code = 0;
+                    close_input = 0;
                 }
-                bVar6 = (bool)(bVar11 ^ 1);
-                uVar14 = 1;
-                uStack_4fc = 1;
-                iVar13 = 0;
-              }
+                break;
             }
-            else {
-              bVar11 = false;
-              bVar6 = false;
-              uStack_4fc = 0;
-              iVar13 = 0;
+
+            case EDITOR_PHASE_REVIEW:
+                break;
+
+            case EDITOR_PHASE_APPLY:
+                execute = 1;
+                progressed = 1;
+                result_code = 1;
+                close_input = 1;
+                break;
+
+            default:
+                result_code = 1;
+                progressed = 0;
+                execute = 0;
+                close_input = 0;
+                break;
             }
-            break;
-          case 3:
-            break;
-          default:
-            goto switchD_00189070_caseD_4;
-          case 5:
-            bVar11 = false;
-            iVar13 = 0;
-            bVar6 = true;
-            uStack_4fc = 1;
-          }
+        } else {
+            result_code = 0;
+            close_input = 1;
         }
-      }
-      else {
-        iVar13 = 0;
-        bVar6 = false;
-        uStack_4fc = 1;
-        uVar14 = 0;
-      }
+    } else {
+        result_code = 0;
+        close_input = 1;
     }
-    else {
-LAB_00188fac:
-      uVar14 = 0;
-      bVar11 = false;
-      iVar13 = 0;
-      bVar6 = false;
-      uStack_4fc = 1;
-    }
-    uVar17 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar17 & 1) == 0) {
-      if (((DAT_0028469c == '\0') || (DAT_0028469d != 'e')) || (DAT_0028cc40 != lVar8)) {
-        DAT_00284688 = 0;
-        if (iVar13 != 0) {
-          FUN_0014cc0c(iVar13);
+
+    if ((menu_guard_busy(1, &g_menu_guard) & 1) == 0) {
+        if (g_menu_screen_open == 0 || g_menu_screen != EDITOR_SCREEN_CHAR
+            || g_editor_open_rev != open_rev) {
+            g_menu_guard = 0;
+            if (new_dialog != 0)
+                dialog_session_close(new_dialog);
+            return 4;
         }
-        uVar10 = 4;
-      }
-      else {
-        _DAT_0028cc2c = CONCAT44(DAT_0028cc30,uVar21);
-        if (uVar21 != 0) {
-          _DAT_0028cbe8 = CONCAT44(iStack_4dc,local_4e0);
-          auVar4._8_4_ = iStack_4d8;
-          auVar4._0_8_ = _DAT_0028cbe8;
-          auVar4._12_4_ = uStack_4d4;
-          _DAT_0028cc00 = CONCAT44(uStack_4c4,local_4c8);
-          uRam000000000028cc10 = CONCAT44(uStack_4b4,uStack_4b8);
-          _DAT_0028cc08 = CONCAT44(uStack_4bc,local_4c0);
-          _DAT_0028cbf0 = auVar4._8_8_;
-          _DAT_0028cbf8 = local_4d0;
-          uRam000000000028cc20 = local_4a8;
-          _DAT_0028cc18 = local_4b0;
-        }
-        DAT_0028cc48 = param_2;
-        if (uVar7 == 0) {
-          _DAT_0028cc2c = (ulong)uVar21;
-        }
-        else if (bVar11) {
-          DAT_0028cc54 = CONCAT44(uStack_8c,local_90);
-          auVar5._8_4_ = uStack_88;
-          auVar5._0_8_ = DAT_0028cc54;
-          auVar5._12_4_ = uStack_84;
-          DAT_0028cc50 = 0;
-          DAT_0028cc3c = 0;
-          _DAT_0028cc2c = CONCAT44(4,uVar21);
-          DAT_0028cc5c = auVar5._8_8_;
-          DAT_0028469f = 0;
-          FUN_00194010(1,0x22d828);
-          if (*(int *)(&DAT_0019dab0 + uVar16 * 0x28) == 9) {
-            FUN_00183ac8(&DAT_0028dbe4,0x100,0x100,
-                         "RECTANGLE %d,%d TO %d,%d | MAP %dx%d | CONFIRM TO EDIT",local_90,uStack_8c
-                         ,uStack_88,uStack_84,uStack_4bc,uStack_4b8);
-          }
-          else {
-            pcVar19 = "UNSAVED EDITS ARE NOT SAVED";
-            if (*(int *)(&DAT_0019dab0 + uVar16 * 0x28) != 0x13) {
-              pcVar19 = "CHANGES THE CURRENT MAP; NO AUTO-SAVE";
+
+        g_editor_state_packed = (g_editor_state_packed & 0xffffffff00000000ull)
+                              | supported;
+        if (supported != 0)
+            g_editor_avail = avail;
+
+        g_editor_last_pump_ms = now_ms;
+
+        if (phase == EDITOR_PHASE_IDLE) {
+            g_editor_state_packed = (g_editor_state_packed
+                                     & 0xffffffff00000000ull) | supported;
+        } else if (progressed) {
+            g_editor_rect[0] = rect[0];
+            g_editor_rect[1] = rect[1];
+            g_editor_rect[2] = rect[2];
+            g_editor_rect[3] = rect[3];
+            g_editor_dialog = 0;
+            g_editor_slot_bitmap = 0;
+            g_editor_state_packed = (4ull << 32) | supported;
+            g_menu_flag_9f = 0;
+            editor_scroll_bump(1, &g_editor_scroll_rev);
+
+            if (k_editor_commands[slot].cmd == 9) {
+                menu_text_set(g_editor_banner, 0x100, 0x100,
+                              "RECTANGLE %d,%d TO %d,%d | MAP %dx%d | CONFIRM TO EDIT",
+                              rect[0], rect[1], rect[2], rect[3],
+                              avail.map_w, avail.map_h);
+            } else {
+                const char *warn = "UNSAVED EDITS ARE NOT SAVED";
+                if (k_editor_commands[slot].cmd != 0x13)
+                    warn = "CHANGES THE CURRENT MAP; NO AUTO-SAVE";
+                menu_text_set(g_editor_banner, 0x100, 0x100, "%s | MAP %dx%d | %s",
+                              k_editor_commands[slot].name,
+                              avail.map_w, avail.map_h, warn);
             }
-            FUN_00183ac8(&DAT_0028dbe4,0x100,0x100,"%s | MAP %dx%d | %s",
-                         (&PTR_s_OPEN_MAP_EDITOR_0019dac0)[uVar16 * 5],uStack_4bc,uStack_4b8,pcVar19
-                        );
-          }
+        } else if (close_input == 0) {
+            if (phase < 3) {
+                g_editor_state_packed = (2ull << 32) | supported;
+                if (new_dialog != 0)
+                    g_editor_dialog = new_dialog;
+            }
+        } else {
+            const char *msg = "EDITOR OR INPUT CHANGED - SELECT ACTION AGAIN";
+            if (result_code != 0)
+                msg = "APPLYING...";
+            if (result_code == 2)
+                msg = "CANCELLED";
+            g_editor_state_packed = (g_editor_state_packed
+                                     & 0xffffffff00000000ull) | supported;
+            g_editor_dialog = 0;
+            menu_text_set(g_editor_message, 0x80, 0x80, "%s", msg);
         }
-        else if (uStack_4fc == 0) {
-          if ((uVar7 < 3) && (_DAT_0028cc2c = CONCAT44(2,uVar21), iVar13 != 0)) {
-            DAT_0028cc50 = iVar13;
-          }
+
+        uint32_t cmd = k_editor_commands[slot].cmd;
+        if (execute && cmd < 0x14
+            && ((1u << (cmd & 0x1f)) & 0xa0801u) != 0) {
+            g_menu_screen_open = 0;
+            g_editor_state_packed &= 0xffffffff00000000ull;
         }
-        else {
-          pcVar19 = "EDITOR OR INPUT CHANGED - SELECT ACTION AGAIN";
-          if (uVar14 != 0) {
-            pcVar19 = "APPLYING...";
-          }
-          pcVar1 = "CANCELLED";
-          if (uVar14 != 2) {
-            pcVar1 = pcVar19;
-          }
-          _DAT_0028cc2c = (ulong)uVar21;
-          DAT_0028cc50 = 0;
-          FUN_00183ac8(&DAT_0028cc64,0x80,0x80,&DAT_001343dc,pcVar1);
-        }
-        if (((bVar6) && (*(uint *)(&DAT_0019dab0 + uVar16 * 0x28) < 0x14)) &&
-           ((1 << (ulong)(*(uint *)(&DAT_0019dab0 + uVar16 * 0x28) & 0x1f) & 0xa0801U) != 0)) {
-          DAT_0028469c = '\0';
-          _DAT_0028cc2c = _DAT_0028cc2c & 0xffffffff00000000;
-        }
-        DAT_002846a0 = DAT_002846a0 + 1;
-        DAT_00284688 = 0;
-        if ((uStack_4fc != 0) && (iVar9 != 0)) {
-          FUN_0014cc0c(iVar9);
-        }
-        if ((uStack_4fc != 0) && (iVar13 != 0)) {
-          FUN_0014cc0c(iVar13);
-        }
-        if (bVar6) {
-          uVar2 = *(uint *)(&DAT_0019dab0 + uVar16 * 0x28);
-          uVar14 = FUN_00191d58(uVar2,local_90,uStack_8c,uStack_88,uStack_84);
-          uVar16 = FUN_00193f80(1,&DAT_00284688);
-          if ((uVar16 & 1) == 0) {
-            if ((DAT_0028cc40 == lVar8) && (DAT_0028469d == 'e')) {
-              DAT_0028cc48 = 0;
-              if (uVar14 == 0) {
-                DAT_0028469c = '\x01';
-                FUN_00183ac8(&DAT_0028cc64,0x80,0x80,"ACTION COULD NOT BE APPLIED");
-              }
-              else {
-                if (uVar2 == 0x10) {
-                  pcVar19 = "REOPEN THE EDITOR TO APPLY PALETTE";
+
+        g_menu_revision++;
+        g_menu_guard = 0;
+
+        if (close_input && dialog != 0)
+            dialog_session_close(dialog);
+        if (close_input && new_dialog != 0)
+            dialog_session_close(new_dialog);
+
+        if (execute) {
+            uint32_t ok = (uint32_t)(editor_command_run(
+                cmd, rect[0], rect[1], rect[2], rect[3]) != 0);
+
+            if ((menu_guard_busy(1, &g_menu_guard) & 1) == 0) {
+                if (g_editor_open_rev == open_rev
+                    && g_menu_screen == EDITOR_SCREEN_CHAR) {
+                    g_editor_last_pump_ms = 0;
+                    if (ok == 0) {
+                        g_menu_screen_open = 1;
+                        menu_text_set(g_editor_message, 0x80, 0x80,
+                                      "ACTION COULD NOT BE APPLIED");
+                    } else {
+                        const char *msg;
+                        if (cmd == 0x10) {
+                            msg = "REOPEN THE EDITOR TO APPLY PALETTE";
+                        } else if (cmd == 0x12) {
+                            msg = "FILL CANCELLED; COMPLETED TILES KEPT";
+                        } else {
+                            msg = "FILL QUEUED; NO AUTO-SAVE";
+                            if ((cmd & 0xfffffffEu) != 8u && cmd != 10)
+                                msg = "APPLIED";
+                        }
+                        menu_text_set(g_editor_message, 0x80, 0x80, "%s", msg);
+                    }
+                    g_menu_revision++;
                 }
-                else if (uVar2 == 0x12) {
-                  pcVar19 = "FILL CANCELLED; COMPLETED TILES KEPT";
-                }
-                else {
-                  pcVar19 = "FILL QUEUED; NO AUTO-SAVE";
-                  if ((uVar2 & 0xfffffffe) != 8 && uVar2 != 10) {
-                    pcVar19 = "APPLIED";
-                  }
-                }
-                FUN_00183ac8(&DAT_0028cc64,0x80,0x80,&DAT_001343dc,pcVar19);
-              }
-              DAT_002846a0 = DAT_002846a0 + 1;
+                g_menu_guard = 0;
             }
-            DAT_00284688 = 0;
-          }
+            return ok != 0;
         }
-        uVar10 = uVar14 != 0;
-      }
+
+        return result_code != 0;
     }
-    else {
-      if (iVar13 != 0) {
-        FUN_0014cc0c(iVar13);
-      }
-      uVar10 = 3;
-    }
-  }
-  DAT_0028dce8._0_4_ = 0;
-LAB_00188e5c:
-  if (*(long *)(lVar3 + 0x28) == local_78) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar10);
-}
 
-
-/* ===== nexus_menu_editor_open @ 00194710 ===== */
-
-void nexus_menu_editor_open(void)
-
-{
-  (*(code *)PTR_nexus_menu_editor_open_001a3a90)();
-  return;
-}
-
-
-/* ===== nexus_menu_editor_action @ 00194720 ===== */
-
-void nexus_menu_editor_action(void)
-
-{
-  (*(code *)PTR_nexus_menu_editor_action_001a3a98)();
-  return;
-}
-
-
-/* ===== nexus_menu_editor_pump @ 00194770 ===== */
-
-void nexus_menu_editor_pump(void)
-
-{
-  (*(code *)PTR_nexus_menu_editor_pump_001a3ac0)();
-  return;
-}
-
-
-/* ===== nexus_menu_editor_scroll_revision @ 00194900 ===== */
-
-void nexus_menu_editor_scroll_revision(void)
-
-{
-  (*(code *)PTR_nexus_menu_editor_scroll_revision_001a3b88)();
-  return;
+    if (new_dialog != 0)
+        dialog_session_close(new_dialog);
+    return 3;
 }
