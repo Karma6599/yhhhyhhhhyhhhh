@@ -1,613 +1,453 @@
-/*
- * Spectate / BrawlTV — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: Spectate-as-BrawlTV + tag spectate + spectator movement mode (speedLocalMove).
- */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <math.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <time.h>
+#include <pthread.h>
 
-/* ===== FUN_0015d2d4 @ 0015d2d4 [libNexusEvasionRuntime69252.so] ===== */
+extern int *__errno(void);
+extern void log_event(const char *category, const char *event, const char *json);
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+extern uintptr_t g_game_base;
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern uintptr_t runtime_read_handle(void);
+extern uintptr_t battle_reader_open(void);
+extern long remote_write(uint32_t fd, const void *buf, long len, uintptr_t addr);
+extern int32_t g_game_fd;
+extern long *tls_cell_get(void *key);
+extern char g_tls_key_spectate_name[];
+extern char g_tls_key_spectate_camera[];
 
-void FUN_0015d2d4(void)
+extern pthread_once_t g_snapshot_plus_once;
+extern long (*snapshot_plus_active_fn)(void);
+extern void snapshot_plus_once_init(void);
+extern void *g_snapshot_keys_fn;
+extern int   g_snapshot_keys_ready;
 
+typedef int (*snapshot_keys_fn_t)(const char *const *keys, int32_t *triples,
+                                  int count, int64_t *epoch, int32_t *status);
+
+#define SNAPSHOT_TRIPLE_EFFECTIVE 1
+#define SNAPSHOT_TRIPLE_FLAGS     2
+#define SNAPSHOT_FLAG_ACTIVE      2
+
+extern uint64_t g_ctx_token;
+extern uint64_t g_ctx_self;
+extern uint64_t g_ctx_2;
+extern uint64_t g_ctx_5;
+extern uint64_t g_ctx_b;
+
+extern uint64_t g_plan_peer;
+extern uint64_t g_plan_base;
+extern uint64_t g_plan_last_ms;
+extern uint64_t g_plan_mode;
+extern uint64_t g_plan_zero;
+extern uint64_t g_plan_ok;
+extern uint64_t g_plan_kind;
+
+extern uint8_t g_spectate_active;
+extern uint8_t g_spectate_busy;
+extern uint8_t g_spectate_reject;
+extern uint8_t g_runtime_in_call;
+extern uint64_t g_spectate_state[12];
+extern uintptr_t g_spectate_session_addr;
+extern uintptr_t g_spectate_session_buf;
+extern uintptr_t g_camera_state;
+extern uintptr_t g_brawltv_obj;
+extern int32_t g_screen_w;
+extern int32_t g_screen_h;
+
+extern int32_t g_spectate_cfg_scale;
+extern int32_t g_spectate_cfg_off_a;
+extern int32_t g_spectate_cfg_off_b;
+extern int32_t g_spectate_cfg_off_c;
+extern int32_t g_spectate_mode;
+
+extern uint64_t (*g_spectate_name_orig)(void *obj);
+extern void (*g_spectate_mode_orig)(void *obj);
+
+extern int spectate_name_transform(uint64_t *state, uint64_t *record, void *out12);
+extern int spectate_camera_plan(uint64_t *state, float *a, float *b, float *out);
+extern int spectate_session_resolve(uint64_t *state, uint32_t handle,
+                                    void *buf, uint32_t size);
+
+#define SPECTATE_CALLER_CHECK_OFF 0xb3062cu
+#define SPECTATE_CAMERA_ORIG_OFF  0x671630u
+#define SPECTATE_BRAWLTV_ENTER_OFF 0x11a2830u
+#define SPECTATE_BATTLE_FLAG_OFF  0x1303f20u
+
+static const uint64_t k_spectate_clean_tag[2] = { 100, 0 };
+
+static uint64_t monotonic_ms(void)
 {
-  long lVar1;
-  int iVar2;
-  long local_50;
-  int local_44;
-  undefined1 auStack_40 [4];
-  int local_3c;
-  int local_38;
-  char *local_30;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  if (DAT_00220800 == '\x01') {
-    local_44 = -1;
-    local_30 = "speedLocalMoveEnabled";
-    if ((((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-         (iVar2 = (*DAT_00214930)(&local_30,auStack_40,1,&local_50,&local_44), iVar2 == 1)) &&
-        ((local_50 != 0 && (local_44 == 0)))) &&
-       ((local_38 == 2 && ((local_3c == 1 && (iVar2 = FUN_001550fc(), iVar2 != 0))))))
-    goto LAB_0015d3a0;
-  }
-  DAT_002207f8 = 0;
-  uRam00000000002207c0 = 0;
-  DAT_002207b8 = 0;
-  uRam00000000002207d0 = 0;
-  _DAT_002207c8 = 0;
-  uRam00000000002207e0 = 0;
-  _DAT_002207d8 = 0;
-  uRam00000000002207f0 = 0;
-  _DAT_002207e8 = 0;
-  uRam00000000002207b0 = 0;
-  DAT_002207a8 = 0;
-LAB_0015d3a0:
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
-/* ===== FUN_0016eca0 @ 0016eca0 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 FUN_0016eca0(long param_1)
-
+static int snapshot_single(const char *key, int32_t *triple,
+                           int64_t *epoch, int32_t *status)
 {
-  undefined4 uVar1;
-  long lVar2;
-  bool bVar3;
-  int iVar4;
-  undefined4 *puVar5;
-  int *piVar6;
-  undefined8 uVar7;
-  long lVar8;
-  ulong local_d0;
-  int local_c4;
-  undefined4 uStack_c0;
-  uint local_bc;
-  timespec local_b8;
-  ulong uStack_a8;
-  undefined4 local_a0;
-  char *local_9c;
-  uint local_94;
-  undefined8 local_90;
-  undefined8 uStack_88;
-  undefined8 local_80;
-  long local_78 [2];
-  char *local_68;
-  uint local_60;
-  long local_58;
-  
-  lVar2 = tpidr_el0;
-  local_58 = *(long *)(lVar2 + 0x28);
-  puVar5 = (undefined4 *)__errno();
-  uVar1 = *puVar5;
-  local_d0 = 0;
-  piVar6 = (int *)FUN_001bd828(&DAT_001cfd18);
-  if ((*piVar6 == 0) && (DAT_00220800 == '\x01')) {
-    local_c4 = -1;
-    local_68 = "speedLocalMoveEnabled";
-    if ((((int)DAT_00214938 == 1) &&
-        ((((DAT_00214930 != (code *)0x0 &&
-           (iVar4 = (*DAT_00214930)(&local_68,&local_b8,1,local_78,&local_c4), iVar4 == 1)) &&
-          (local_78[0] != 0)) && ((local_c4 == 0 && ((int)local_b8.tv_nsec == 2)))))) &&
-       ((local_b8.tv_sec._4_4_ == 1 && (uVar7 = FUN_001550fc(), (int)uVar7 != 0)))) {
-      uVar7 = FUN_001428fc(uVar7,param_1 + 0x10,&local_d0,8);
-      bVar3 = false;
-      if ((((int)uVar7 == 0) || (0xfffffffffffedfff < local_d0 - 0x10000)) ||
-         (((local_d0 & 7) != 0 || (local_d0 != DAT_0020f718)))) goto LAB_0016ef50;
-      iVar4 = FUN_001428fc(uVar7,local_d0 + 0x30,&local_68,0xc);
-      if (iVar4 != 0) {
-        iVar4 = clock_gettime(1,&local_b8);
-        if (iVar4 == 0) {
-          local_b8.tv_nsec = local_b8.tv_sec * 1000 + (ulong)local_b8.tv_nsec / 1000000;
-        }
-        else {
-          local_b8.tv_nsec = 0;
-        }
-        uStack_a8 = local_d0;
-        local_b8.tv_sec = (__time_t)DAT_0020f6f8;
-        local_a0 = DAT_0020f690;
-        local_80 = DAT_002285b0;
-        uStack_88 = _DAT_002285a8;
-        local_90 = DAT_002285a0;
-        local_9c = local_68;
-        local_94 = local_60;
-        if (((DAT_00228598 != DAT_0020f650) || ((ulong)local_b8.tv_nsec < DAT_0020f668)) ||
-           (0xfa < local_b8.tv_nsec - DAT_0020f668)) {
-          local_90 = 0;
-          uStack_88 = 0;
-          local_80 = 0;
-        }
-        iVar4 = FUN_0019f514(&DAT_002207a8,&local_b8,local_78);
-        if (iVar4 != 0) {
-          bVar3 = true;
-          *piVar6 = 1;
-          lVar8 = FUN_0014bef8(DAT_001cfb4c,local_78,0xc,local_d0 + 0x30);
-          if (lVar8 != 0xc) {
-            lVar8 = FUN_0014bef8(DAT_001cfb4c,&local_68,0xc,local_d0 + 0x30);
-            if (((lVar8 != 0xc) ||
-                (iVar4 = FUN_001428fc(0xc,local_d0 + 0x30,&local_c4,0xc), iVar4 == 0)) ||
-               ((char *)CONCAT44(uStack_c0,local_c4) != local_68 || local_bc != local_60)) {
-                    /* WARNING: Subroutine does not return */
-              abort();
-            }
-            bVar3 = false;
-            *piVar6 = 0;
-          }
-          goto LAB_0016ef50;
-        }
-      }
-    }
-  }
-  bVar3 = false;
-LAB_0016ef50:
-  *puVar5 = uVar1;
-  uVar7 = (*DAT_00228fd8)(param_1);
-  uVar1 = *puVar5;
-  if (bVar3) {
-    lVar8 = FUN_0014bef8(DAT_001cfb4c,&local_68,0xc,local_d0 + 0x30);
-    if (((lVar8 != 0xc) || (iVar4 = FUN_001428fc(0xc,local_d0 + 0x30,&local_b8,0xc), iVar4 == 0)) ||
-       ((char *)local_b8.tv_sec != local_68 || (local_b8.tv_nsec & 0xffffffffU) != (ulong)local_60))
-    {
-      FUN_001417c8("fatal","spectator_restore_unverified",0);
-                    /* WARNING: Subroutine does not return */
-      abort();
-    }
-    *piVar6 = 0;
-  }
-  *puVar5 = uVar1;
-  if (*(long *)(lVar2 + 0x28) == local_58) {
-    return uVar7;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    if (__atomic_load_n(&g_snapshot_keys_ready, __ATOMIC_ACQUIRE) != 1
+        || g_snapshot_keys_fn == NULL)
+        return 0;
+
+    pthread_once(&g_snapshot_plus_once, snapshot_plus_once_init);
+    if (snapshot_plus_active_fn == NULL || snapshot_plus_active_fn() != 1)
+        return 0;
+
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+    return query(&key, triple, 1, epoch, status) == 1;
 }
 
-/* ===== FUN_0016f024 @ 0016f024 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0016f024(long param_1)
-
+static int local_move_active(void)
 {
-  long lVar1;
-  undefined4 uVar2;
-  char cVar3;
-  bool bVar4;
-  long lVar5;
-  undefined1 auVar6 [16];
-  uint uVar7;
-  int iVar8;
-  undefined4 *puVar9;
-  long *plVar10;
-  long lVar11;
-  long lVar12;
-  long unaff_x30;
-  ushort uVar13;
-  undefined1 auVar14 [16];
-  undefined1 auVar15 [16];
-  undefined1 auVar16 [16];
-  long local_90;
-  int local_84;
-  int local_80;
-  int local_7c;
-  int local_78;
-  char *local_70;
-  long local_68;
-  
-  lVar5 = tpidr_el0;
-  local_68 = *(long *)(lVar5 + 0x28);
-  puVar9 = (undefined4 *)__errno();
-  uVar2 = *puVar9;
-  plVar10 = (long *)FUN_001bd828(&DAT_001cfd38);
-  lVar12 = *plVar10;
-  if (DAT_001e0978 + 0xb3062c == unaff_x30) {
-    if ((DAT_0020f700 == param_1) && (DAT_00220800 == '\x01')) {
-      local_84 = -1;
-      local_70 = "speedLocalMoveEnabled";
-      if (((((int)DAT_00214938 != 1) ||
-           (((DAT_00214930 == (code *)0x0 ||
-             (iVar8 = (*DAT_00214930)(&local_70,&local_80,1,&local_90,&local_84), iVar8 != 1)) ||
-            (local_90 == 0)))) || (((local_84 != 0 || (local_78 != 2)) || (local_7c != 1)))) ||
-         (iVar8 = FUN_001550fc(), iVar8 == 0)) goto LAB_0016f148;
-LAB_0016f284:
-      *plVar10 = param_1;
-      local_80 = 0;
-      if ((param_1 != 0) && (lVar11 = FUN_00139fcc(), lVar11 != 0)) {
-        do {
-          uVar7 = _DAT_001dff88;
-          cVar3 = '\x01';
-          bVar4 = (bool)ExclusiveMonitorPass(0x1dff88,0x10);
-          if (bVar4) {
-            _DAT_001dff88 = CONCAT31(DAT_001dff88_1,1);
-            cVar3 = ExclusiveMonitorsStatus();
-          }
-        } while (cVar3 != '\0');
-        if ((uVar7 & 1) == 0) {
-          auVar16._8_4_ = DAT_001cfae8;
-          auVar16._0_8_ = _DAT_001cfae0;
-          auVar6._8_8_ = _UNK_00112b38;
-          auVar6._0_8_ = _DAT_00112b30;
-          auVar16._12_4_ = DAT_001dffa0;
-          _DAT_001dff88 = 0;
-          auVar15 = NEON_cmeq(auVar16,auVar6,4);
-          uVar13 = NEON_umaxv(CONCAT26(CONCAT11(~auVar15[0xd],~auVar15[0xc]),
-                                       CONCAT24(CONCAT11(~auVar15[9],~auVar15[8]),
-                                                CONCAT22(CONCAT11(~auVar15[5],~auVar15[4]),
-                                                         CONCAT11(~auVar15[1],~auVar15[0])))),2);
-          if ((((uVar13 & 1) == 0) && (DAT_001cfaec == 0)) && (bVar4 = false, DAT_001cfaf0 == 0))
-          goto LAB_0016f1d8;
-          lVar1 = param_1 + 0x92c;
-          iVar8 = FUN_001428fc(lVar11,lVar1,&local_80,4);
-          if (iVar8 != 0) {
-            do {
-              uVar7 = _DAT_001dff88;
-              cVar3 = '\x01';
-              bVar4 = (bool)ExclusiveMonitorPass(0x1dff88,0x10);
-              if (bVar4) {
-                _DAT_001dff88 = CONCAT31(DAT_001dff88_1,1);
-                cVar3 = ExclusiveMonitorsStatus();
-              }
-            } while (cVar3 != '\0');
-            if ((uVar7 & 1) == 0) {
-              _DAT_001dff88 = 0;
-              iVar8 = (uint)(DAT_001dffa0 == 3) << 2;
-            }
-            else {
-              iVar8 = 0;
-            }
-            local_70 = (char *)CONCAT44(local_70._4_4_,iVar8);
-            lVar11 = FUN_0014bef8(DAT_001cfb4c,&local_70,4,lVar1);
-            if (lVar11 == 4) {
-              bVar4 = true;
-              goto LAB_0016f1d8;
-            }
-            lVar11 = FUN_0014bef8(DAT_001cfb4c,&local_80,4,lVar1);
-            if (lVar11 != 4) {
-                    /* WARNING: Subroutine does not return */
-              abort();
-            }
-          }
-        }
-      }
-      bVar4 = false;
-      goto LAB_0016f1d8;
-    }
-LAB_0016f148:
-    lVar11 = FUN_00139fcc();
-    if ((lVar11 != 0) && (DAT_001e0038 == param_1)) {
-      do {
-        uVar7 = _DAT_001dff88;
-        cVar3 = '\x01';
-        bVar4 = (bool)ExclusiveMonitorPass(0x1dff88,0x10);
-        if (bVar4) {
-          _DAT_001dff88 = CONCAT31(DAT_001dff88_1,1);
-          cVar3 = ExclusiveMonitorsStatus();
-        }
-      } while (cVar3 != '\0');
-      if ((uVar7 & 1) == 0) {
-        auVar14._8_4_ = DAT_001cfae8;
-        auVar14._0_8_ = _DAT_001cfae0;
-        auVar15._8_8_ = _UNK_00112b38;
-        auVar15._0_8_ = _DAT_00112b30;
-        auVar14._12_4_ = DAT_001dffa0;
-        _DAT_001dff88 = 0;
-        auVar15 = NEON_cmeq(auVar14,auVar15,4);
-        uVar13 = NEON_umaxv(CONCAT26(CONCAT11(~auVar15[0xd],~auVar15[0xc]),
-                                     CONCAT24(CONCAT11(~auVar15[9],~auVar15[8]),
-                                              CONCAT22(CONCAT11(~auVar15[5],~auVar15[4]),
-                                                       CONCAT11(~auVar15[1],~auVar15[0])))),2);
-        if ((((uVar13 & 1) != 0) || (DAT_001cfaec != 0)) || (DAT_001cfaf0 != 0)) goto LAB_0016f284;
-      }
-    }
-  }
-  bVar4 = false;
-  *plVar10 = 0;
-  local_80 = 0;
-LAB_0016f1d8:
-  *puVar9 = uVar2;
-  (*DAT_00228fe0)(param_1);
-  uVar2 = *puVar9;
-  if (bVar4) {
-    local_70 = (char *)CONCAT44(local_70._4_4_,0xffffffff);
-    lVar11 = FUN_0014bef8(DAT_001cfb4c,&local_80,4,param_1 + 0x92c);
-    if (((lVar11 != 4) || (iVar8 = FUN_001428fc(4,param_1 + 0x92c,&local_70,4), iVar8 == 0)) ||
-       ((int)local_70 != local_80)) {
-                    /* WARNING: Subroutine does not return */
-      abort();
-    }
-  }
-  *puVar9 = uVar2;
-  *plVar10 = lVar12;
-  if (*(long *)(lVar5 + 0x28) != local_68) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-  }
-  return;
+    int32_t triple[3];
+    int32_t status = -1;
+    int64_t epoch = 0;
+
+    if (!snapshot_single("speedLocalMoveEnabled", triple, &epoch, &status))
+        return 0;
+    return epoch != 0 && status == 0
+        && triple[SNAPSHOT_TRIPLE_FLAGS] == SNAPSHOT_FLAG_ACTIVE
+        && triple[SNAPSHOT_TRIPLE_EFFECTIVE] == 1;
 }
 
-/* ===== FUN_0016f3b0 @ 0016f3b0 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0016f3b0(undefined8 param_1,float *param_2,float *param_3,undefined8 param_4)
-
+static int spectate_config_dirty(void)
 {
-  undefined4 uVar1;
-  char cVar2;
-  bool bVar3;
-  long lVar4;
-  uint uVar5;
-  int iVar6;
-  int iVar7;
-  undefined4 *puVar8;
-  long *plVar9;
-  long lVar10;
-  uint uVar11;
-  ushort uVar12;
-  undefined1 auVar13 [16];
-  float fVar14;
-  float fVar15;
-  float fVar16;
-  int local_bc;
-  int local_b8;
-  undefined4 uStack_b4;
-  int local_ac;
-  undefined8 local_a8;
-  float local_a0;
-  float local_9c;
-  float fStack_98;
-  float local_94;
-  float local_90;
-  int iStack_8c;
-  int local_88;
-  float local_84 [3];
-  long local_78;
-  
-  lVar4 = tpidr_el0;
-  local_78 = *(long *)(lVar4 + 0x28);
-  puVar8 = (undefined4 *)__errno();
-  uVar1 = *puVar8;
-  plVar9 = (long *)FUN_001bd828(&DAT_001cfd38);
-  if ((*plVar9 != 0) && (DAT_00220800 == '\x01')) {
-    local_ac = -1;
-    local_a8 = "speedLocalMoveEnabled";
-    if ((((int)DAT_00214938 == 1) &&
-        (((((DAT_00214930 != (code *)0x0 &&
-            (iVar6 = (*DAT_00214930)(&local_a8,&local_90,1,&local_b8,&local_ac), iVar6 == 1)) &&
-           (CONCAT44(uStack_b4,local_b8) != 0)) && ((local_ac == 0 && (local_88 == 2)))) &&
-         (iStack_8c == 1)))) &&
-       ((((iVar6 = FUN_001550fc(), iVar6 != 0 && (DAT_002207a8 == DAT_0020f6f8)) &&
-         (DAT_002207b8 == DAT_0020f718)) &&
-        (((float *)(*plVar9 + 0x8e8) == param_2 && ((float *)(*plVar9 + 0x8f4) == param_3)))))) {
-      iVar6 = FUN_0019f810(&DAT_002207a8,param_2,param_3,&local_90);
-      if (iVar6 != 0) {
-        param_3 = local_84;
-        param_2 = &local_90;
-      }
+    struct {
+        uint64_t scale_pair;
+        uint32_t off_a;
+        uint32_t mode;
+    } cfg;
+
+    cfg.scale_pair = (uint64_t)(uint32_t)g_spectate_cfg_scale
+                   | ((uint64_t)(uint32_t)g_spectate_cfg_off_a << 32);
+    cfg.off_a = (uint32_t)g_spectate_cfg_off_b;
+    cfg.mode = (uint32_t)g_spectate_mode;
+
+    if (memcmp(&cfg, k_spectate_clean_tag, sizeof cfg) != 0)
+        return 1;
+    if (g_spectate_cfg_off_b != 0 || g_spectate_cfg_off_c != 0)
+        return 1;
+    return 0;
+}
+
+void spectate_state_reset(void)
+{
+    if (g_spectate_active == 1 && local_move_active()
+        && runtime_read_handle() != 0)
+        return;
+
+    memset(g_spectate_state, 0, sizeof g_spectate_state);
+}
+
+uint64_t spectate_name_hook(void *obj)
+{
+    int *errno_ptr = __errno();
+    int saved_errno = *errno_ptr;
+    long *tls = tls_cell_get(g_tls_key_spectate_name);
+    int patched = 0;
+    uint64_t target = 0;
+    uint8_t name_orig[12];
+    uint8_t name_new[12];
+    uint64_t result;
+
+    if (*tls != 0 || g_spectate_active != 1 || !local_move_active())
+        goto out;
+
+    uintptr_t handle = runtime_read_handle();
+    if (handle == 0)
+        goto out;
+
+    if (game_read(handle, (uintptr_t)obj + 0x10, &target, 8) == 0)
+        goto out;
+    if (target - 0x10000 > 0xfffffffffffedfffull || (target & 7) != 0
+        || target != g_ctx_self)
+        goto out;
+
+    if (game_read(handle, target + 0x30, name_orig, 12) == 0)
+        goto out;
+
+    uint64_t now_ms = monotonic_ms();
+
+    uint64_t record[8];
+    record[0] = g_ctx_token;
+    record[1] = now_ms;
+    record[2] = g_ctx_2;
+    record[3] = 0;
+    record[4] = 0;
+    record[5] = 0;
+    memcpy(&record[6], name_orig, 12);
+
+    if (g_plan_peer != g_plan_base || now_ms < g_plan_last_ms
+        || now_ms - g_plan_last_ms > 0xfa) {
+        record[3] = 0;
+        record[4] = 0;
+        record[5] = 0;
     }
-  }
-  if ((*plVar9 != 0) && (lVar10 = FUN_00139fcc(), lVar10 != 0)) {
-    local_b8 = 0;
-    local_ac = 0;
-    if ((DAT_001e0060 == 0) ||
-       (lVar10 = FUN_001428fc(lVar10,DAT_001e0060 + 0xcc,&local_b8,4), (int)lVar10 == 0)) {
-      local_bc = 0;
+
+    if (spectate_name_transform(g_spectate_state, record, name_new) != 0) {
+        patched = 1;
+        *tls = 1;
+
+        if (remote_write(g_game_fd, name_new, 12, target + 0x30) != 12) {
+            if (remote_write(g_game_fd, name_orig, 12, target + 0x30) != 12)
+                abort();
+            uint8_t verify[12];
+            if (game_read(12, target + 0x30, verify, 12) == 0
+                || memcmp(verify, name_orig, 12) != 0)
+                abort();
+            patched = 0;
+            *tls = 0;
+        }
     }
-    else {
-      lVar10 = FUN_001428fc(lVar10,DAT_001e0060 + 0xd0,&local_ac,4);
-      local_bc = local_ac;
+
+out:
+    *errno_ptr = saved_errno;
+    result = g_spectate_name_orig(obj);
+    saved_errno = *errno_ptr;
+
+    if (patched) {
+        if (remote_write(g_game_fd, name_orig, 12, target + 0x30) != 12) {
+            uint8_t verify[12];
+            if (game_read(12, target + 0x30, verify, 12) == 0
+                || memcmp(verify, name_orig, 12) != 0) {
+                log_event("fatal", "spectator_restore_unverified", NULL);
+                abort();
+            }
+        }
+        *tls = 0;
     }
-    iVar6 = local_b8;
-    local_a8 = (char *)((ulong)local_a8 & 0xffffffffffffff00);
-    fVar15 = (float)DAT_001e0084 / 300.0;
-    fVar16 = (float)DAT_001e0088 / 300.0;
-    iVar7 = FUN_001428fc(lVar10,DAT_001e0978 + 0x1303f20,&local_a8,1);
-    uVar11 = (uint)(byte)local_a8;
-    if (1 < uVar11 || iVar7 == 0) {
-      uVar11 = 0xffffffff;
-    }
-    do {
-      uVar5 = _DAT_001dff88;
-      cVar2 = '\x01';
-      bVar3 = (bool)ExclusiveMonitorPass(0x1dff88,0x10);
-      if (bVar3) {
-        _DAT_001dff88 = CONCAT31(DAT_001dff88_1,1);
-        cVar2 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar2 != '\0');
-    if ((uVar5 & 1) == 0) {
-      auVar13._8_4_ = DAT_001cfae8;
-      auVar13._0_8_ = _DAT_001cfae0;
-      _DAT_001dff88 = 0;
-      auVar13._12_4_ = DAT_001dffa0;
-      auVar13 = NEON_cmeq(auVar13,_DAT_00112b30,4);
-      uVar12 = NEON_umaxv(CONCAT26(CONCAT11(~auVar13[0xd],~auVar13[0xc]),
-                                   CONCAT24(CONCAT11(~auVar13[9],~auVar13[8]),
-                                            CONCAT22(CONCAT11(~auVar13[5],~auVar13[4]),
-                                                     CONCAT11(~auVar13[1],~auVar13[0])))),2);
-      if ((((uVar12 & 1) != 0) || (DAT_001cfaec != 0)) || (DAT_001cfaf0 != 0)) {
-        fVar14 = ABS(*param_2);
-        if ((fVar14 != INFINITY) && (!NAN(fVar14))) {
-          fVar14 = ABS(*param_3);
-          if ((fVar14 != INFINITY) && (!NAN(fVar14))) {
-            fVar14 = ABS(param_2[1]);
-            if ((fVar14 != INFINITY) && (!NAN(fVar14))) {
-              fVar14 = ABS(param_3[1]);
-              if ((fVar14 != INFINITY) && (!NAN(fVar14))) {
-                fVar14 = ABS(param_2[2]);
-                if ((((fVar14 != INFINITY) && (!NAN(fVar14))) && (ABS(param_3[2]) != INFINITY)) &&
-                   (!NAN(ABS(param_3[2])))) {
-                  local_a8 = *(char **)param_2;
-                  local_9c = (float)*(undefined8 *)param_3;
-                  fStack_98 = (float)((ulong)*(undefined8 *)param_3 >> 0x20);
-                  local_a0 = param_2[2];
-                  fVar14 = (float)(int)_DAT_001cfae0 / 100.0;
-                  local_94 = param_3[2];
-                  if (DAT_001dffa0 == 1) {
-                    if (((ABS(fVar15) == INFINITY) || (NAN(ABS(fVar15)))) ||
-                       ((ABS(fVar16) == INFINITY || (NAN(ABS(fVar16)))))) goto LAB_0016f648;
-                    fStack_98 = fVar16 * -300.0;
-                    local_a8._4_4_ = (float)NEON_fmadd(fVar16,0xc3960000,param_2[1] - param_3[1]);
-                    local_a8._0_4_ = (float)NEON_fmadd(fVar15,0x43960000,*param_2 - *param_3);
-                    fVar14 = fVar14 * 4000.0;
-                    local_9c = fVar15 * 300.0;
-                    local_94 = 300.0;
-                  }
-                  else if (DAT_001dffa0 == 2) {
-                    if (((iVar6 - 0x7531U < 0xffff8ad0) || (local_bc - 0x7531U < 0xffff8ad0)) ||
-                       (1 < uVar11)) goto LAB_0016f648;
-                    fVar16 = (float)local_bc;
-                    fVar15 = -0.58779;
-                    if (uVar11 != 0) {
-                      fVar15 = 0.58779;
-                    }
-                    fStack_98 = fVar16 * -0.5;
-                    local_9c = (float)iVar6 * 0.5;
-                    fVar14 = fVar16 * 4.0451 * fVar14;
-                    local_a8._4_4_ = (float)NEON_fmadd(fVar16,0xbf000000,fVar16 * 5.0 * fVar15);
-                    local_94 = 0.0;
-                    local_a8._0_4_ = local_9c;
-                  }
-                  else {
-                    local_a8._4_4_ = (float)((ulong)local_a8 >> 0x20);
-                    fVar14 = fVar14 * param_2[2];
-                  }
-                  fVar16 = (float)DAT_001cfae8;
-                  param_2 = (float *)&local_a8;
-                  fVar15 = (float)DAT_001cfaec;
-                  if (DAT_001dffa0 != 1) {
-                    fVar15 = 0.0;
-                  }
-                  param_3 = &local_9c;
-                  local_a8._0_4_ = (float)local_a8 + fVar16;
-                  if (DAT_001dffa0 != 1) {
-                    fVar16 = 0.0;
-                  }
-                  local_a0 = fVar14 + (float)(int)((ulong)_DAT_001cfae0 >> 0x20);
-                  local_9c = fVar16 + local_9c;
-                  local_a8 = (char *)CONCAT44(local_a8._4_4_ + (float)DAT_001cfaec,(float)local_a8);
-                  fStack_98 = fVar15 + fStack_98;
-                  local_94 = (float)DAT_001cfaf0 + local_94;
+
+    *errno_ptr = saved_errno;
+    return result;
+}
+
+void spectate_camera_mode_hook(void *obj)
+{
+    int *errno_ptr = __errno();
+    int saved_errno = *errno_ptr;
+    long *tls = tls_cell_get(g_tls_key_spectate_camera);
+    long tls_prev = *tls;
+    int patched = 0;
+    int32_t mode_orig = 0;
+
+    if ((g_game_base + SPECTATE_CALLER_CHECK_OFF) == (uintptr_t)__builtin_return_address(0)
+        && g_ctx_5 == (uint64_t)(uintptr_t)obj
+        && g_spectate_active == 1
+        && local_move_active()
+        && runtime_read_handle() != 0) {
+
+        *tls = (long)(uintptr_t)obj;
+        uintptr_t handle = battle_reader_open();
+
+        if (handle != 0 && spectate_config_dirty()) {
+            if (game_read(handle, (uintptr_t)obj + 0x92c, &mode_orig, 4) != 0) {
+                int32_t mode_new = (g_spectate_mode == 3) ? 4 : 0;
+                if (remote_write(g_game_fd, &mode_new, 4,
+                                 (uintptr_t)obj + 0x92c) == 4) {
+                    patched = 1;
+                } else {
+                    if (remote_write(g_game_fd, &mode_orig, 4,
+                                     (uintptr_t)obj + 0x92c) != 4)
+                        abort();
                 }
-              }
             }
-          }
+        } else {
+            *tls = 0;
         }
-      }
     }
-  }
-LAB_0016f648:
-  *puVar8 = uVar1;
-  (*(code *)(DAT_001e0978 + 0x671630))(param_1,param_2,param_3,param_4);
-  if (*(long *)(lVar4 + 0x28) != local_78) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-  }
-  return;
+
+    *errno_ptr = saved_errno;
+    g_spectate_mode_orig(obj);
+    saved_errno = *errno_ptr;
+
+    if (patched) {
+        if (remote_write(g_game_fd, &mode_orig, 4, (uintptr_t)obj + 0x92c) != 4) {
+            int32_t verify = 0;
+            if (game_read(4, (uintptr_t)obj + 0x92c, &verify, 4) == 0
+                || verify != mode_orig)
+                abort();
+        }
+    }
+
+    *errno_ptr = saved_errno;
+    *tls = tls_prev;
 }
 
-/* ===== FUN_0017f590 @ 0017f590 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0017f590(long *param_1)
-
+static int vec3_finite(const float *v)
 {
-  long lVar1;
-  int iVar2;
-  undefined8 uVar3;
-  long local_258;
-  int local_24c;
-  char *local_248;
-  uint local_240;
-  int iStack_23c;
-  int local_238;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  if ((DAT_0020d158 == 0) && (DAT_00220800 == '\x01')) {
-    local_24c = -1;
-    local_248 = "speedLocalMoveEnabled";
-    if ((((int)DAT_00214938 == 1) &&
-        (((DAT_00214930 != (code *)0x0 &&
-          (iVar2 = (*DAT_00214930)(&local_248,&local_240,1,&local_258,&local_24c), iVar2 == 1)) &&
-         (local_258 != 0)))) && (((local_24c == 0 && (local_238 == 2)) && (iStack_23c == 1)))) {
-      uVar3 = FUN_001550fc();
-      if ((int)uVar3 == 0) goto LAB_0017f778;
-      if (((DAT_00228908 != 0) &&
-          (uVar3 = FUN_001428fc(uVar3,DAT_00228908,&local_248,4), (int)uVar3 != 0)) &&
-         (iVar2 = FUN_001428fc(uVar3,DAT_00228910,&local_240,0x208), iVar2 != 0)) {
-        uVar3 = FUN_00199b4c(&DAT_00228908,(ulong)local_248 & 0xffffffff,&local_240,0x208);
-        if (((int)uVar3 == 0) ||
-           (uVar3 = FUN_001428fc(uVar3,DAT_0020f708 + 0x58,&local_240,8), (int)uVar3 == 0))
-        goto LAB_0017f778;
-        uVar3 = 0;
-        if ((CONCAT44(iStack_23c,local_240) + 0x2000U < 0x12000) || ((local_240 & 7) != 0))
-        goto LAB_0017f778;
-        if (CONCAT44(iStack_23c,local_240) == *param_1) {
-          iVar2 = FUN_001428fc(0,param_1[1] + 8,&local_248,4);
-          uVar3 = 0;
-          if ((iVar2 == 0) || ((int)local_248 != 2)) goto LAB_0017f778;
-          if (DAT_00228488 == 4) {
-            if (DAT_002148d8 != 0) goto LAB_0017f774;
-          }
-          else {
-            uVar3 = 0;
-            if ((((DAT_00228480 == 2) || (DAT_00228534 != 0)) || (DAT_0022856c != 0)) ||
-               (DAT_002148d8 != 0)) goto LAB_0017f778;
-          }
-          if (DAT_00214914 == 0) {
-            (*(code *)(DAT_001e0978 + 0x11a2830))(param_1[1]);
-            uVar3 = 1;
-            goto LAB_0017f778;
-          }
-        }
-      }
+    for (int i = 0; i < 3; i++) {
+        float a = v[i] < 0.0f ? -v[i] : v[i];
+        if (!isfinite(a))
+            return 0;
     }
-  }
-LAB_0017f774:
-  uVar3 = 0;
-LAB_0017f778:
-  if (*(long *)(lVar1 + 0x28) != local_38) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(uVar3);
-  }
-  return;
+    return 1;
 }
 
+void spectate_camera_transform_hook(void *obj, float *vec_a, float *vec_b, uint64_t arg4)
+{
+    int *errno_ptr = __errno();
+    int saved_errno = *errno_ptr;
+    long *tls = tls_cell_get(g_tls_key_spectate_camera);
+
+    if (*tls != 0 && g_spectate_active == 1 && local_move_active()
+        && runtime_read_handle() != 0
+        && g_spectate_state[0] == g_ctx_token
+        && g_spectate_state[2] == g_ctx_self
+        && (float *)(*tls + 0x8e8) == vec_a
+        && (float *)(*tls + 0x8f4) == vec_b) {
+
+        float plan_out[6];
+        if (spectate_camera_plan(g_spectate_state, vec_a, vec_b, plan_out) != 0) {
+            vec_a = plan_out + 3;
+            vec_b = plan_out;
+        }
+    }
+
+    if (*tls != 0) {
+        uintptr_t handle = battle_reader_open();
+        if (handle != 0) {
+            int32_t cam_w = 0, cam_h = 0;
+            if (g_camera_state == 0
+                || game_read(handle, g_camera_state + 0xcc, &cam_w, 4) == 0) {
+                cam_w = 0;
+                cam_h = 0;
+            } else {
+                if (game_read(handle, g_camera_state + 0xd0, &cam_h, 4) == 0)
+                    cam_h = 0;
+            }
+
+            uint8_t battle_flag = 0;
+            uint32_t battle = 0xffffffff;
+            if (game_read(handle, g_game_base + SPECTATE_BATTLE_FLAG_OFF,
+                          &battle_flag, 1) != 0)
+                battle = (battle_flag <= 1) ? battle_flag : 0xffffffffu;
+
+            if (spectate_config_dirty() && vec3_finite(vec_a) && vec3_finite(vec_b)) {
+                float a_x = vec_a[0], a_y = vec_a[1], a_z = vec_a[2];
+                float b_x = vec_b[0], b_y = vec_b[1], b_z = vec_b[2];
+                float scale = (float)g_spectate_cfg_scale / 100.0f;
+                float out_a0 = a_x, out_a1 = a_y, out_a2;
+                float out_b0 = b_x, out_b1 = b_y, out_b2 = b_z;
+
+                float w = (float)g_screen_w / 300.0f;
+                float h = (float)g_screen_h / 300.0f;
+
+                if (g_spectate_mode == 1) {
+                    if (!isfinite(w) || !isfinite(h))
+                        goto call_orig;
+
+                    out_b1 = h * -300.0f;
+                    out_a1 = h * -300.0f + (a_y - b_y);
+                    out_a0 = w * 300.0f + (a_x - b_x);
+                    scale = scale * 4000.0f;
+                    out_b0 = w * 300.0f;
+                    out_b2 = 300.0f;
+                    out_a2 = a_z;
+                } else if (g_spectate_mode == 2) {
+                    if (!((uint32_t)(cam_w - 0x7531) < 0xffff8ad0u
+                          && (uint32_t)(cam_h - 0x7531) < 0xffff8ad0u
+                          && battle <= 1))
+                        goto call_orig;
+
+                    float hh = (float)cam_h;
+                    float sn = (battle != 0) ? 0.58779f : -0.58779f;
+                    out_b1 = hh * -0.5f;
+                    out_b0 = (float)cam_w * 0.5f;
+                    scale = hh * 4.0451f * scale;
+                    out_a1 = hh * -0.5f + hh * 5.0f * sn;
+                    out_b2 = 0.0f;
+                    out_a0 = out_b0;
+                    out_a2 = a_z;
+                } else {
+                    out_a1 = a_y;
+                    scale = scale * a_z;
+                    out_a2 = a_z;
+                }
+
+                float off_a = (float)g_spectate_cfg_off_a;
+                float off_b = (float)g_spectate_cfg_off_b;
+                float off_c = (float)g_spectate_cfg_off_c;
+
+                out_a0 += (g_spectate_mode == 1) ? off_a : 0.0f;
+                out_a2 = scale + (float)g_spectate_cfg_off_a;
+                out_b0 += (g_spectate_mode == 1) ? off_b : 0.0f;
+                out_a1 += off_b;
+                out_b1 += (g_spectate_mode == 1) ? off_b : 0.0f;
+                out_b2 += off_c;
+
+                static float s_vec_a[3], s_vec_b[3];
+                s_vec_a[0] = out_a0;
+                s_vec_a[1] = out_a1;
+                s_vec_a[2] = out_a2;
+                s_vec_b[0] = out_b0;
+                s_vec_b[1] = out_b1;
+                s_vec_b[2] = out_b2;
+                vec_a = s_vec_a;
+                vec_b = s_vec_b;
+            }
+        }
+    }
+
+call_orig:
+    *errno_ptr = saved_errno;
+    ((void (*)(void *, float *, float *, uint64_t))
+     (g_game_base + SPECTATE_CAMERA_ORIG_OFF))(obj, vec_a, vec_b, arg4);
+}
+
+int spectate_brawltv_enter(const uint64_t *rec)
+{
+    if (g_spectate_busy != 0 || g_spectate_active != 1 || !local_move_active())
+        return 0;
+
+    uintptr_t handle = runtime_read_handle();
+    if (handle == 0)
+        return 0;
+
+    uint32_t session = 0;
+    if (game_read(handle, g_spectate_session_addr, &session, 4) == 0)
+        return 0;
+
+    uint8_t session_buf[0x208];
+    if (game_read(handle, g_spectate_session_buf, session_buf, 0x208) == 0)
+        return 0;
+
+    uintptr_t resolved = (uintptr_t)spectate_session_resolve(
+        (uint64_t *)&g_spectate_session_addr, session, session_buf, 0x208);
+    if (resolved == 0)
+        return 0;
+
+    uint64_t position_handle = 0;
+    if (game_read(resolved, g_ctx_b + 0x58, &position_handle, 8) == 0)
+        return 0;
+    if (position_handle + 0x2000 >= 0x12000 || (position_handle & 7) != 0)
+        return 0;
+
+    if (position_handle != rec[0])
+        return 0;
+
+    int32_t mode = 0;
+    if (game_read(0, rec[1] + 8, &mode, 4) == 0 || mode != 2)
+        return 0;
+
+    if (g_plan_kind == 4) {
+        if (g_spectate_reject != 0)
+            return 0;
+    } else {
+        if (g_plan_mode == 2 || g_plan_zero != 0 || g_plan_ok != 0
+            || g_spectate_reject != 0)
+            return 0;
+    }
+
+    if (g_runtime_in_call == 0) {
+        ((void (*)(uint64_t))(g_game_base + SPECTATE_BRAWLTV_ENTER_OFF))(rec[1]);
+        return 1;
+    }
+    return 0;
+}
