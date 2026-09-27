@@ -1,0 +1,828 @@
+[
+ {
+  "slot": 0,
+  "name": "isSpinEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 1,
+  "name": "followEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 2,
+  "name": "followModeTeam",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 3,
+  "name": "pinEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 4,
+  "name": "sprayEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 5,
+  "name": "antiAfkEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 6,
+  "name": "speedExploitEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 7,
+  "name": "speedLocalMoveEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 8,
+  "name": "flyEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 9,
+  "name": "kitNaniModEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 10,
+  "name": "coltModEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 11,
+  "name": "boltModEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 12,
+  "name": "boltAutoAttackEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 13,
+  "name": "boltWallAvoidEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 14,
+  "name": "boltPredictionEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 15,
+  "name": "boltSafeExitEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 16,
+  "name": null,
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 17,
+  "name": "isXrayEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 18,
+  "name": "xrayShowTargetName",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 19,
+  "name": "aopAimEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 20,
+  "name": "aopPredictEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 21,
+  "name": "espEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 22,
+  "name": "characterOutlineEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 23,
+  "name": "attackRangeIndicator",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 24,
+  "name": "hitboxRenderer",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 25,
+  "name": "enemyTracer",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 26,
+  "name": "trophiesAboveHead",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 27,
+  "name": "serverIPEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 28,
+  "name": "killauraEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 29,
+  "name": "killauraMainAttack",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 30,
+  "name": "killauraGadget",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 31,
+  "name": "killauraSuper",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 32,
+  "name": "killauraNoWall",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 33,
+  "name": "killauraNoBall",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 34,
+  "name": "autododgeEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 35,
+  "name": "combatDodgeRequireHold",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 36,
+  "name": "autofarmEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 37,
+  "name": null,
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 38,
+  "name": "autofarmAttackEnemies",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 39,
+  "name": null,
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 40,
+  "name": null,
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 41,
+  "name": "ballAssistEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 42,
+  "name": "holdToShootEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 43,
+  "name": "dynaJumpEnabled",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 44,
+  "name": "holdToShootAim",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 45,
+  "name": "holdToShootRangeCheck",
+  "f08": 0,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 46,
+  "name": "spinSpeed",
+  "f08": 1,
+  "f10": 62832,
+  "f14": 0
+ },
+ {
+  "slot": 47,
+  "name": "spinRadius",
+  "f08": 1,
+  "f10": 300,
+  "f14": 0
+ },
+ {
+  "slot": 48,
+  "name": "followDistance",
+  "f08": 1,
+  "f10": 5000,
+  "f14": 0
+ },
+ {
+  "slot": 49,
+  "name": "pinIntervalMs",
+  "f08": 1,
+  "f10": 5000,
+  "f14": 0
+ },
+ {
+  "slot": 50,
+  "name": "sprayIntervalMs",
+  "f08": 1,
+  "f10": 5000,
+  "f14": 0
+ },
+ {
+  "slot": 51,
+  "name": "xrayTargetMode",
+  "f08": 1,
+  "f10": 2,
+  "f14": 0
+ },
+ {
+  "slot": 52,
+  "name": "aopAimTargetMode",
+  "f08": 1,
+  "f10": 2,
+  "f14": 0
+ },
+ {
+  "slot": 53,
+  "name": "aopPredictVersion",
+  "f08": 1,
+  "f10": 2,
+  "f14": 0
+ },
+ {
+  "slot": 54,
+  "name": "aopProjectileSpeed",
+  "f08": 1,
+  "f10": 9000,
+  "f14": 0
+ },
+ {
+  "slot": 55,
+  "name": "aopLeadScale",
+  "f08": 1,
+  "f10": 200,
+  "f14": 0
+ },
+ {
+  "slot": 56,
+  "name": "aopMaxRange",
+  "f08": 1,
+  "f10": 12000,
+  "f14": 0
+ },
+ {
+  "slot": 57,
+  "name": "aopReactionMs",
+  "f08": 1,
+  "f10": 500,
+  "f14": 0
+ },
+ {
+  "slot": 58,
+  "name": "aopTargetMode",
+  "f08": 1,
+  "f10": 2,
+  "f14": 0
+ },
+ {
+  "slot": 59,
+  "name": "combatAuraRange",
+  "f08": 1,
+  "f10": 12000,
+  "f14": 0
+ },
+ {
+  "slot": 60,
+  "name": "combatDodgeRange",
+  "f08": 1,
+  "f10": 3000,
+  "f14": 0
+ },
+ {
+  "slot": 61,
+  "name": "combatFireInterval",
+  "f08": 1,
+  "f10": 2000,
+  "f14": 0
+ },
+ {
+  "slot": 62,
+  "name": "killauraDisableBelowHealthPercent",
+  "f08": 1,
+  "f10": 100,
+  "f14": 0
+ },
+ {
+  "slot": 63,
+  "name": "dodgeReactionPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 64,
+  "name": "dodgeSafetyPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 65,
+  "name": "dodgePowerPercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 66,
+  "name": "dodgeDistancePercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 67,
+  "name": "dodgeCommitPercent",
+  "f08": 1,
+  "f10": 150,
+  "f14": 0
+ },
+ {
+  "slot": 68,
+  "name": "dodgeBurstHoldMs",
+  "f08": 1,
+  "f10": 1600,
+  "f14": 0
+ },
+ {
+  "slot": 69,
+  "name": "v2DodgeReactionPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 70,
+  "name": "v2DodgeSafetyPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 71,
+  "name": "v2DodgePowerPercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 72,
+  "name": "v2DodgeDistancePercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 73,
+  "name": "v2DodgeCommitPercent",
+  "f08": 1,
+  "f10": 150,
+  "f14": 0
+ },
+ {
+  "slot": 74,
+  "name": "v2DodgeBurstHoldMs",
+  "f08": 1,
+  "f10": 1600,
+  "f14": 0
+ },
+ {
+  "slot": 75,
+  "name": "v3DodgeReactionPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 76,
+  "name": "v3DodgeSafetyPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 77,
+  "name": "v3DodgePowerPercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 78,
+  "name": "v3DodgeDistancePercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 79,
+  "name": "v3DodgeCommitPercent",
+  "f08": 1,
+  "f10": 150,
+  "f14": 0
+ },
+ {
+  "slot": 80,
+  "name": "v3DodgeBurstHoldMs",
+  "f08": 1,
+  "f10": 1600,
+  "f14": 0
+ },
+ {
+  "slot": 81,
+  "name": "v4DodgeReactionPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 82,
+  "name": "v4DodgeSafetyPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 83,
+  "name": "v4DodgePowerPercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 84,
+  "name": "v4DodgeDistancePercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 85,
+  "name": "v4DodgeCommitPercent",
+  "f08": 1,
+  "f10": 150,
+  "f14": 0
+ },
+ {
+  "slot": 86,
+  "name": "v4DodgeBurstHoldMs",
+  "f08": 1,
+  "f10": 1600,
+  "f14": 0
+ },
+ {
+  "slot": 87,
+  "name": "v5DodgeReactionPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 88,
+  "name": "v5DodgeSafetyPercent",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 89,
+  "name": "v5DodgePowerPercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 90,
+  "name": "v5DodgeDistancePercent",
+  "f08": 1,
+  "f10": 140,
+  "f14": 0
+ },
+ {
+  "slot": 91,
+  "name": "v5DodgeCommitPercent",
+  "f08": 1,
+  "f10": 150,
+  "f14": 0
+ },
+ {
+  "slot": 92,
+  "name": "v5DodgeBurstHoldMs",
+  "f08": 1,
+  "f10": 1600,
+  "f14": 0
+ },
+ {
+  "slot": 93,
+  "name": "dodgeBlacklistMask",
+  "f08": 1,
+  "f10": 1023,
+  "f14": 0
+ },
+ {
+  "slot": 94,
+  "name": "dodgeVersion",
+  "f08": 1,
+  "f10": 5,
+  "f14": 0
+ },
+ {
+  "slot": 95,
+  "name": "holdToShootDelayMs",
+  "f08": 1,
+  "f10": 1000,
+  "f14": 0
+ },
+ {
+  "slot": 96,
+  "name": "ballAssistSearchDegrees",
+  "f08": 1,
+  "f10": 180,
+  "f14": 0
+ },
+ {
+  "slot": 97,
+  "name": "ballAssistBounceLimit",
+  "f08": 1,
+  "f10": 8,
+  "f14": 0
+ },
+ {
+  "slot": 98,
+  "name": null,
+  "f08": 0,
+  "f10": 10000,
+  "f14": 0
+ },
+ {
+  "slot": 99,
+  "name": null,
+  "f08": 0,
+  "f10": 5000,
+  "f14": 0
+ },
+ {
+  "slot": 100,
+  "name": "autofarmFollowTarget",
+  "f08": 1,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 101,
+  "name": "boltSmoothPercent",
+  "f08": 1,
+  "f10": 100,
+  "f14": 0
+ },
+ {
+  "slot": 102,
+  "name": "boltWallLookahead",
+  "f08": 1,
+  "f10": 600,
+  "f14": 0
+ },
+ {
+  "slot": 103,
+  "name": "boltTargetRange",
+  "f08": 1,
+  "f10": 2000,
+  "f14": 0
+ },
+ {
+  "slot": 104,
+  "name": "boltExitHoldMs",
+  "f08": 1,
+  "f10": 1200,
+  "f14": 0
+ },
+ {
+  "slot": 105,
+  "name": "outlineOpacity",
+  "f08": 1,
+  "f10": 1000,
+  "f14": 0
+ },
+ {
+  "slot": 106,
+  "name": "outlineColorR",
+  "f08": 1,
+  "f10": 1000,
+  "f14": 0
+ },
+ {
+  "slot": 107,
+  "name": "outlineColorG",
+  "f08": 1,
+  "f10": 1000,
+  "f14": 0
+ },
+ {
+  "slot": 108,
+  "name": "outlineColorB",
+  "f08": 1,
+  "f10": 1000,
+  "f14": 0
+ },
+ {
+  "slot": 109,
+  "name": null,
+  "f08": 0,
+  "f10": 6,
+  "f14": 0
+ },
+ {
+  "slot": 110,
+  "name": null,
+  "f08": 0,
+  "f10": 5,
+  "f14": 0
+ },
+ {
+  "slot": 111,
+  "name": null,
+  "f08": 0,
+  "f10": 3,
+  "f14": 0
+ },
+ {
+  "slot": 112,
+  "name": null,
+  "f08": 0,
+  "f10": 400,
+  "f14": 0
+ },
+ {
+  "slot": 113,
+  "name": null,
+  "f08": 0,
+  "f10": 500,
+  "f14": 0
+ },
+ {
+  "slot": 114,
+  "name": "spinMovementMode",
+  "f08": 1,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 115,
+  "name": "spinOnlineOnlyIdle",
+  "f08": 1,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 116,
+  "name": "aopAimUltimate",
+  "f08": 1,
+  "f10": 1,
+  "f14": 0
+ },
+ {
+  "slot": 117,
+  "name": "aopAimGadget",
+  "f08": 1,
+  "f10": 1,
+  "f14": 0
+ }
+]
