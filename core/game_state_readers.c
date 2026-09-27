@@ -1,2322 +1,1704 @@
-/*
- * game_state_readers — Core plumbing
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- */
+#define _GNU_SOURCE 1
 
-/* ===== FUN_00144f20 @ 00144f20 [libNexusEvasionRuntime69252.so] ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <math.h>
+#include <time.h>
+#include <sys/mman.h>
+#include <link.h>
 
-char * FUN_00144f20(void)
 
+
+#define NEAR_ADRP_REACH 0x8000000
+#define NEAR_RING_MAX 0x6f00001
+#define MIRROR_MIN_PAGE 0x170
+#define GAME_IMAGE_SPAN 0x1400000
+#define MIRROR_OBJECT_OFFSET 0x15c
+#define GAME_KNOWN_OBJECT_OFFSET 0xb2e674
+#define MAPS_MAX_LINES 0x8000
+#define MAPS_MAX_BYTES 0x800000
+#define MAPS_LINE_MAX 0x2000
+#define UNIQUE_MAPS_LINE_MAX 0x10c0
+#define BRAND_SSO_THRESHOLD 8
+#define BRAND_NAME_MAX 0x140
+#define BRAND_THROTTLE_US 100
+#define BRAND_ATTEMPT_MAX 20
+#define MAP_TILE_MAX 0x78
+#define MAP_CHUNK 0x200
+#define WEAPON_TABLE_LEN 246
+#define ALTERNATOR_TABLE_LEN 246
+#define TARGET_LIST_MAX 16
+#define WEAPON_MIN_LEN 7
+#define WEAPON_MAX_LEN 63
+#define WEAPON_DAMAGE_MAX 5000
+#define WEAPON_VERSION_EXPECTED 0x34
+#define WEAPON_SPEED_DEFAULT_BITS 0x3E3851ECu
+#define CONTROLLER_ENTRY_MAX 0x2c8
+
+typedef struct {
+    uintptr_t game_base;
+    int (*read)(uintptr_t ctx, uintptr_t addr, void *out, uint32_t len);
+    uintptr_t ctx;
+} game_reader_t;
+
+typedef struct {
+    const char *name;
+    uint32_t value;
+} alternator_damage_entry_t;
+
+typedef struct {
+    const char *name;
+    uint16_t damage;
+    uint8_t elite;
+} weapon_desc_t;
+
+typedef struct {
+    uintptr_t lo;
+    uintptr_t hi;
+    uintptr_t slots[64];
+    int32_t count;
+    uint32_t pad;
+    size_t size;
+    int32_t validate_with_scan;
+} gap_window_t;
+
+typedef struct {
+    uintptr_t obj;
+    uintptr_t vtable;
+    uintptr_t pair;
+} controller_slot_t;
+
+typedef struct {
+    controller_slot_t slot[2];
+    uintptr_t speed_obj;
+    uintptr_t generation;
+} controller_state_t;
+
+typedef struct {
+    uint32_t valid;
+    uint32_t damage;
+    uint32_t elite;
+    uint32_t targets;
+    float speed_scale;
+    char name[68];
+    uintptr_t obj;
+} weapon_info_t;
+
+typedef struct {
+    uintptr_t start;
+    uintptr_t end;
+    uintptr_t offset;
+    uintptr_t dev;
+    uintptr_t inode;
+    uintptr_t path;
+} maps_entry_t;
+
+typedef struct {
+    const char *phase;
+    uint32_t err;
+} near_phase_cell_t;
+
+typedef struct {
+    uint32_t unk;
+    uint32_t len;
+    uintptr_t ptr;
+} name_header_t;
+
+typedef struct {
+    uintptr_t list1;
+    int32_t cap1;
+    uint32_t count1;
+    uintptr_t list2;
+    int32_t cap2;
+    uint32_t count2;
+    uintptr_t extra;
+} target_arrays_t;
+
+extern uintptr_t g_game_base;
+extern size_t g_page_size;
+extern uint64_t g_mem_reads;
+extern uintptr_t g_world_ctx;
+extern uintptr_t g_world_token;
+extern int g_world_index;
+extern uintptr_t g_profile_token;
+extern char g_maps_parse_fmt[];
+extern char near_phase_cell[];
+extern char near_label_cell[];
+
+extern uintptr_t runtime_read_handle(void);
+extern int mem_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern int mem_read_ptr(const game_reader_t *reader, uintptr_t addr, uintptr_t *out);
+extern int mem_read_cstr(const game_reader_t *reader, uintptr_t addr, char *out);
+extern int mem_read_array(uintptr_t vec_addr, uintptr_t *data_out);
+extern uintptr_t projectile_read_handle(uintptr_t token_slot, uintptr_t *obj_out);
+extern int resolve_weapon_name(uintptr_t game_base, uintptr_t obj,
+                               int (*read_fn)(uintptr_t, uintptr_t, void *, uint32_t),
+                               int mode, char *out);
+extern int parse_maps_line(const char *line, void *fmt, void *out);
+extern void map_cache_publish(void);
+extern uint64_t source_now_us(void);
+extern int mirror_mapping_valid(uintptr_t addr);
+extern void gap_window_offer(gap_window_t *window, uintptr_t target,
+                             uintptr_t prev_end, uintptr_t cur_start);
+extern void *cell_lock(void *cell);
+extern void near_alloc_report(const char *stage, uintptr_t target, int err);
+extern void log_event(const char *category, const char *event, const char *json);
+extern int verify_code_sha256(uintptr_t offset, size_t len, const char *sha256_hex);
+extern void branding_reset(void);
+extern char *branding_sanitize_name(const char *raw);
+extern int branding_avatar_ok(uintptr_t players, uintptr_t player);
+extern void branding_finish(int verified, uint64_t now);
+extern int branding_image_check(uintptr_t cache_field, uintptr_t players);
+extern int branding_image_create(uintptr_t players);
+extern void branding_post(uintptr_t player, int verified);
+extern int branding_identity_fast(uintptr_t player, uintptr_t players);
+extern void branding_once_init(void);
+extern void branding_report_refused(uint32_t code, const char *label);
+extern int branding_phdr_scan(struct dl_phdr_info *info, size_t size, void *data);
+
+static const char *const near_phase_names[26] = {
+    "mmap", "prepare", "plan_contract", "plan_status",
+    "plan_unbound", "plan_current_entry", "plan_capacity", "enter",
+    "resume", "seal", "entry_busy", "entry_unbound",
+    "entry_read", "entry_word", "gap_window", "gap_open",
+    "gap_read", "gap_maps", "gap_bounds", "gap_parse",
+    "gap_close", "gap_empty", "gap_range", "gap_mmap",
+    "gap_return", "gap_unmap",
+};
+
+static const alternator_damage_entry_t alternator_damage_table[246] = {
+    { "AlternatorWeaponDamage", 25 }, { "AlternatorWeaponHeal", 25 }, { "AlternatorWeaponSlow", 25 },
+    { "AlternatorWeaponSpeed", 25 }, { "AmbusherWeapon", 6 }, { "ArcadeWeapon", 30 },
+    { "ArcadeWeaponOvercharged", 30 }, { "ArtilleryDudeWeapon", 26 }, { "AssaultShotgunOverchargedWeapon", 25 },
+    { "AssaultShotgunWeapon", 25 }, { "AttacherWeapon", 11 }, { "AttacherWeaponAlternate", 22 },
+    { "AttacherWeaponAlternateOvercharge", 30 }, { "AttractorWeapon", 27 }, { "AxeJugglerWeapon", 24 },
+    { "BarkeepWeapon", 22 }, { "BarrelBotWeapon", 18 }, { "BarrelBotWeaponNanoPower", 18 },
+    { "BaseballOverchargedWeapon", 11 }, { "BaseballWeapon", 11 }, { "BeamerWeapon", 27 },
+    { "BeeSniperWeapon", 30 }, { "BlackHoleWeapon", 24 }, { "BlowerWeapon", 25 },
+    { "BoneThrowerWeapon", 27 }, { "BowDudeOverchargedWeapon", 26 }, { "BowDudeWeapon", 26 },
+    { "BullDudeOverchargedWeapon", 14 }, { "BullDudeWeapon", 16 }, { "BulletstormWeapon", 30 },
+    { "BulletstormWeaponLastShot", 30 }, { "CactusOverchargedWeapon", 23 }, { "CactusWeapon", 23 },
+    { "CannonGirlSmallWeapon", 15 }, { "CannonGirlWeapon", 27 }, { "CannonGirlWeaponNanoPower", 27 },
+    { "ChronomancerWeapon", 25 }, { "ClusterBombDudeWeapon", 26 }, { "CocoonerPetWeapon", 6 },
+    { "CocoonerWeapon", 27 }, { "ConductorWeapon", 18 }, { "ConductorWeaponOvercharged", 18 },
+    { "ControllerWeapon", 26 }, { "CookerWeapon", 27 }, { "CookerWeaponNanoPower", 27 },
+    { "CrabWeapon1", 23 }, { "CrabWeapon2", 23 }, { "CrabWeapon3", 23 },
+    { "CrossBomberWeapon", 23 }, { "CrowOverchargedWeapon", 26 }, { "CrowWeapon", 26 },
+    { "DancerWeaponDouble", 18 }, { "DancerWeaponSingle", 24 }, { "DancerWeaponTriple", 14 },
+    { "DaredevilWeapon", 10 }, { "DeadMariachiWeapon", 21 }, { "DeadMariachiWeaponNanoPower", 21 },
+    { "DeadMariachiWeaponOvercharged", 21 }, { "DiggerDrillWeapon", 5 }, { "DiggerWeapon", 15 },
+    { "DomainWeapon", 10 }, { "DoorManWeapon", 27 }, { "DoorManWeaponNanoPower", 33 },
+    { "DragonRiderDragonWeapon", 17 }, { "DragonRiderWeapon", 12 }, { "DrillerWeapon", 10 },
+    { "DuelistWeapon", 16 }, { "DuplicatorOverchargedPetWeapon", 27 }, { "DuplicatorWeapon", 27 },
+    { "ElectroSniperWeapon", 30 }, { "EnragerOverchargedWeapon", 6 }, { "EnragerWeapon", 6 },
+    { "FireDudeOverchargedWeapon", 25 }, { "FireDudeWeapon", 25 }, { "FishTankWeapon", 10 },
+    { "FleaPetWeapon", 8 }, { "FleaWeapon", 28 }, { "FuryWeapon", 22 },
+    { "FuryWeaponSp", 22 }, { "FutureGirlWeapon", 24 }, { "GeishaTransformedWeapon", 20 },
+    { "GeishaWeapon", 8 }, { "GhostWeapon", 11 }, { "GladiatorWeapon", 8 },
+    { "GladiatorWeaponFirePunch", 8 }, { "GodzillaWeapon1", 13 }, { "GodzillaWeapon2", 13 },
+    { "GunslingerOverchargedWeapon", 27 }, { "GunslingerWeapon", 27 }, { "HammerDudeOverchargedWeapon", 18 },
+    { "HammerDudeWeapon", 18 }, { "HookWeapon", 17 }, { "IceDudeWeapon", 28 },
+    { "InsectManWeapon", 30 }, { "InsectManWeaponNanoPower", 30 }, { "InsectManWeaponPoison", 30 },
+    { "InstagibWeapon", 30 }, { "JesterWeapon", 25 }, { "JetpackGirlWeapon", 12 },
+    { "KatanaKidWeaponFullChargeRanged", 24 }, { "KatanaKidWeaponRanged", 24 }, { "KatanaKidWeaponSlash", 11 },
+    { "KickerDudeWeapon", 8 }, { "KnightWeapon", 14 }, { "LeaperWeapon", 12 },
+    { "LightyearFlightWeapon", 20 }, { "LightyearSwordWeapon", 11 }, { "LightyearWeapon", 27 },
+    { "LuchadorOverchargedWeapon", 10 }, { "LuchadorWeapon", 9 }, { "MagicalGirlWeapon", 17 },
+    { "MagicalGirlWeaponTransformed", 11 }, { "MaisieWeapon", 26 }, { "MaisieWeaponNanoPower", 26 },
+    { "MechaDudeBigWeapon", 22 }, { "MechaDudeBigWeaponBuddy", 22 }, { "MechaDudeWeapon", 27 },
+    { "MechaDudeWeaponOverChargedBuddy", 27 }, { "MechaVanFriendlyMegBossWeapon", 22 }, { "MechanicWeapon", 27 },
+    { "MeepleWallWeapon", 23 }, { "MeepleWeapon", 23 }, { "MegaBossAssaultShotgunWeapon", 50 },
+    { "MegaBossAssaultShotgunWeaponForth", 50 }, { "MegaBossAssaultShotgunWeaponSecond", 50 }, { "MegaBossAssaultShotgunWeaponThird", 50 },
+    { "MegaBossBlackHoleWeapon", 50 }, { "MegaBossCactusSecondWeapon", 30 }, { "MegaBossCactusWeapon", 30 },
+    { "MegaBossCrossBombWeapon360", 32 }, { "MegaBossCrossBomberWeapon", 32 }, { "MegaBossCrossBomberWeaponSecond", 32 },
+    { "MegaBossCrowSecondWeapon", 40 }, { "MegaBossCrowWeapon", 40 }, { "MegaBossDragonCrowWeaponL1", 26 },
+    { "MegaBossDragonCrowWeaponL2", 30 }, { "MegaBossDragonCrowWeaponL3", 24 }, { "MegaBossDragonCrowWeaponSecondL1", 26 },
+    { "MegaBossDragonCrowWeaponSecondL2", 30 }, { "MegaBossDragonCrowWeaponSecondL3", 42 }, { "MegaBossDuoWeapon", 100 },
+    { "MegaBossDuoWeapon360", 100 }, { "MegaBossFinxKittenWeapon", 7 }, { "MegaBossFinxReturnedWeaponSkill", 50 },
+    { "MegaBossFinxWeaponSkill", 45 }, { "MegaBossFrankPetWeapon", 8 }, { "MegaBossInsectManWeapon", 100 },
+    { "MegaBossInsectManWeaponSecond", 100 }, { "MegaBossMaisieWeapon", 45 }, { "MegaBossNitaWeapon", 80 },
+    { "MegaBossPercenterWeapon", 35 }, { "MegaBossPercenterWeapon360", 30 }, { "MegaBossPercenterWeaponLarge", 100 },
+    { "MegaBossRocketGirlWeaponBasic", 45 }, { "MegaBossRocketGirlWeaponRotatingStream", 45 }, { "MegaBossRocketGirlWeaponRotatingStreamOvercharged", 45 },
+    { "MegaBossSplitterWeapon", 30 }, { "MegaBossSplitterWeaponRange", 200 }, { "MegaBossStickyBombWeapon", 35 },
+    { "MegaBossStickyBombWeaponSecond", 55 }, { "MegaBossTrickshot2Weapon", 25 }, { "MegaBossTrickshot2WeaponSecond", 25 },
+    { "MegaBossTrickshotWeapon", 25 }, { "MegaBossTrickshotWeaponSecond", 25 }, { "MegaKatanaKidWeaponRanged", 40 },
+    { "MegaKatanaKidWeaponSlash", 25 }, { "MegaTickWeapon", 15 }, { "MegaTickWeaponSecond", 30 },
+    { "MenderWeapon", 22 }, { "MinigunDudeWeapon", 27 }, { "MinigunDudeWeaponNano", 27 },
+    { "MorningstarWeapon", 24 }, { "MummyOverchargedWeapon", 20 }, { "MummyWeapon", 20 },
+    { "NinjaOverchargedWeapon", 29 }, { "NinjaWeapon", 29 }, { "PainterWeapon", 19 },
+    { "PercenterOverchargedWeapon", 26 }, { "PercenterWeapon", 26 }, { "PowerLevelerWeapon", 20 },
+    { "PowerLevelerWeaponOverchargedBuddy", 20 }, { "PuppeteerWeapon", 22 }, { "RedirecterSnakePetWeapon", 8 },
+    { "RedirecterWeapon", 18 }, { "RedirecterWeaponSecondary", 20 }, { "ReviverWeapon", 10 },
+    { "RocketGirlWeapon", 27 }, { "RocketGirlWeaponBuddy", 27 }, { "RollerWeapon", 23 },
+    { "RopeDudeWeapon", 8 }, { "RosaWeapon", 11 }, { "RuffsWeapon", 27 },
+    { "SamuraiWeaponDash", 8 }, { "SamuraiWeaponSlash", 11 }, { "SandstormWeapon", 18 },
+    { "ShadowdemonWeapon", 22 }, { "ShamanOverchargedWeapon", 20 }, { "ShamanWeapon", 18 },
+    { "ShieldTankWeapon", 16 }, { "ShotgunGirlOverchargedWeapon", 23 }, { "ShotgunGirlWeapon", 23 },
+    { "SilencerWeapon", 27 }, { "SkaterWeapon", 19 }, { "SnakeOilWeapon", 30 },
+    { "SniperWeapon", 30 }, { "SniperWeaponNanoPower", 30 }, { "SoulCollectorOverchargedWeapon", 28 },
+    { "SoulCollectorWeapon", 28 }, { "SpawnerDudeWeapon", 21 }, { "SpeedyWeapon", 25 },
+    { "SpeedyWeaponOverchargedBuddy", 25 }, { "SplitterLegsWeapon", 10 }, { "SplitterWeapon", 30 },
+    { "SplitterWeaponNanoPower", 30 }, { "StackerWeapon", 25 }, { "StalkerWeaponDash", 8 },
+    { "StalkerWeaponJump", 11 }, { "StickyBombWeapon", 23 }, { "SuperNovaBeeSniperWeapon", 28 },
+    { "SuperNovaBeeSniperWeaponSecond", 40 }, { "SuperNovaCactusWeapon", 11 }, { "SuperNovaChronomancerWeapon", 25 },
+    { "SuperNovaFireDudeWeapon", 17 }, { "SuperNovaMagicalGirlWeaponTransformed", 11 }, { "SuperNovaPercenterWeapon", 26 },
+    { "SuperNovaVoodooPetWeapon", 16 }, { "SuperNovaVoodooWeaponEarth", 10 }, { "SuperNovaVoodooWeaponForest", 10 },
+    { "SuperNovaVoodooWeaponWater", 10 }, { "TntDudeWeapon", 22 }, { "TrickshotDudeWeapon", 29 },
+    { "TrickshotDudeWeaponBuddyOvercharged", 29 }, { "TwinsWeaponShotgun", 20 }, { "TwinsWeaponThrower", 22 },
+    { "UndertakerOverchargedWeapon", 8 }, { "UndertakerWeapon", 8 }, { "VoodooWeaponAll", 27 },
+    { "VoodooWeaponEarth", 19 }, { "VoodooWeaponForest", 27 }, { "VoodooWeaponWater", 19 },
+    { "WallyWeapon", 15 }, { "WeaponThrowerUlti", 26 }, { "WeaponThrowerUlti2", 26 },
+    { "WeaponThrowerWeapon", 9 }, { "WeaponThrowerWeapon2", 9 }, { "WhirlwindWeapon", 25 },
+};
+
+static const weapon_desc_t weapon_table[246] = {
+    { "AlternatorWeaponDamage", 225, 0 }, { "AlternatorWeaponHeal", 225, 0 }, { "AlternatorWeaponSlow", 225, 0 },
+    { "AlternatorWeaponSpeed", 225, 0 }, { "AmbusherWeapon", 300, 0 }, { "ArcadeWeapon", 50, 0 },
+    { "ArcadeWeaponOvercharged", 50, 0 }, { "ArtilleryDudeWeapon", 150, 0 }, { "AssaultShotgunOverchargedWeapon", 80, 0 },
+    { "AssaultShotgunWeapon", 80, 0 }, { "AttacherWeapon", 0, 0 }, { "AttacherWeaponAlternate", 0, 1 },
+    { "AttacherWeaponAlternateOvercharge", 0, 1 }, { "AttractorWeapon", 0, 1 }, { "AxeJugglerWeapon", 125, 0 },
+    { "BarkeepWeapon", 0, 1 }, { "BarrelBotWeapon", 0, 0 }, { "BarrelBotWeaponNanoPower", 0, 0 },
+    { "BaseballOverchargedWeapon", 0, 0 }, { "BaseballWeapon", 0, 0 }, { "BeamerWeapon", 100, 0 },
+    { "BeeSniperWeapon", 150, 0 }, { "BlackHoleWeapon", 100, 0 }, { "BlowerWeapon", 50, 0 },
+    { "BoneThrowerWeapon", 0, 1 }, { "BowDudeOverchargedWeapon", 70, 0 }, { "BowDudeWeapon", 70, 0 },
+    { "BullDudeOverchargedWeapon", 250, 0 }, { "BullDudeWeapon", 0, 0 }, { "BulletstormWeapon", 100, 0 },
+    { "BulletstormWeaponLastShot", 110, 0 }, { "CactusOverchargedWeapon", 150, 0 }, { "CactusWeapon", 150, 0 },
+    { "CannonGirlSmallWeapon", 100, 0 }, { "CannonGirlWeapon", 150, 0 }, { "CannonGirlWeaponNanoPower", 150, 0 },
+    { "ChronomancerWeapon", 100, 0 }, { "ClusterBombDudeWeapon", 0, 1 }, { "CocoonerPetWeapon", 0, 0 },
+    { "CocoonerWeapon", 150, 0 }, { "ConductorWeapon", 200, 0 }, { "ConductorWeaponOvercharged", 200, 0 },
+    { "ControllerWeapon", 40, 0 }, { "CookerWeapon", 100, 0 }, { "CookerWeaponNanoPower", 100, 0 },
+    { "CrabWeapon1", 150, 0 }, { "CrabWeapon2", 150, 0 }, { "CrabWeapon3", 150, 0 },
+    { "CrossBomberWeapon", 0, 1 }, { "CrowOverchargedWeapon", 50, 0 }, { "CrowWeapon", 50, 0 },
+    { "DancerWeaponDouble", 200, 0 }, { "DancerWeaponSingle", 150, 0 }, { "DancerWeaponTriple", 150, 0 },
+    { "DaredevilWeapon", 0, 0 }, { "DeadMariachiWeapon", 150, 0 }, { "DeadMariachiWeaponNanoPower", 150, 0 },
+    { "DeadMariachiWeaponOvercharged", 150, 0 }, { "DiggerDrillWeapon", 200, 0 }, { "DiggerWeapon", 150, 0 },
+    { "DomainWeapon", 0, 0 }, { "DoorManWeapon", 50, 0 }, { "DoorManWeaponNanoPower", 50, 0 },
+    { "DragonRiderDragonWeapon", 250, 0 }, { "DragonRiderWeapon", 200, 0 }, { "DrillerWeapon", 0, 0 },
+    { "DuelistWeapon", 100, 0 }, { "DuplicatorOverchargedPetWeapon", 100, 0 }, { "DuplicatorWeapon", 100, 0 },
+    { "ElectroSniperWeapon", 101, 0 }, { "EnragerOverchargedWeapon", 300, 0 }, { "EnragerWeapon", 300, 0 },
+    { "FireDudeOverchargedWeapon", 200, 0 }, { "FireDudeWeapon", 200, 0 }, { "FishTankWeapon", 0, 0 },
+    { "FleaPetWeapon", 0, 0 }, { "FleaWeapon", 200, 0 }, { "FuryWeapon", 0, 1 },
+    { "FuryWeaponSp", 0, 1 }, { "FutureGirlWeapon", 250, 0 }, { "GeishaTransformedWeapon", 100, 0 },
+    { "GeishaWeapon", 0, 0 }, { "GhostWeapon", 0, 1 }, { "GladiatorWeapon", 300, 0 },
+    { "GladiatorWeaponFirePunch", 300, 0 }, { "GodzillaWeapon1", 0, 0 }, { "GodzillaWeapon2", 0, 0 },
+    { "GunslingerOverchargedWeapon", 50, 0 }, { "GunslingerWeapon", 50, 0 }, { "HammerDudeOverchargedWeapon", 150, 0 },
+    { "HammerDudeWeapon", 150, 0 }, { "HookWeapon", 150, 0 }, { "IceDudeWeapon", 60, 0 },
+    { "InsectManWeapon", 100, 0 }, { "InsectManWeaponNanoPower", 100, 0 }, { "InsectManWeaponPoison", 100, 0 },
+    { "InstagibWeapon", 101, 0 }, { "JesterWeapon", 100, 0 }, { "JetpackGirlWeapon", 100, 0 },
+    { "KatanaKidWeaponFullChargeRanged", 130, 0 }, { "KatanaKidWeaponRanged", 130, 0 }, { "KatanaKidWeaponSlash", 0, 0 },
+    { "KickerDudeWeapon", 300, 0 }, { "KnightWeapon", 250, 0 }, { "LeaperWeapon", 0, 0 },
+    { "LightyearFlightWeapon", 100, 0 }, { "LightyearSwordWeapon", 0, 0 }, { "LightyearWeapon", 101, 0 },
+    { "LuchadorOverchargedWeapon", 300, 0 }, { "LuchadorWeapon", 150, 0 }, { "MagicalGirlWeapon", 250, 0 },
+    { "MagicalGirlWeaponTransformed", 0, 0 }, { "MaisieWeapon", 101, 0 }, { "MaisieWeaponNanoPower", 101, 0 },
+    { "MechaDudeBigWeapon", 100, 0 }, { "MechaDudeBigWeaponBuddy", 100, 0 }, { "MechaDudeWeapon", 150, 0 },
+    { "MechaDudeWeaponOverChargedBuddy", 150, 0 }, { "MechaVanFriendlyMegBossWeapon", 100, 0 }, { "MechanicWeapon", 150, 0 },
+    { "MeepleWallWeapon", 0, 1 }, { "MeepleWeapon", 101, 0 }, { "MegaBossAssaultShotgunWeapon", 50, 0 },
+    { "MegaBossAssaultShotgunWeaponForth", 70, 0 }, { "MegaBossAssaultShotgunWeaponSecond", 70, 0 }, { "MegaBossAssaultShotgunWeaponThird", 50, 0 },
+    { "MegaBossBlackHoleWeapon", 100, 0 }, { "MegaBossCactusSecondWeapon", 195, 0 }, { "MegaBossCactusWeapon", 195, 0 },
+    { "MegaBossCrossBombWeapon360", 0, 1 }, { "MegaBossCrossBomberWeapon", 0, 1 }, { "MegaBossCrossBomberWeaponSecond", 0, 1 },
+    { "MegaBossCrowSecondWeapon", 40, 0 }, { "MegaBossCrowWeapon", 40, 0 }, { "MegaBossDragonCrowWeaponL1", 50, 0 },
+    { "MegaBossDragonCrowWeaponL2", 50, 0 }, { "MegaBossDragonCrowWeaponL3", 225, 0 }, { "MegaBossDragonCrowWeaponSecondL1", 50, 0 },
+    { "MegaBossDragonCrowWeaponSecondL2", 50, 0 }, { "MegaBossDragonCrowWeaponSecondL3", 150, 0 }, { "MegaBossDuoWeapon", 50, 0 },
+    { "MegaBossDuoWeapon360", 0, 1 }, { "MegaBossFinxKittenWeapon", 0, 0 }, { "MegaBossFinxReturnedWeaponSkill", 100, 0 },
+    { "MegaBossFinxWeaponSkill", 100, 0 }, { "MegaBossFrankPetWeapon", 0, 0 }, { "MegaBossInsectManWeapon", 110, 0 },
+    { "MegaBossInsectManWeaponSecond", 180, 0 }, { "MegaBossMaisieWeapon", 101, 0 }, { "MegaBossNitaWeapon", 0, 1 },
+    { "MegaBossPercenterWeapon", 140, 0 }, { "MegaBossPercenterWeapon360", 0, 1 }, { "MegaBossPercenterWeaponLarge", 250, 0 },
+    { "MegaBossRocketGirlWeaponBasic", 0, 1 }, { "MegaBossRocketGirlWeaponRotatingStream", 75, 0 }, { "MegaBossRocketGirlWeaponRotatingStreamOvercharged", 75, 0 },
+    { "MegaBossSplitterWeapon", 50, 0 }, { "MegaBossSplitterWeaponRange", 0, 1 }, { "MegaBossStickyBombWeapon", 140, 0 },
+    { "MegaBossStickyBombWeaponSecond", 200, 0 }, { "MegaBossTrickshot2Weapon", 85, 0 }, { "MegaBossTrickshot2WeaponSecond", 150, 0 },
+    { "MegaBossTrickshotWeapon", 85, 0 }, { "MegaBossTrickshotWeaponSecond", 150, 0 }, { "MegaKatanaKidWeaponRanged", 250, 0 },
+    { "MegaKatanaKidWeaponSlash", 0, 0 }, { "MegaTickWeapon", 0, 1 }, { "MegaTickWeaponSecond", 0, 1 },
+    { "MenderWeapon", 150, 0 }, { "MinigunDudeWeapon", 50, 0 }, { "MinigunDudeWeaponNano", 50, 0 },
+    { "MorningstarWeapon", 170, 0 }, { "MummyOverchargedWeapon", 250, 0 }, { "MummyWeapon", 200, 0 },
+    { "NinjaOverchargedWeapon", 100, 0 }, { "NinjaWeapon", 100, 0 }, { "PainterWeapon", 0, 1 },
+    { "PercenterOverchargedWeapon", 150, 0 }, { "PercenterWeapon", 150, 0 }, { "PowerLevelerWeapon", 150, 0 },
+    { "PowerLevelerWeaponOverchargedBuddy", 150, 0 }, { "PuppeteerWeapon", 0, 1 }, { "RedirecterSnakePetWeapon", 0, 0 },
+    { "RedirecterWeapon", 100, 0 }, { "RedirecterWeaponSecondary", 80, 0 }, { "ReviverWeapon", 0, 0 },
+    { "RocketGirlWeapon", 101, 0 }, { "RocketGirlWeaponBuddy", 101, 0 }, { "RollerWeapon", 150, 0 },
+    { "RopeDudeWeapon", 250, 0 }, { "RosaWeapon", 150, 0 }, { "RuffsWeapon", 70, 0 },
+    { "SamuraiWeaponDash", 0, 0 }, { "SamuraiWeaponSlash", 0, 0 }, { "SandstormWeapon", 200, 0 },
+    { "ShadowdemonWeapon", 70, 0 }, { "ShamanOverchargedWeapon", 300, 0 }, { "ShamanWeapon", 250, 0 },
+    { "ShieldTankWeapon", 250, 0 }, { "ShotgunGirlOverchargedWeapon", 0, 0 }, { "ShotgunGirlWeapon", 0, 0 },
+    { "SilencerWeapon", 100, 0 }, { "SkaterWeapon", 100, 0 }, { "SnakeOilWeapon", 150, 0 },
+    { "SniperWeapon", 101, 0 }, { "SniperWeaponNanoPower", 101, 0 }, { "SoulCollectorOverchargedWeapon", 0, 1 },
+    { "SoulCollectorWeapon", 150, 0 }, { "SpawnerDudeWeapon", 200, 0 }, { "SpeedyWeapon", 50, 0 },
+    { "SpeedyWeaponOverchargedBuddy", 50, 0 }, { "SplitterLegsWeapon", 0, 0 }, { "SplitterWeapon", 50, 0 },
+    { "SplitterWeaponNanoPower", 50, 0 }, { "StackerWeapon", 150, 0 }, { "StalkerWeaponDash", 0, 0 },
+    { "StalkerWeaponJump", 0, 0 }, { "StickyBombWeapon", 50, 0 }, { "SuperNovaBeeSniperWeapon", 105, 0 },
+    { "SuperNovaBeeSniperWeaponSecond", 0, 1 }, { "SuperNovaCactusWeapon", 150, 0 }, { "SuperNovaChronomancerWeapon", 100, 0 },
+    { "SuperNovaFireDudeWeapon", 200, 0 }, { "SuperNovaMagicalGirlWeaponTransformed", 0, 0 }, { "SuperNovaPercenterWeapon", 150, 0 },
+    { "SuperNovaVoodooPetWeapon", 150, 0 }, { "SuperNovaVoodooWeaponEarth", 0, 1 }, { "SuperNovaVoodooWeaponForest", 0, 1 },
+    { "SuperNovaVoodooWeaponWater", 0, 1 }, { "TntDudeWeapon", 0, 1 }, { "TrickshotDudeWeapon", 101, 0 },
+    { "TrickshotDudeWeaponBuddyOvercharged", 101, 0 }, { "TwinsWeaponShotgun", 0, 0 }, { "TwinsWeaponThrower", 0, 1 },
+    { "UndertakerOverchargedWeapon", 0, 0 }, { "UndertakerWeapon", 0, 0 }, { "VoodooWeaponAll", 0, 1 },
+    { "VoodooWeaponEarth", 0, 1 }, { "VoodooWeaponForest", 0, 1 }, { "VoodooWeaponWater", 0, 1 },
+    { "WallyWeapon", 0, 1 }, { "WeaponThrowerUlti", 250, 0 }, { "WeaponThrowerUlti2", 0, 1 },
+    { "WeaponThrowerWeapon", 150, 0 }, { "WeaponThrowerWeapon2", 150, 0 }, { "WhirlwindWeapon", 250, 0 },
+};
+
+static const char *const controller_kind_names[2] = { "ControllerUltiProjectile", "ControllerUltiOverchargedProjectile" };
+
+
+static const struct {
+    uintptr_t offset;
+    const char *sha256;
+} branding_abi_hashes[13] = {
+    { 0x80f09c, "ceaed7de0bf298f5764c6e7c23a9e61f0ef78d62461e51956e3ba81f858a05b5" },
+    { 0x5d8ad4, "284c790c5c501cf083a6f4d323aa30275b074eb44bef7b1d64f70d9250bd6a23" },
+    { 0x5921a0, "14b79d91644b7f17357a86b8ec6d36e17be6a1c815083ec6c2fa531bee369974" },
+    { 0x66ae58, "dbee7aa155f50e7bbcb598d7292a63cdcc6b00e7bef42df179bba8e717a01cb2" },
+    { 0x66ad48, "23f6ad205540b5dd1d4a6dfec22810176034231102bb53dc25ce7b774778e92c" },
+    { 0xb7c41c, "40459ad7d604600054570f79962f208d94703d75b3f5903e63af68cbc4ee756a" },
+    { 0x5955dc, "c715b651533d6c19dec4381cfd0ed1002d060d936ca20c8b6bdd10aea0d24859" },
+    { 0x595314, "0558f75486a424fcf1edb8b5b3cace86a0dc5620506aab1273a1df1dc7ad2ad8" },
+    { 0x594138, "f74689171f152d63ffdcb66f59b8532476d7dd17a559c44c6fb98cfc919d42ee" },
+    { 0x592368, "74116921e171c3edbd6ae1a89ccc993046c5a12e87b8dc8fa3d44200102f34c6" },
+    { 0xb7c73c, "30c08799bf93e6dc1dc368fb371a3076f43bee2d3ca800b2ea1e1aff828e000b" },
+    { 0x59567c, "9e18529b88a6285f2675ad92537b12875a9735c6fc16cbdc947b58b5e235b5f9" },
+    { 0x11a2840, "7624512f3481536b03735eb7d1bad9138b0288494a9458e050b9bd27feef8f66" },
+};
+
+static uintptr_t mirror_base;
+static uint32_t mirror_slot;
+
+static uintptr_t rw_mapping_start;
+static uintptr_t rw_mapping_end;
+
+static uint64_t branding_throttle_until;
+static int32_t branding_abi_state;
+static int (*branding_linker_validate)(uintptr_t);
+static uint32_t branding_once_bits;
+static uint32_t branding_attempts;
+static pthread_once_t branding_once_control = PTHREAD_ONCE_INIT;
+static int (*branding_verify)(int);
+static uintptr_t branding_token;
+static uintptr_t branding_vt1;
+static uintptr_t branding_vt2;
+static uintptr_t branding_player;
+static uint8_t branding_avatar_cache[0x230];
+static uint32_t branding_player_id;
+static int branding_name_valid;
+static char branding_name[0x80];
+static char branding_last_name[0x140];
+static int branding_image_refused;
+
+static int map_known;
+static uint32_t map_change_frame;
+static uint8_t map_scan_active;
+static uint32_t map_scan_progress;
+static uint64_t map_refresh_us;
+static uint32_t map_failure_stage;
+static uint32_t map_failure_index;
+static uint32_t map_attempts;
+static uint64_t map_last_log_ms;
+static uintptr_t map_cached_map;
+static uintptr_t map_cached_tiles;
+static uint32_t map_cached_h;
+static uint32_t map_cached_w;
+static uintptr_t map_scan_map;
+static uintptr_t map_scan_tiles;
+static uint32_t map_scan_h;
+static uint32_t map_scan_w;
+static uint32_t map_complete_frame;
+static uint32_t map_tile_count;
+static uint32_t map_scanned_frame;
+static uint64_t map_read_us_acc;
+static uint64_t map_read_count_acc;
+static uint8_t map_wall_bitmap[MAP_TILE_MAX * MAP_TILE_MAX];
+static uint8_t source_wall_cache[MAP_TILE_MAX * MAP_TILE_MAX];
+
+static float bits_to_float(uint32_t bits)
 {
-  int iVar1;
-  undefined8 *puVar2;
-  uint uVar3;
-  char *pcVar4;
-  char *__s1;
-  long lVar5;
-  
-  puVar2 = (undefined8 *)FUN_001bd828(&DAT_001cfc98);
-  pcVar4 = (char *)*puVar2;
-  if (pcVar4 == (char *)0x0) {
-    __s1 = "prepare";
-  }
-  else {
-    lVar5 = 0;
-    do {
-      __s1 = *(char **)((long)&PTR_DAT_001c3298 + lVar5);
-      iVar1 = strcmp(__s1,pcVar4);
-      if (iVar1 == 0) break;
-      lVar5 = lVar5 + 8;
-      __s1 = "prepare";
-    } while (lVar5 != 0xd0);
-  }
-  iVar1 = strcmp(__s1,"mmap");
-  if ((((iVar1 == 0) || (iVar1 = strcmp(__s1,"seal"), iVar1 == 0)) ||
-      (iVar1 = strcmp(__s1,"gap_open"), iVar1 == 0)) ||
-     (((iVar1 = strcmp(__s1,"gap_read"), iVar1 == 0 ||
-       (iVar1 = strcmp(__s1,"gap_close"), iVar1 == 0)) ||
-      ((iVar1 = strcmp(__s1,"gap_mmap"), iVar1 == 0 ||
-       (iVar1 = strcmp(__s1,"gap_unmap"), iVar1 == 0)))))) {
-    uVar3 = *(uint *)(puVar2 + 1);
-    if (0xffe < uVar3 - 1) {
-      uVar3 = 0;
-    }
-  }
-  else {
-    uVar3 = 0;
-  }
-  pcVar4 = (char *)FUN_001bd828(&DAT_001cfcf8);
-  snprintf(pcVar4,0x32,"near_%s_b337c4_e%u",__s1,(ulong)uVar3);
-  return pcVar4;
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
 }
 
-/* ===== FUN_00152af0 @ 00152af0 [libNexusEvasionRuntime69252.so] ===== */
-
-void * FUN_00152af0(void *param_1)
-
+static uint64_t monotonic_us(void)
 {
-  void *pvVar1;
-  ulong uVar2;
-  ulong uVar3;
-  ulong uVar4;
-  ulong uVar5;
-  ulong uVar6;
-  char cVar7;
-  byte bVar8;
-  long lVar9;
-  bool bVar10;
-  ulong uVar11;
-  bool bVar12;
-  int iVar13;
-  int iVar14;
-  FILE *__stream;
-  int *piVar15;
-  char *pcVar16;
-  size_t sVar17;
-  uint uVar18;
-  long lVar19;
-  void *pvVar20;
-  ulong uVar21;
-  void *pvVar22;
-  long lVar23;
-  ulong uVar24;
-  void *pvVar25;
-  uint uVar26;
-  ulong uVar27;
-  ulong *puVar28;
-  long local_24f8;
-  int local_24cc;
-  char *local_24c8;
-  ulong local_24c0;
-  ulong uStack_24b8;
-  undefined1 auStack_24b0 [520];
-  ulong local_22a8;
-  ulong local_2298;
-  ulong local_2290;
-  undefined1 auStack_2288 [520];
-  ulong local_2080;
-  undefined4 local_2078;
-  char cStack_2071;
-  undefined4 local_2070;
-  char local_206c [8188];
-  long local_70;
-  
-  lVar9 = tpidr_el0;
-  local_70 = *(long *)(lVar9 + 0x28);
-  uVar27 = -DAT_00209d88 & (ulong)param_1;
-  uVar26 = (uint)param_1;
-  if ((DAT_00215a00 == (void *)0x0) || (2 < DAT_00215a08)) {
-    if (DAT_00215a00 == (void *)0x0) {
-      iVar14 = 0;
-      bVar10 = false;
-      sVar17 = DAT_00209d88 * 3;
-      uVar24 = 0xffffffffffefffff;
-      uVar21 = 0x100000;
-      do {
-        pvVar1 = (void *)0x0;
-        if (uVar21 <= uVar27) {
-          pvVar1 = (void *)(uVar27 - uVar21);
-        }
-        if ((uVar27 <= uVar24) && ((void *)(uVar27 + uVar21) != (void *)0x0)) {
-          pvVar20 = mmap((void *)(uVar27 + uVar21),sVar17,3,0x22,-1,0);
-          if (pvVar20 == (void *)0xffffffffffffffff) {
-            piVar15 = (int *)__errno();
-            iVar14 = *piVar15;
-            goto joined_r0x00153600;
-          }
-          iVar13 = FUN_00157860();
-          if (iVar13 == 0) {
-            munmap(pvVar20,sVar17);
-            bVar10 = true;
-            goto joined_r0x00153600;
-          }
-LAB_00153684:
-          DAT_00215a08 = 1;
-          DAT_00215a00 = pvVar20;
-          goto LAB_00152fe0;
-        }
-joined_r0x00153600:
-        if (uVar21 < uVar27) {
-          pvVar20 = mmap(pvVar1,sVar17,3,0x22,-1,0);
-          if (pvVar20 == (void *)0xffffffffffffffff) {
-            piVar15 = (int *)__errno();
-            iVar14 = *piVar15;
-          }
-          else {
-            iVar13 = FUN_00157860();
-            if (iVar13 != 0) goto LAB_00153684;
-            munmap(pvVar20,sVar17);
-            bVar10 = true;
-          }
-        }
-        bVar12 = uVar21 < 0x6f00001;
-        uVar24 = uVar24 - 0x100000;
-        uVar21 = uVar21 + 0x100000;
-      } while (bVar12);
-      goto LAB_00152c44;
-    }
-LAB_00152c3c:
-    bVar10 = false;
-    iVar14 = 0;
-  }
-  else {
-    pvVar20 = (void *)((long)DAT_00215a00 + DAT_00209d88 * DAT_00215a08);
-    if (pvVar20 < (void *)0x10000) goto LAB_00152c3c;
-    bVar10 = false;
-    if (DAT_00209d88 < 0x170) {
-LAB_0015367c:
-      bVar10 = false;
-      iVar14 = 0;
-    }
-    else {
-      iVar14 = 0;
-      if (((ulong)pvVar20 & 0xf) == 0) {
-        bVar10 = false;
-        if (((void *)0xffffffffffffffef < param_1) || (CARRY8(DAT_00209d88,(ulong)pvVar20)))
-        goto LAB_0015367c;
-        iVar14 = 0;
-        if (DAT_001e0978 < (void *)0xfffffffffec00000) {
-          if ((((void *)((long)pvVar20 + DAT_00209d88) <= DAT_001e0978) ||
-              ((void *)((long)DAT_001e0978 + 0x1400000U) <= pvVar20)) &&
-             ((((uint)pvVar20 | uVar26) & 3) == 0)) {
-            bVar10 = 0x8000000 < (ulong)((long)param_1 - (long)pvVar20);
-            if (param_1 <= pvVar20) {
-              bVar10 = ((long)pvVar20 - (long)param_1 & 0xfffffffff8000000U) != 0;
-            }
-            if (!bVar10) {
-              uVar21 = (long)param_1 + 0x10;
-              uVar24 = (long)pvVar20 + 0x15c;
-              bVar10 = 0x8000000 < uVar24 - uVar21;
-              if (uVar24 <= uVar21) {
-                bVar10 = (uVar21 - uVar24 & 0xfffffffff8000000) != 0;
-              }
-              if (!bVar10) {
-                DAT_00215a08 = DAT_00215a08 + 1;
-                goto LAB_00152fe0;
-              }
-            }
-          }
-          goto LAB_00152c3c;
-        }
-      }
-    }
-  }
-LAB_00152c44:
-  uVar24 = 0xffffffffffefffff;
-  pvVar1 = (void *)((long)param_1 + 0x10);
-  uVar21 = 0x100000;
-  do {
-    pvVar22 = (void *)0x0;
-    if (uVar21 <= uVar27) {
-      pvVar22 = (void *)(uVar27 - uVar21);
-    }
-    if ((uVar27 <= uVar24) && ((void *)(uVar27 + uVar21) != (void *)0x0)) {
-      pvVar20 = mmap((void *)(uVar27 + uVar21),DAT_00209d88,3,0x22,-1,0);
-      if (pvVar20 == (void *)0xffffffffffffffff) {
-        piVar15 = (int *)__errno();
-        iVar14 = *piVar15;
-      }
-      else {
-        if ((((void *)0xffff < pvVar20) && (((ulong)pvVar20 & 0xf) == 0)) &&
-           ((0x16f < DAT_00209d88 &&
-            (((((param_1 < (void *)0xfffffffffffffff0 && (!CARRY8(DAT_00209d88,(ulong)pvVar20))) &&
-               (DAT_001e0978 < (void *)0xfffffffffec00000)) &&
-              (((void *)(DAT_00209d88 + (long)pvVar20) <= DAT_001e0978 ||
-               ((void *)((long)DAT_001e0978 + 0x1400000U) <= pvVar20)))) &&
-             ((((uint)pvVar20 | uVar26) & 3) == 0)))))) {
-          bVar10 = 0x8000000 < (ulong)((long)param_1 - (long)pvVar20);
-          if (param_1 <= pvVar20) {
-            bVar10 = ((long)pvVar20 - (long)param_1 & 0xfffffffff8000000U) != 0;
-          }
-          if (!bVar10) {
-            pvVar25 = (void *)((long)pvVar20 + 0x15c);
-            bVar10 = 0x8000000 < (ulong)((long)pvVar25 - (long)pvVar1);
-            if (pvVar25 <= pvVar1) {
-              bVar10 = ((long)pvVar1 - (long)pvVar25 & 0xfffffffff8000000U) != 0;
-            }
-            if (!bVar10) goto LAB_00152fe0;
-          }
-        }
-        munmap(pvVar20,DAT_00209d88);
-        bVar10 = true;
-      }
-    }
-    if (uVar21 < uVar27) {
-      pvVar20 = mmap(pvVar22,DAT_00209d88,3,0x22,-1,0);
-      if (pvVar20 == (void *)0xffffffffffffffff) {
-        piVar15 = (int *)__errno();
-        iVar14 = *piVar15;
-      }
-      else {
-        if ((((void *)0xffff < pvVar20) && (((ulong)pvVar20 & 0xf) == 0)) &&
-           (((0x16f < DAT_00209d88 &&
-             (((param_1 < (void *)0xfffffffffffffff0 && (!CARRY8(DAT_00209d88,(ulong)pvVar20))) &&
-              (DAT_001e0978 < (void *)0xfffffffffec00000)))) &&
-            ((((void *)(DAT_00209d88 + (long)pvVar20) <= DAT_001e0978 ||
-              ((void *)((long)DAT_001e0978 + 0x1400000U) <= pvVar20)) &&
-             ((((uint)pvVar20 | uVar26) & 3) == 0)))))) {
-          bVar10 = 0x8000000 < (ulong)((long)param_1 - (long)pvVar20);
-          if (param_1 <= pvVar20) {
-            bVar10 = ((long)pvVar20 - (long)param_1 & 0xfffffffff8000000U) != 0;
-          }
-          if (!bVar10) {
-            pvVar22 = (void *)((long)pvVar20 + 0x15c);
-            bVar10 = 0x8000000 < (ulong)((long)pvVar22 - (long)pvVar1);
-            if (pvVar22 <= pvVar1) {
-              bVar10 = ((long)pvVar1 - (long)pvVar22 & 0xfffffffff8000000U) != 0;
-            }
-            if (!bVar10) goto LAB_00152fe0;
-          }
-        }
-        munmap(pvVar20,DAT_00209d88);
-        bVar10 = true;
-      }
-    }
-    uVar11 = DAT_00209d88;
-    pvVar20 = DAT_001e0978;
-    bVar12 = uVar21 < 0x6f00001;
-    uVar24 = uVar24 - 0x100000;
-    uVar21 = uVar21 + 0x100000;
-  } while (bVar12);
-  local_24c8 = "alloc_mmap";
-  if (bVar10) {
-    iVar14 = 0;
-    local_24c8 = "alloc_range";
-  }
-  local_24cc = iVar14;
-  memset(auStack_24b0,0,0x218);
-  if (((((ulong)param_1 & 3) == 0) && (uVar11 == 0x1000 || uVar11 == 0x4000)) &&
-     ((pvVar20 < (void *)0xfffffffffec00000 &&
-      ((pvVar20 <= param_1 && ((ulong)((long)param_1 - (long)pvVar20) >> 0x16 < 5)))))) {
-    uVar24 = -uVar11;
-    uVar27 = (long)param_1 - 0x8000000;
-    uVar21 = uVar27;
-    if ((ulong)param_1 >> 0x1b == 0) {
-      uVar21 = 0;
-    }
-    uVar3 = (long)param_1 + 0x7fffeb4;
-    uVar6 = uVar3;
-    if ((void *)0xfffffffff800014b < param_1) {
-      uVar6 = 0xffffffffffffffff;
-    }
-    uVar4 = uVar21;
-    if (uVar21 < 0x10001) {
-      uVar4 = 0x10000;
-    }
-    uStack_24b8 = uVar6;
-    if (~uVar11 <= uVar6) {
-      uStack_24b8 = ~uVar11;
-    }
-    local_24c0 = (uVar11 - 1) + uVar4 & uVar24;
-    uStack_24b8 = uStack_24b8 & uVar24;
-    local_22a8 = uVar11;
-    if (local_24c0 <= uStack_24b8) {
-      puVar28 = (ulong *)0x0;
-      if ((DAT_00215a00 != (void *)0x0) || ((void *)((long)pvVar20 + 0xb2e674U) != param_1)) {
-LAB_00153138:
-        __stream = fopen("/proc/self/maps","r");
-        if (__stream != (FILE *)0x0) {
-LAB_00153158:
-          piVar15 = (int *)__errno();
-          uVar26 = 0;
-          local_24f8 = 0;
-          pvVar20 = (void *)0x0;
-          bVar10 = false;
-LAB_0015317c:
-          bVar12 = bVar10;
-          *piVar15 = 0;
-          pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-          if (pcVar16 != (char *)0x0) {
-LAB_0015331c:
-            sVar17 = strlen((char *)&local_2070);
-            if ((sVar17 != 0) && ((&cStack_2071)[sVar17] == '\n')) {
-              iVar14 = 0;
-              uVar26 = uVar26 + 1;
-              if (uVar26 < 0x8001) {
-                pcVar16 = "gap_bounds";
-                if (sVar17 <= 0x800000U - local_24f8) {
-                  lVar23 = 0;
-                  pvVar22 = (void *)0x0;
-                  local_24f8 = sVar17 + local_24f8;
-                  do {
-                    bVar8 = local_206c[lVar23 + -4];
-                    uVar18 = (uint)bVar8;
-                    if (bVar8 - 0x30 < 10) {
-                      iVar14 = -0x30;
-                    }
-                    else {
-                      iVar14 = -0x57;
-                      if (5 < bVar8 - 0x61) {
-                        if (5 < uVar18 - 0x41) goto LAB_001533d4;
-                        iVar14 = -0x37;
-                      }
-                    }
-                    if ((ulong)pvVar22 >> 0x3c != 0) goto LAB_00153660;
-                    lVar23 = lVar23 + 1;
-                    pvVar22 = (void *)((ulong)(iVar14 + uVar18) + (long)pvVar22 * 0x10);
-                  } while( true );
-                }
-                goto LAB_00153664;
-              }
-            }
-            iVar14 = 0;
-            pcVar16 = "gap_bounds";
-            goto LAB_00153664;
-          }
-          iVar14 = *piVar15;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar14 != 4)) {
-LAB_0015386c:
-            if (iVar13 == 0) {
-              iVar13 = feof(__stream);
-              iVar14 = 0;
-              if (iVar13 != 0) {
-                pcVar16 = "gap_maps";
-                if ((uVar26 == 0) || (!bVar12)) goto LAB_00153664;
-                if (puVar28 != (ulong *)0x0) {
-                  FUN_00157cb8(puVar28,param_1,pvVar20,0xffffffffffffffff);
-                }
-                FUN_00157cb8(&local_24c0,param_1,pvVar20,0xffffffffffffffff);
-                iVar14 = fclose(__stream);
-                if (iVar14 != 0) {
-                  local_24c8 = "gap_close";
-                  local_24cc = *piVar15;
-                  goto LAB_00152fcc;
-                }
-                local_24cc = 0;
-                local_2070 = 0;
-                local_24c8 = "gap_empty";
-                if (puVar28 != (ulong *)0x0) {
-                  pvVar20 = (void *)FUN_00157ab4(param_1,puVar28,&local_24c8,&local_24cc,&local_2070
-                                                );
-                  if (pvVar20 != (void *)0x0) {
-                    DAT_00215a08 = 1;
-                    DAT_00215a00 = pvVar20;
-                    goto LAB_00152fe0;
-                  }
-                  if (local_2070 != 0) goto LAB_00152fcc;
-                }
-                pvVar20 = (void *)FUN_00157ab4(param_1,&local_24c0,&local_24c8,&local_24cc,
-                                               &local_2070);
-                if (pvVar20 == (void *)0x0) goto LAB_00152fcc;
-                goto LAB_00152fe0;
-              }
-            }
-          }
-          else {
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-            clearerr(__stream);
-            *piVar15 = 0;
-            pcVar16 = fgets((char *)&local_2070,0x2000,__stream);
-            if (pcVar16 != (char *)0x0) goto LAB_0015331c;
-            iVar14 = *piVar15;
-            iVar13 = ferror(__stream);
-            if ((iVar13 == 0) || (iVar14 != 4)) goto LAB_0015386c;
-          }
-          pcVar16 = "gap_read";
-          goto LAB_00153664;
-        }
-        piVar15 = (int *)__errno();
-        iVar14 = *piVar15;
-        if (iVar14 == 4) {
-          __stream = fopen("/proc/self/maps","r");
-          if (__stream != (FILE *)0x0) goto LAB_00153158;
-          piVar15 = (int *)__errno();
-          iVar14 = *piVar15;
-          if (iVar14 == 4) {
-            __stream = fopen("/proc/self/maps","r");
-            if (__stream != (FILE *)0x0) goto LAB_00153158;
-            piVar15 = (int *)__errno();
-            iVar14 = *piVar15;
-            if (iVar14 == 4) {
-              __stream = fopen("/proc/self/maps","r");
-              if (__stream != (FILE *)0x0) goto LAB_00153158;
-              piVar15 = (int *)__errno();
-              iVar14 = *piVar15;
-              if (iVar14 == 4) {
-                __stream = fopen("/proc/self/maps","r");
-                if (__stream != (FILE *)0x0) goto LAB_00153158;
-                piVar15 = (int *)__errno();
-                iVar14 = *piVar15;
-                if (iVar14 == 4) {
-                  __stream = fopen("/proc/self/maps","r");
-                  if (__stream != (FILE *)0x0) goto LAB_00153158;
-                  piVar15 = (int *)__errno();
-                  iVar14 = *piVar15;
-                  if (iVar14 == 4) {
-                    __stream = fopen("/proc/self/maps","r");
-                    if (__stream != (FILE *)0x0) goto LAB_00153158;
-                    piVar15 = (int *)__errno();
-                    iVar14 = *piVar15;
-                    if (iVar14 == 4) {
-                      __stream = fopen("/proc/self/maps","r");
-                      if (__stream != (FILE *)0x0) goto LAB_00153158;
-                      piVar15 = (int *)__errno();
-                      iVar14 = *piVar15;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        local_24c8 = "gap_open";
-        local_24cc = iVar14;
-        goto LAB_00152fcc;
-      }
-      memset(auStack_2288,0,0x218);
-      uVar4 = (long)pvVar20 - 0x74d1880;
-      if (pvVar20 < (void *)0x74d1880) {
-        uVar4 = 0;
-      }
-      uVar2 = (long)pvVar20 - 0x74d166c;
-      uVar5 = 0;
-      if (uVar11 * 2 <= uVar4) {
-        uVar5 = uVar4 + uVar11 * -2;
-      }
-      if (pvVar20 < (void *)0x74d166c) {
-        uVar2 = 0;
-      }
-      uVar4 = 0;
-      if (uVar11 <= uVar2) {
-        uVar4 = uVar2 - uVar11;
-      }
-      if (uVar21 < 0x10001) {
-        uVar27 = 0x10000;
-      }
-      local_2078 = 1;
-      if (uVar4 <= uVar27) {
-        uVar4 = uVar27;
-      }
-      local_2080 = uVar11 * 3;
-      if (uVar5 <= uVar4) {
-        uVar5 = uVar4;
-      }
-      if (uVar5 <= uVar24) {
-        lVar19 = (long)pvVar20 + 0x8b2e634;
-        lVar23 = (long)pvVar20 + 0x8b2e848;
-        if ((void *)0xfffffffff74d19cb < pvVar20) {
-          lVar19 = -1;
-        }
-        if ((void *)0xfffffffff74d17b7 < pvVar20) {
-          lVar23 = -1;
-        }
-        if (~local_2080 <= uVar6) {
-          uVar3 = ~local_2080;
-        }
-        local_2290 = lVar19 + uVar11 * -2;
-        uVar27 = lVar23 - uVar11;
-        if (uVar3 <= lVar23 - uVar11) {
-          uVar27 = uVar3;
-        }
-        local_2298 = uVar5 + (uVar11 - 1) & uVar24;
-        if (uVar27 <= local_2290) {
-          local_2290 = uVar27;
-        }
-        local_2290 = local_2290 & uVar24;
-        if (local_2298 <= local_2290) {
-          puVar28 = &local_2298;
-          goto LAB_00153138;
-        }
-      }
-    }
-  }
-  local_24cc = 0;
-  local_24c8 = "gap_window";
-  goto LAB_00152fcc;
-LAB_001533d4:
-  iVar14 = 0;
-  if ((int)lVar23 != 0) {
-    pcVar16 = "gap_parse";
-    if (uVar18 == 0x2d) {
-      lVar19 = 0;
-      pvVar25 = (void *)0x0;
-      do {
-        bVar8 = local_206c[lVar19 + lVar23 + -3];
-        uVar18 = (uint)bVar8;
-        if (bVar8 - 0x30 < 10) {
-          iVar14 = -0x30;
-        }
-        else {
-          iVar14 = -0x57;
-          if (5 < bVar8 - 0x61) {
-            if (5 < uVar18 - 0x41) goto LAB_00153448;
-            iVar14 = -0x37;
-          }
-        }
-        if ((ulong)pvVar25 >> 0x3c != 0) goto LAB_00153660;
-        lVar19 = lVar19 + 1;
-        pvVar25 = (void *)((ulong)(iVar14 + uVar18) + (long)pvVar25 * 0x10);
-      } while( true );
-    }
-    goto LAB_00153664;
-  }
-  goto LAB_00153660;
-LAB_00153448:
-  if (((int)lVar19 != 0) && (uVar18 == 0x20)) {
-    sVar17 = strlen(local_206c + lVar23 + lVar19 + -2);
-    if ((sVar17 < 5) || ((cVar7 = local_206c[lVar23 + lVar19 + -2], cVar7 != 'r' && (cVar7 != '-')))
-       ) {
-      iVar14 = 0;
-      pcVar16 = "gap_parse";
-      goto LAB_00153664;
-    }
-    if (((local_206c[lVar23 + lVar19 + -1] != 'w') && (local_206c[lVar23 + lVar19 + -1] != '-')) ||
-       ((local_206c[lVar23 + lVar19] != 'x' && (local_206c[lVar23 + lVar19] != '-'))))
-    goto LAB_00153804;
-    if (((local_206c[lVar23 + lVar19 + 1] != 's') && (local_206c[lVar23 + lVar19 + 1] != 'p')) ||
-       (local_206c[lVar23 + lVar19 + 2] != ' ')) goto LAB_00153804;
-    iVar14 = 0;
-    if (pvVar25 <= pvVar22) {
-      pcVar16 = "gap_parse";
-      goto LAB_00153664;
-    }
-    pcVar16 = "gap_parse";
-    if (pvVar22 < pvVar20) goto LAB_00153664;
-    if ((DAT_00209d88 - 1 & ((ulong)pvVar25 | (ulong)pvVar22)) != 0) goto LAB_00153804;
-    if (puVar28 != (ulong *)0x0) {
-      FUN_00157cb8(puVar28,param_1,pvVar20,pvVar22);
-    }
-    FUN_00157cb8(&local_24c0,param_1,pvVar20,pvVar22);
-    bVar10 = bVar12;
-    if (pvVar1 <= pvVar25) {
-      bVar10 = true;
-    }
-    pvVar20 = pvVar25;
-    if (param_1 < pvVar22 || (void *)0xffffffffffffffef < param_1) {
-      bVar10 = bVar12;
-    }
-    goto LAB_0015317c;
-  }
-LAB_00153660:
-  iVar14 = 0;
-  pcVar16 = "gap_parse";
-  goto LAB_00153664;
-LAB_00153804:
-  iVar14 = 0;
-  pcVar16 = "gap_parse";
-LAB_00153664:
-  local_24cc = iVar14;
-  local_24c8 = pcVar16;
-  fclose(__stream);
-LAB_00152fcc:
-  FUN_00137ca4(local_24c8,param_1,local_24cc);
-  pvVar20 = (void *)0x0;
-LAB_00152fe0:
-  if (*(long *)(lVar9 + 0x28) == local_70) {
-    return pvVar20;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 }
 
-/* ===== FUN_00157ab4 @ 00157ab4 [libNexusEvasionRuntime69252.so] ===== */
-
-void * FUN_00157ab4(void *param_1,long param_2,undefined8 *param_3,undefined4 *param_4,
-                   undefined4 *param_5)
-
+static uint64_t monotonic_ms(void)
 {
-  ulong uVar1;
-  ulong uVar2;
-  bool bVar3;
-  int iVar4;
-  void *__addr;
-  undefined4 *puVar5;
-  size_t sVar6;
-  undefined4 uVar7;
-  void *__addr_00;
-  ulong uVar8;
-  
-  if (*(int *)(param_2 + 0x210) != 0) {
-    uVar8 = 0;
-    uVar1 = (long)param_1 + 0x10;
-    do {
-      __addr_00 = *(void **)(param_2 + 0x10 + uVar8 * 8);
-      if (*(int *)(param_2 + 0x220) == 0) {
-        if (((((((void *)0xffff < __addr_00) && (((ulong)__addr_00 & 0xf) == 0)) &&
-              (sVar6 = *(ulong *)(param_2 + 0x218), 0x16f < sVar6)) &&
-             ((param_1 < (void *)0xfffffffffffffff0 && (!CARRY8(sVar6,(ulong)__addr_00))))) &&
-            ((DAT_001e0978 < 0xfffffffffec00000 &&
-             ((sVar6 + (long)__addr_00 <= DAT_001e0978 ||
-              ((void *)(DAT_001e0978 + 0x1400000) <= __addr_00)))))) &&
-           ((((uint)__addr_00 | (uint)param_1) & 3) == 0)) {
-          bVar3 = 0x8000000 < (ulong)((long)param_1 - (long)__addr_00);
-          if (param_1 <= __addr_00) {
-            bVar3 = ((long)__addr_00 - (long)param_1 & 0xfffffffff8000000U) != 0;
-          }
-          if (!bVar3) {
-            uVar2 = (long)__addr_00 + 0x15c;
-            bVar3 = 0x8000000 < uVar2 - uVar1;
-            if (uVar2 <= uVar1) {
-              bVar3 = (uVar1 - uVar2 & 0xfffffffff8000000) != 0;
-            }
-            if (!bVar3) goto LAB_00157c10;
-          }
-        }
-LAB_00157c70:
-        uVar7 = 0;
-        *param_3 = "gap_range";
-LAB_00157c80:
-        *param_4 = uVar7;
-        *param_5 = 1;
-        return (void *)0x0;
-      }
-      iVar4 = FUN_00157860(__addr_00);
-      if (iVar4 == 0) goto LAB_00157c70;
-      sVar6 = *(size_t *)(param_2 + 0x218);
-LAB_00157c10:
-      __addr = mmap(__addr_00,sVar6,3,0x100022,-1,0);
-      if (__addr == (void *)0xffffffffffffffff) {
-        *param_3 = "gap_mmap";
-        puVar5 = (undefined4 *)__errno();
-        *param_4 = *puVar5;
-      }
-      else {
-        if (__addr_00 == __addr) {
-          return __addr_00;
-        }
-        sVar6 = *(size_t *)(param_2 + 0x218);
-        *param_3 = "gap_return";
-        *param_4 = 0;
-        iVar4 = munmap(__addr,sVar6);
-        if (iVar4 != 0) {
-          *param_3 = "gap_unmap";
-          puVar5 = (undefined4 *)__errno();
-          uVar7 = *puVar5;
-          goto LAB_00157c80;
-        }
-      }
-      uVar8 = uVar8 + 1;
-    } while (uVar8 < *(uint *)(param_2 + 0x210));
-  }
-  return (void *)0x0;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-/* ===== FUN_0015b524 @ 0015b524 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0015b524(FILE *param_1)
-
+static int within_adrp(uintptr_t a, uintptr_t b)
 {
-  long lVar1;
-  int iVar2;
-  uint uVar3;
-  char *pcVar4;
-  ulong uVar5;
-  int iVar6;
-  ulong local_280;
-  ulong local_278;
-  char local_270;
-  char local_26f;
-  char acStack_268 [512];
-  long local_68;
-  
-  lVar1 = tpidr_el0;
-  local_68 = *(long *)(lVar1 + 0x28);
-  uVar5 = (ulong)param_1 & 0xffffffffffffff;
-  DAT_002170e8 = 0;
-  DAT_002170f0 = 0;
-  if ((0xffff < uVar5) && (param_1 = fopen("/proc/self/maps","r"), param_1 != (FILE *)0x0)) {
-    iVar6 = 0x1000;
-    do {
-      pcVar4 = fgets(acStack_268,0x200,param_1);
-      if (pcVar4 == (char *)0x0) break;
-      iVar2 = sscanf(acStack_268,"%llx-%llx %4s",&local_278,&local_280,&local_270);
-      if ((((iVar2 == 3) && (local_278 <= uVar5 + 0xa8)) && (uVar5 + 0xb8 <= local_280)) &&
-         ((local_270 == 'r' && (local_26f == 'w')))) {
-        DAT_002170f0 = local_278;
-        DAT_002170e8 = local_280;
-        break;
-      }
-      iVar6 = iVar6 + -1;
-    } while (iVar6 != 0);
-    uVar3 = fclose(param_1);
-    param_1 = (FILE *)(ulong)uVar3;
-  }
-  if (*(long *)(lVar1 + 0x28) == local_68) {
+    return (uint64_t)((int64_t)b - (int64_t)a + (int64_t)NEAR_ADRP_REACH)
+           < 2u * NEAR_ADRP_REACH;
+}
+
+static int mirror_candidate_ok(uintptr_t cand, uintptr_t target, size_t page)
+{
+    if (cand < 0x10000 || (cand & 0xf) != 0)
+        return 0;
+    if (page < MIRROR_MIN_PAGE)
+        return 0;
+    if (target > UINT64_MAX - 0x10)
+        return 0;
+    if (cand > UINT64_MAX - page)
+        return 0;
+    if (g_game_base > UINT64_MAX - GAME_IMAGE_SPAN)
+        return 0;
+    if (!(page + cand <= g_game_base || g_game_base + GAME_IMAGE_SPAN <= cand))
+        return 0;
+    if (((cand | target) & 3) != 0)
+        return 0;
+    if (!within_adrp(target, cand))
+        return 0;
+    if (!within_adrp(cand + MIRROR_OBJECT_OFFSET, target + 0x10))
+        return 0;
+    return 1;
+}
+
+static int hex_value(int c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static int targets_push(uintptr_t *list, uint32_t *count, uintptr_t value)
+{
+    uint32_t n = *count;
+    if (n != 0) {
+        for (uint32_t i = 0; i < n; i++)
+            if (list[i] == value)
+                return 1;
+        if (n == TARGET_LIST_MAX)
+            return 0;
+    }
+    list[n] = value;
+    *count = n + 1;
+    return 1;
+}
+
+const char *near_alloc_phase_label(void)
+{
+    near_phase_cell_t *cell = cell_lock(near_phase_cell);
+    const char *phase = cell->phase;
+    const char *known = "prepare";
+    uint32_t err = 0;
+
+    if (phase != NULL) {
+        for (int i = 0; i < 26; i++) {
+            if (strcmp(near_phase_names[i], phase) == 0) {
+                known = phase;
+                break;
+            }
+        }
+    }
+    if (strcmp(known, "mmap") == 0 || strcmp(known, "seal") == 0
+        || strcmp(known, "gap_open") == 0 || strcmp(known, "gap_read") == 0
+        || strcmp(known, "gap_close") == 0 || strcmp(known, "gap_mmap") == 0
+        || strcmp(known, "gap_unmap") == 0) {
+        uint32_t v = cell->err;
+        err = (v >= 1 && v <= 0xfff) ? v : 0;
+    }
+    char *buf = cell_lock(near_label_cell);
+    snprintf(buf, 0x32, "near_%s_b337c4_e%u", known, (unsigned)err);
+    return buf;
+}
+
+static void *mirror_map_in_gap(const void *target, gap_window_t *win,
+                               const char **stage, int *err, int *fatal)
+{
+    if (win->count == 0)
+        return NULL;
+    for (int32_t i = 0; i < win->count; i++) {
+        uintptr_t hint = win->slots[i];
+        size_t size = win->size;
+        if (win->validate_with_scan == 0) {
+            if (!mirror_candidate_ok(hint, (uintptr_t)target, size)) {
+                *stage = "gap_range";
+                *err = 0;
+                *fatal = 1;
+                return NULL;
+            }
+        } else if (!mirror_mapping_valid(hint)) {
+            *stage = "gap_range";
+            *err = 0;
+            *fatal = 1;
+            return NULL;
+        }
+        void *m = mmap((void *)hint, size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (m == MAP_FAILED) {
+            *stage = "gap_mmap";
+            *err = errno;
+        } else if ((uintptr_t)m == hint) {
+            return (void *)hint;
+        } else {
+            *stage = "gap_return";
+            *err = 0;
+            if (munmap(m, size) != 0) {
+                *stage = "gap_unmap";
+                *err = errno;
+            }
+        }
+    }
+    return NULL;
+}
+
+static FILE *open_proc_maps(void)
+{
+    FILE *f;
+    for (int tries = 0; tries < 8; tries++) {
+        f = fopen("/proc/self/maps", "r");
+        if (f != NULL)
+            return f;
+        if (errno != EINTR)
+            return NULL;
+    }
+    return NULL;
+}
+
+void *near_mirror_alloc(const void *target)
+{
+    uintptr_t t = (uintptr_t)target;
+    size_t page = g_page_size;
+    uintptr_t aligned = t & -page;
+    int err = 0;
+    int unmapped = 0;
+    const char *stage;
+    void *m;
+    FILE *f;
+    gap_window_t window1;
+    gap_window_t window2;
+    int have_window2 = 0;
+
+    if (mirror_base != 0 && mirror_slot <= 2) {
+        uintptr_t cand = mirror_base + page * mirror_slot;
+        if (mirror_candidate_ok(cand, t, page)) {
+            mirror_slot++;
+            return (void *)cand;
+        }
+    }
+
+    if (mirror_base == 0) {
+        size_t size3 = page * 3;
+        uintptr_t hi_cap = UINT64_MAX - 0x1000000;
+        uintptr_t off = 0x100000;
+        do {
+            if (aligned <= hi_cap && aligned + off != 0) {
+                m = mmap((void *)(aligned + off), size3, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (m == MAP_FAILED) {
+                    err = errno;
+                } else if (mirror_mapping_valid((uintptr_t)m)) {
+                    mirror_slot = 1;
+                    mirror_base = (uintptr_t)m;
+                    return m;
+                } else {
+                    munmap(m, size3);
+                    unmapped = 1;
+                }
+            }
+            if (off < aligned) {
+                m = mmap((void *)(aligned - off), size3, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (m == MAP_FAILED) {
+                    err = errno;
+                } else if (mirror_mapping_valid((uintptr_t)m)) {
+                    mirror_slot = 1;
+                    mirror_base = (uintptr_t)m;
+                    return m;
+                } else {
+                    munmap(m, size3);
+                    unmapped = 1;
+                }
+            }
+            hi_cap -= 0x100000;
+            off += 0x100000;
+        } while (off < NEAR_RING_MAX);
+    }
+
+    {
+        uintptr_t hi_cap = UINT64_MAX - 0x1000000;
+        uintptr_t off = 0x100000;
+        do {
+            if (aligned <= hi_cap && aligned + off != 0) {
+                m = mmap((void *)(aligned + off), page, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (m == MAP_FAILED) {
+                    err = errno;
+                } else if (mirror_candidate_ok((uintptr_t)m, t, page)) {
+                    return m;
+                } else {
+                    munmap(m, page);
+                    unmapped = 1;
+                }
+            }
+            if (off < aligned) {
+                m = mmap((void *)(aligned - off), page, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (m == MAP_FAILED) {
+                    err = errno;
+                } else if (mirror_candidate_ok((uintptr_t)m, t, page)) {
+                    return m;
+                } else {
+                    munmap(m, page);
+                    unmapped = 1;
+                }
+            }
+            hi_cap -= 0x100000;
+            off += 0x100000;
+        } while (off < NEAR_RING_MAX);
+    }
+
+    if (unmapped) {
+        err = 0;
+        stage = "alloc_range";
+    } else {
+        stage = "alloc_mmap";
+    }
+
+    memset(&window1, 0, sizeof window1);
+    memset(&window2, 0, sizeof window2);
+
+    if ((t & 3) == 0 && (page == 0x1000 || page == 0x4000)
+        && g_game_base <= UINT64_MAX - GAME_IMAGE_SPAN
+        && g_game_base <= t && (t - g_game_base) >> 0x16 < 5) {
+        uintptr_t lo_raw = (t >> 0x1b == 0) ? 0 : t - NEAR_ADRP_REACH;
+        uintptr_t hi_raw = t + 0x7fffeb4;
+        if (t > UINT64_MAX - 0x7fffeb5)
+            hi_raw = UINT64_MAX;
+        if (lo_raw < 0x10001)
+            lo_raw = 0x10000;
+        uintptr_t hi_lim = (hi_raw > UINT64_MAX - page) ? UINT64_MAX - page : hi_raw;
+        window1.lo = (lo_raw + page - 1) & -page;
+        window1.hi = hi_lim & -page;
+        window1.size = page;
+        window1.validate_with_scan = 0;
+
+        if (window1.lo <= window1.hi) {
+            if (mirror_base == 0 && t == g_game_base + GAME_KNOWN_OBJECT_OFFSET) {
+                uintptr_t lo_a = (g_game_base >= 0x74d1880)
+                                     ? g_game_base - 0x74d1880 : 0;
+                uintptr_t lo_b = (g_game_base >= 0x74d166c)
+                                     ? g_game_base - 0x74d166c : 0;
+                uintptr_t lo_1 = (lo_a >= 2 * page) ? lo_a - 2 * page : 0;
+                uintptr_t lo_2 = (lo_b >= page) ? lo_b - page : 0;
+                if (lo_2 < lo_raw)
+                    lo_2 = lo_raw;
+                window2.size = page * 3;
+                window2.validate_with_scan = 1;
+                if (lo_1 < lo_2)
+                    lo_1 = lo_2;
+                if (lo_1 <= UINT64_MAX - page) {
+                    uintptr_t hi_a = g_game_base + 0x8b2e634;
+                    uintptr_t hi_b = g_game_base + 0x8b2e848;
+                    uintptr_t hi_c = hi_raw;
+                    if (g_game_base > UINT64_MAX - 0x8b2e635)
+                        hi_a = UINT64_MAX;
+                    if (g_game_base > UINT64_MAX - 0x8b2e849)
+                        hi_b = UINT64_MAX;
+                    if (hi_c > UINT64_MAX - page * 3)
+                        hi_c = UINT64_MAX - page * 3;
+                    uintptr_t hi = hi_a - 2 * page;
+                    uintptr_t hi2 = hi_b - page;
+                    if (hi_c < hi2)
+                        hi2 = hi_c;
+                    if (hi2 < hi)
+                        hi = hi2;
+                    window2.lo = (lo_1 + page - 1) & -page;
+                    window2.hi = hi & -page;
+                    if (window2.lo <= window2.hi)
+                        have_window2 = 1;
+                }
+            }
+
+            f = open_proc_maps();
+            if (f == NULL) {
+                stage = "gap_open";
+                err = errno;
+                goto report;
+            }
+
+            {
+                char line[MAPS_LINE_MAX];
+                uint32_t lines = 0;
+                uint64_t total_bytes = 0;
+                uintptr_t prev_end = 0;
+                int keep = 0;
+                int read_tries = 0;
+                uintptr_t start = 0;
+                uintptr_t end = 0;
+                const char *perms;
+                size_t i, j, len;
+                int c;
+                int ferr;
+
+                for (;;) {
+                    errno = 0;
+                    if (fgets(line, MAPS_LINE_MAX, f) == NULL) {
+                        if (ferror(f) && errno == EINTR && read_tries < 8) {
+                            read_tries++;
+                            clearerr(f);
+                            continue;
+                        }
+                        break;
+                    }
+                    read_tries = 0;
+                    len = strlen(line);
+                    if (len == 0 || total_bytes + len > MAPS_MAX_BYTES) {
+                        stage = "gap_bounds";
+                        err = 0;
+                        goto scan_done;
+                    }
+                    if (line[len - 1] != '\n') {
+                        stage = "gap_bounds";
+                        err = 0;
+                        goto scan_done;
+                    }
+                    lines++;
+                    if (lines > MAPS_MAX_LINES) {
+                        stage = "gap_bounds";
+                        err = 0;
+                        goto scan_done;
+                    }
+                    total_bytes += len;
+
+                    start = 0;
+                    i = 0;
+                    while ((c = hex_value((unsigned char)line[i])) >= 0) {
+                        start = start * 16 + (uintptr_t)c;
+                        i++;
+                        if (start >> 60) {
+                            stage = "gap_parse";
+                            err = 0;
+                            goto scan_done;
+                        }
+                    }
+                    if (i == 0 || line[i] != '-') {
+                        stage = "gap_parse";
+                        err = 0;
+                        goto scan_done;
+                    }
+                    i++;
+                    end = 0;
+                    j = 0;
+                    while ((c = hex_value((unsigned char)line[i + j])) >= 0) {
+                        end = end * 16 + (uintptr_t)c;
+                        j++;
+                        if (end >> 60) {
+                            stage = "gap_parse";
+                            err = 0;
+                            goto scan_done;
+                        }
+                    }
+                    if (j == 0 || line[i + j] != ' ') {
+                        stage = "gap_parse";
+                        err = 0;
+                        goto scan_done;
+                    }
+                    perms = line + i + j + 1;
+                    if (strlen(perms) < 5
+                        || (perms[0] != 'r' && perms[0] != '-')
+                        || (perms[1] != 'w' && perms[1] != '-')
+                        || (perms[2] != 'x' && perms[2] != '-')
+                        || (perms[3] != 's' && perms[3] != 'p')
+                        || perms[4] != ' '
+                        || end <= start
+                        || start < prev_end
+                        || ((g_page_size - 1) & (start | end)) != 0) {
+                        stage = "gap_parse";
+                        err = 0;
+                        goto scan_done;
+                    }
+
+                    if (have_window2)
+                        gap_window_offer(&window2, t, prev_end, start);
+                    gap_window_offer(&window1, t, prev_end, start);
+                    {
+                        int new_keep = keep || (t + 0x10 <= end);
+                        prev_end = end;
+                        if (t < start || t > UINT64_MAX - 0x10)
+                            new_keep = keep;
+                        keep = new_keep;
+                    }
+                }
+
+                ferr = ferror(f);
+                if (ferr || !feof(f)) {
+                    stage = "gap_read";
+                    err = ferr ? errno : 0;
+                    goto scan_done;
+                }
+                if (lines == 0 || !keep) {
+                    stage = "gap_maps";
+                    err = 0;
+                    goto scan_done;
+                }
+                if (have_window2)
+                    gap_window_offer(&window2, t, prev_end, UINT64_MAX);
+                gap_window_offer(&window1, t, prev_end, UINT64_MAX);
+                if (fclose(f) != 0) {
+                    stage = "gap_close";
+                    err = errno;
+                    goto report;
+                }
+                {
+                    int fatal = 0;
+                    err = 0;
+                    stage = "gap_empty";
+                    if (have_window2) {
+                        m = mirror_map_in_gap(target, &window2, &stage, &err, &fatal);
+                        if (m != NULL) {
+                            mirror_slot = 1;
+                            mirror_base = (uintptr_t)m;
+                            return m;
+                        }
+                        if (fatal)
+                            goto report;
+                    }
+                    m = mirror_map_in_gap(target, &window1, &stage, &err, &fatal);
+                    if (m != NULL)
+                        return m;
+                    goto report;
+                }
+
+scan_done:
+                fclose(f);
+                goto report;
+            }
+        }
+    }
+
+    stage = "gap_window";
+    err = 0;
+
+report:
+    near_alloc_report(stage, t, err);
+    return NULL;
+}
+
+void locate_rw_mapping(const void *object)
+{
+    uintptr_t addr = (uintptr_t)object & 0xffffffffffffffULL;
+    char line[512];
+    unsigned long long lo, hi;
+    char perms[8];
+    int budget;
+
+    rw_mapping_start = 0;
+    rw_mapping_end = 0;
+    if (addr < 0x10000)
+        return;
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (f == NULL)
+        return;
+    budget = 0x1000;
+    while (budget-- > 0) {
+        if (fgets(line, sizeof line, f) == NULL)
+            break;
+        if (sscanf(line, "%llx-%llx %4s", &lo, &hi, perms) == 3
+            && lo <= addr + 0xa8 && addr + 0xb8 <= hi
+            && perms[0] == 'r' && perms[1] == 'w') {
+            rw_mapping_start = lo;
+            rw_mapping_end = hi;
+            break;
+        }
+    }
+    fclose(f);
+}
+
+int locate_unique_mapping(uintptr_t addr, uintptr_t out[6])
+{
+    char line[UNIQUE_MAPS_LINE_MAX];
+    maps_entry_t found;
+    maps_entry_t entry;
+    uint32_t lines = 0;
+    uint64_t total = 0;
+    uint32_t matches = 0;
+    int bad = 0;
+    int ferr;
+    size_t len;
+
+    if (out == NULL)
+        return 0;
+    if (addr != g_game_base + 0x123e0c8)
+        return 0;
+    FILE *f = fopen("/proc/self/maps", "re");
+    if (f == NULL)
+        return 0;
+    for (;;) {
+        if (fgets(line, UNIQUE_MAPS_LINE_MAX, f) == NULL)
+            break;
+        len = strlen(line);
+        if (len == 0 || total + len > MAPS_MAX_BYTES) {
+            bad = 1;
+            break;
+        }
+        total += len;
+        if (line[len - 1] != '\n') {
+            bad = 1;
+            break;
+        }
+        if (parse_maps_line(line, g_maps_parse_fmt, &entry)) {
+            if (entry.start <= addr && addr + 8 <= entry.end) {
+                found = entry;
+                matches++;
+            }
+        }
+        lines++;
+        if (lines >= MAPS_MAX_LINES) {
+            bad = 1;
+            break;
+        }
+    }
+    ferr = ferror(f);
+    fclose(f);
+    if (bad || ferr || matches != 1)
+        return 0;
+    memcpy(out, &found, sizeof found);
+    return 1;
+}
+
+static int branding_abi_ready(void)
+{
+    if (!verify_code_sha256(branding_abi_hashes[0].offset, 0x20, branding_abi_hashes[0].sha256))
+        return 0;
+    if (!verify_code_sha256(branding_abi_hashes[1].offset, 0x20, branding_abi_hashes[1].sha256))
+        return 0;
+    if (!verify_code_sha256(branding_abi_hashes[2].offset, 0x20, branding_abi_hashes[2].sha256)) {
+        if (branding_linker_validate == NULL) {
+            uintptr_t probe[2] = { 0, 0 };
+            dl_iterate_phdr(branding_phdr_scan, probe);
+            if (probe[0] != 1 || probe[1] == 0)
+                return 0;
+            branding_linker_validate = (int (*)(uintptr_t))probe[1];
+        }
+        if (branding_linker_validate(g_game_base) != 1)
+            return 0;
+    }
+    for (int i = 3; i < 13; i++) {
+        if (!verify_code_sha256(branding_abi_hashes[i].offset, 0x20,
+                                branding_abi_hashes[i].sha256))
+            return 0;
+    }
+    return 1;
+}
+
+void branding_tick(uintptr_t tick_ctx)
+{
+    uintptr_t h;
+    uint64_t now;
+    uint32_t slot;
+    uintptr_t vt1 = 0;
+    uintptr_t players = 0;
+    uintptr_t player = 0;
+    uintptr_t aux = 0;
+    uintptr_t check = 0;
+    uintptr_t tok = 0;
+    int32_t meta = -1;
+    int own;
+    name_header_t hdr;
+    char raw_name[BRAND_NAME_MAX + 8];
+    uintptr_t game_str[2];
+    int verified;
+
+    if (tick_ctx == 0)
+        return;
+    h = runtime_read_handle();
+    if (h == 0)
+        return;
+
+    if (branding_abi_state != 1) {
+        if (branding_abi_state != 0)
+            return;
+        branding_abi_state = -1;
+        if (!branding_abi_ready()) {
+            if (branding_once_bits & 1)
+                return;
+            branding_once_bits |= 1;
+            if (++branding_attempts > BRAND_ATTEMPT_MAX)
+                return;
+            log_event("branding", "abi_refused", NULL);
+            return;
+        }
+        branding_abi_state = 1;
+    }
+
+    now = *(const uint64_t *)(const void *)(tick_ctx + 0x28);
+    if (branding_throttle_until != 0 && now < branding_throttle_until)
+        return;
+    branding_throttle_until = now + BRAND_THROTTLE_US;
+
+    slot = 0xffffffffu;
+    if (!mem_read(h, g_world_ctx + 0xe0, &slot, 4)
+        || slot > 0x3f || (int32_t)slot != g_world_index) {
+        if (branding_once_bits & 2)
+            return;
+        branding_once_bits |= 2;
+        if (++branding_attempts > BRAND_ATTEMPT_MAX)
+            return;
+        log_event("branding", "own_identity_refused", NULL);
+        return;
+    }
+
+    if (g_world_token == 0
+        || !mem_read(h, g_world_token + 0x20, &vt1, 8)
+        || vt1 < 0x10000 || (vt1 & 7) != 0
+        || !mem_read(h, vt1, &check, 8) || check != g_game_base + 0x11be3f0
+        || !mem_read(h, vt1 + 0x10, &tok, 8)
+        || tok < 0x10000 || tok > UINT64_MAX - 0x2000 || (tok & 7) != 0
+        || tok != g_world_token
+        || !mem_read(h, vt1 + 0x590, &players, 8)
+        || players < 0x10000 || (players & 7) != 0
+        || !mem_read(h, players, &check, 8) || check != g_game_base + 0x11ad208
+        || (player = ((uintptr_t (*)(uintptr_t, const char *))
+                      (g_game_base + 0x5d8ad4))(players, "player_name")) == 0
+        || !mem_read(h, player, &check, 8) || check != g_game_base + 0x11abad8
+        || !mem_read(h, player + 0x38, &aux, 8)
+        || !mem_read(h, player + 0x40, &meta, 4)) {
+        goto nameplate_fail;
+    }
+
+    own = branding_identity_fast(player, players);
+    if (own == 0 && aux == 0 && meta == -1) {
+        uint16_t count = 0;
+        uintptr_t list = 0;
+        own = 0;
+        if (mem_read(h, players + 0xc0, &count, 2)
+            && count >= 1 && count < 0x201
+            && mem_read_array(players + 0x90, &list)) {
+            uint32_t hits = 0;
+            for (uint32_t i = 0; i < count; i++) {
+                uintptr_t p = 0;
+                if (!mem_read(h, list + (uintptr_t)i * 8, &p, 8))
+                    goto nameplate_fail;
+                if (p == player)
+                    hits++;
+            }
+            own = (hits == 1);
+        }
+    }
+    if (own == 0) {
+        branding_report_refused(8, "name_read_refused");
+        return;
+    }
+
+    if (!mem_read(h, player + 0xe0, &hdr, 0x10)
+        || hdr.len == 0 || hdr.len >= BRAND_NAME_MAX) {
+        branding_report_refused(8, "name_read_refused");
+        return;
+    }
+    {
+        uintptr_t src = (hdr.len > BRAND_SSO_THRESHOLD) ? hdr.ptr : player + 0xe8;
+        if (src == 0 || !mem_read(h, src, raw_name, hdr.len)) {
+            branding_report_refused(8, "name_read_refused");
+            return;
+        }
+        if (memchr(raw_name, 0, hdr.len) == NULL)
+            raw_name[hdr.len] = 0;
+    }
+
+    if (branding_token != g_profile_token || branding_vt1 != vt1
+        || branding_vt2 != players || branding_player != player) {
+        branding_reset();
+        memset(branding_avatar_cache, 0, sizeof branding_avatar_cache);
+        branding_player = player;
+        branding_token = g_profile_token;
+        branding_vt1 = vt1;
+        branding_vt2 = players;
+        branding_name_valid = mem_read(h, player + 0x80, &branding_player_id, 4);
+    }
+
+    if (branding_last_name[0] == 0 || strcmp(raw_name, branding_last_name) != 0) {
+        const char *clean = branding_sanitize_name(raw_name);
+        if (clean == NULL || strlen(clean) > 0x7f)
+            return;
+        snprintf(branding_name, sizeof branding_name, "%s", clean);
+    }
+    if (!branding_name_valid)
+        return;
+
+    pthread_once(&branding_once_control, branding_once_init);
+    verified = 0;
+    if (branding_verify != NULL)
+        verified = (branding_verify(0) == 1);
+
+    if (strcmp(raw_name, branding_name) != 0) {
+        ((void (*)(void *, const char *))(g_game_base + 0x66ae58))(game_str, branding_name);
+        ((void (*)(uintptr_t, void *))(g_game_base + 0x5921a0))(player, game_str);
+        ((void (*)(void *))(g_game_base + 0x66ad48))(game_str);
+        branding_attempts++;
+        if (branding_attempts <= BRAND_ATTEMPT_MAX)
+            log_event("branding", "name_restored", NULL);
+    }
+    snprintf(branding_last_name, sizeof branding_last_name, "%s", branding_name);
+
+    if (!branding_avatar_ok(players, player))
+        return;
+    branding_finish(verified, now);
+    if (!branding_image_check(*(const uintptr_t *)(const void *)branding_avatar_cache,
+                              players)
+        && !branding_image_refused) {
+        *(uintptr_t *)(void *)branding_avatar_cache = 0;
+        if (branding_image_create(players) == 0) {
+            branding_image_refused = 1;
+            branding_attempts++;
+            if (branding_attempts <= BRAND_ATTEMPT_MAX)
+                log_event("branding", "image_refused", NULL);
+        } else {
+            branding_attempts++;
+            if (branding_attempts <= BRAND_ATTEMPT_MAX)
+                log_event("branding", "image_created", NULL);
+        }
+    }
+    branding_post(player, verified);
     return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(param_1);
+
+nameplate_fail:
+    if (branding_once_bits & 4)
+        return;
+    branding_once_bits |= 4;
+    if (++branding_attempts > BRAND_ATTEMPT_MAX)
+        return;
+    log_event("branding", "nameplate_refused", NULL);
 }
 
-/* ===== FUN_0015c6d4 @ 0015c6d4 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0015c6d4(char *param_1)
-
+void map_wall_scan_tick(uintptr_t world, uintptr_t expected_map, uint32_t frame,
+                        int refresh)
 {
-  bool bVar1;
-  long lVar2;
-  ulong uVar3;
-  ulong uVar4;
-  bool bVar5;
-  int iVar6;
-  uint uVar7;
-  char *pcVar8;
-  char *pcVar9;
-  undefined8 uVar10;
-  void *pvVar11;
-  char *__s;
-  ulong uVar12;
-  long lVar13;
-  ulong __n;
-  long lVar14;
-  int local_1f4;
-  char *local_1f0;
-  long local_1e8;
-  short local_1e0 [2];
-  int local_1dc;
-  long local_1d8;
-  long local_1d0;
-  ulong local_1c8;
-  ulong local_1c0;
-  code *local_1b8;
-  undefined8 local_80;
-  char *local_78;
-  long local_70;
-  
-  lVar2 = tpidr_el0;
-  local_70 = *(long *)(lVar2 + 0x28);
-  pcVar8 = param_1;
-  if ((param_1 == (char *)0x0) || (pcVar8 = (char *)FUN_001550fc(), (int)pcVar8 == 0))
-  goto LAB_0015cd28;
-  if (DAT_0021c9f0 == 1) {
-LAB_0015c8ac:
-    uVar12 = *(ulong *)(param_1 + 0x28);
-    if ((DAT_0021c798 != 0) && (uVar12 < DAT_0021c798)) goto LAB_0015cd28;
-    DAT_0021c798 = uVar12 + 100;
-    local_1f4 = -1;
-    pcVar8 = (char *)FUN_001428fc(pcVar8,DAT_0020f678 + 0xe0,&local_1f4,4);
-    uVar3 = DAT_0020f680;
-    if (((int)pcVar8 == 0) ||
-       (((local_1f4 < 0 || (0x3f < local_1f4)) || (DAT_0020f698 != local_1f4)))) {
-      if ((DAT_0021ca00 >> 1 & 1) != 0) goto LAB_0015cd28;
-      DAT_0021ca00 = DAT_0021ca00 | 2;
-      uVar7 = DAT_0021ca10 + 1;
-      bVar5 = 0x13 < DAT_0021ca10;
-      DAT_0021ca10 = uVar7;
-      if (bVar5) goto LAB_0015cd28;
-      pcVar8 = "own_identity_refused";
+    uint64_t t0 = monotonic_us();
+    uint64_t reads0 = g_mem_reads;
+    uint32_t prev_stage = map_failure_stage;
+    uintptr_t map_ptr = 0;
+    uintptr_t tiles = 0;
+    uint32_t w = 0;
+    uint32_t h = 0;
+    uint32_t stage;
+    uint32_t index = 0;
+    uintptr_t h2 = 0;
+    char json[600];
+    uint64_t now_ms;
+    uintptr_t handle;
+
+    if (refresh == 0) {
+        stage = 1;
+        goto finish_reset;
     }
-    else {
-      local_1c8 = 0;
-      local_1c0 = 0;
-      local_1d8 = 0;
-      local_1d0 = 0;
-      local_80 = 0;
-      local_1dc = -1;
-      if ((((((DAT_0020f680 != 0) &&
-             (pcVar8 = (char *)FUN_001428fc(pcVar8,DAT_0020f680 + 0x20,&local_1c0,8),
-             (int)pcVar8 != 0)) &&
-            ((0x11fff < local_1c0 + 0x2000 &&
-             (((local_1c0 & 7) == 0 &&
-              (pcVar8 = (char *)FUN_001428fc(pcVar8,local_1c0,&local_1d0,8), (int)pcVar8 != 0))))))
-           && (local_1d0 == DAT_001e0978 + 0x11be3f0)) &&
-          ((((((pcVar8 = (char *)FUN_001428fc(pcVar8,local_1c0 + 0x10,&local_80,8), (int)pcVar8 != 0
-               && (local_80 - 0x10000 < 0xfffffffffffee000)) && ((local_80 & 7) == 0)) &&
-             ((local_80 == uVar3 &&
-              (pcVar8 = (char *)FUN_001428fc(pcVar8,local_1c0 + 0x590,&local_1c8,8),
-              (int)pcVar8 != 0)))) && (0x11fff < local_1c8 + 0x2000)) &&
-           (((local_1c8 & 7) == 0 &&
-            (pcVar8 = (char *)FUN_001428fc(pcVar8,local_1c8,&local_1d0,8), (int)pcVar8 != 0)))))) &&
-         (((local_1d0 == DAT_001e0978 + 0x11ad208 &&
-           (((pcVar9 = (char *)(*(code *)(DAT_001e0978 + 0x5d8ad4))(local_1c8,"player_name"),
-             pcVar8 = pcVar9, pcVar9 != (char *)0x0 &&
-             (pcVar8 = (char *)FUN_001428fc(pcVar9,pcVar9,&local_1d0,8), (int)pcVar8 != 0)) &&
-            (local_1d0 == DAT_001e0978 + 0x11abad8)))) &&
-          ((pcVar8 = (char *)FUN_001428fc(pcVar8,pcVar9 + 0x38,&local_1d8,8), (int)pcVar8 != 0 &&
-           (pcVar8 = (char *)FUN_001428fc(pcVar8,pcVar9 + 0x40,&local_1dc,4), (int)pcVar8 != 0))))))
-      {
-        pcVar8 = (char *)FUN_0016413c(pcVar9,local_1c8);
-        if (((int)pcVar8 == 0) && ((local_1d8 == 0 && (local_1dc == -1)))) {
-          local_1e0[0] = 0;
-          local_1e8 = 0;
-          iVar6 = FUN_001428fc(pcVar8,local_1c8 + 0xc0,local_1e0,2);
-          pcVar8 = (char *)0x0;
-          if ((iVar6 != 0) && ((0 < local_1e0[0] && (local_1e0[0] < 0x201)))) {
-            iVar6 = FUN_0013a78c(local_1c8 + 0x90,&local_1e8);
-            pcVar8 = (char *)0x0;
-            if ((iVar6 != 0) && (0 < local_1e0[0])) {
-              lVar13 = 0;
-              lVar14 = 0;
-              iVar6 = 0;
-              do {
-                local_1f0 = (char *)0x0;
-                pcVar8 = (char *)FUN_001428fc(pcVar8,lVar13 + local_1e8,&local_1f0,8);
-                if ((int)pcVar8 == 0) goto LAB_0015cce4;
-                lVar14 = lVar14 + 1;
-                lVar13 = lVar13 + 8;
-                if (local_1f0 == pcVar9) {
-                  iVar6 = iVar6 + 1;
-                }
-              } while (lVar14 < local_1e0[0]);
-              pcVar8 = (char *)(ulong)(iVar6 == 1);
+
+    handle = runtime_read_handle();
+    if (!mem_read(handle, world + 0xf8, &map_ptr, 8)) {
+        stage = 2;
+        goto finish_reset;
+    }
+    if (map_ptr < 0x10000 || (map_ptr & 7) != 0 || map_ptr != expected_map) {
+        stage = 2;
+        goto finish_reset;
+    }
+    if (!mem_read(handle, map_ptr + 0x20, &tiles, 8)) {
+        stage = 3;
+        goto finish_reset;
+    }
+    if (tiles < 0x10000 || (tiles & 7) != 0) {
+        stage = 3;
+        goto finish_reset;
+    }
+    if (!mem_read(handle, map_ptr + 0xc4, &h, 4)) {
+        stage = 3;
+        goto finish_reset;
+    }
+    if (!mem_read(handle, map_ptr + 0xc8, &w, 4)) {
+        stage = 3;
+        goto finish_reset;
+    }
+    if (h < 8 || w < 8 || h > MAP_TILE_MAX || w > MAP_TILE_MAX) {
+        stage = 3;
+        goto finish_reset;
+    }
+
+    {
+        int changed = (map_ptr != map_cached_map) || (tiles != map_cached_tiles)
+                      || (h != map_cached_h) || (w != map_cached_w);
+
+        if (map_scan_active == 1) {
+            if (map_ptr != map_scan_map || tiles != map_scan_tiles
+                || h != map_scan_h || w != map_scan_w) {
+                map_scan_active = 0;
+                map_scan_progress = 0;
+                goto start_scan;
             }
-          }
+        } else {
+start_scan:
+            if ((!changed && map_known != 0 && frame - map_change_frame < 30u)
+                || ((changed | map_known) != 1 && map_change_frame != 0
+                    && frame - map_change_frame < 5u))
+                return;
+            if (changed)
+                map_known = 0;
+            map_scan_map = map_ptr;
+            map_tile_count = w * h;
+            map_scan_tiles = tiles;
+            map_scan_h = h;
+            map_scan_w = w;
+            map_scan_progress = 0;
+            map_scanned_frame = UINT32_MAX;
+            map_read_us_acc = 0;
+            map_read_count_acc = 0;
+            map_scan_active = 1;
+            map_change_frame = frame;
         }
-        uVar4 = local_1c0;
-        uVar3 = local_1c8;
-        if ((int)pcVar8 != 0) {
-          if ((pcVar9 + 0xe0 != (char *)0x0) &&
-             (uVar10 = FUN_001428fc(pcVar8,pcVar9 + 0xe0,&local_80,0x10), (int)uVar10 != 0)) {
-            __n = (ulong)local_80._4_4_;
-            if ((local_80._4_4_ != 0) && (local_80._4_4_ < 0x140)) {
-              pcVar8 = pcVar9 + 0xe8;
-              if (7 < local_80._4_4_) {
-                pcVar8 = local_78;
-              }
-              if ((pcVar8 != (char *)0x0) &&
-                 (iVar6 = FUN_001428fc(uVar10,pcVar8,&local_1c0,__n), iVar6 != 0)) {
-                pvVar11 = memchr(&local_1c0,0,__n);
-                if (pvVar11 == (void *)0x0) {
-                  *(undefined1 *)((long)&local_1c0 + __n) = 0;
-                  if ((((DAT_0021c7a0 != DAT_0020f6f8) || (DAT_0021c7a8 != uVar4)) ||
-                      (DAT_0021c7b0 != uVar3)) || (DAT_0021c7b8 != pcVar9)) {
-                    FUN_00161de4();
-                    pvVar11 = memset(&DAT_0021c7c0,0,0x230);
-                    DAT_0021c7b0 = uVar3;
-                    DAT_0021c7a0 = DAT_0020f6f8;
-                    DAT_0021c7a8 = uVar4;
-                    DAT_0021c7b8 = pcVar9;
-                    DAT_0021c818 = FUN_001428fc(pvVar11,pcVar9 + 0x80,&DAT_0021c814,4);
-                  }
-                  if ((DAT_0021c82c == '\0') ||
-                     (uVar7 = strcmp((char *)&local_1c0,&DAT_0021c8ac), uVar7 != 0)) {
-                    __s = (char *)FUN_00161ff8(&local_1c0);
-                    pcVar8 = __s;
-                    if ((__s == (char *)0x0) ||
-                       (pcVar8 = (char *)strlen(__s), (char *)0x7f < pcVar8)) goto LAB_0015cd28;
-                    uVar7 = snprintf(&DAT_0021c82c,0x80,"%s",__s);
-                  }
-                  pcVar8 = (char *)(ulong)uVar7;
-                  if (DAT_0021c818 == 0) goto LAB_0015cd28;
-                  iVar6 = pthread_once((pthread_once_t *)&DAT_0021ca04,FUN_00164598);
-                  if (DAT_0021ca08 == (code *)0x0) {
-                    bVar5 = false;
-                  }
-                  else {
-                    iVar6 = (*DAT_0021ca08)(iVar6);
-                    bVar5 = iVar6 == 1;
-                  }
-                  iVar6 = strcmp((char *)&local_1c0,&DAT_0021c82c);
-                  if (iVar6 != 0) {
-                    local_80 = 0;
-                    local_78 = (char *)0x0;
-                    (*(code *)(DAT_001e0978 + 0x66ae58))(&local_80,&DAT_0021c82c);
-                    (*(code *)(DAT_001e0978 + 0x5921a0))(pcVar9,&local_80);
-                    (*(code *)(DAT_001e0978 + 0x66ad48))(&local_80);
-                    uVar7 = DAT_0021ca10 + 1;
-                    bVar1 = DAT_0021ca10 < 0x14;
-                    DAT_0021ca10 = uVar7;
-                    if (bVar1) {
-                      FUN_001417c8("branding","name_restored",0);
-                    }
-                  }
-                  snprintf(&DAT_0021c8ac,0x140,"%s",&DAT_0021c82c);
-                  pcVar8 = (char *)FUN_00162104(uVar3,pcVar9);
-                  if ((int)pcVar8 == 0) goto LAB_0015cd28;
-                  FUN_00162690(bVar5,uVar12);
-                  iVar6 = FUN_001628fc(DAT_0021c7c0,uVar3);
-                  uVar7 = DAT_0021ca10;
-                  if (iVar6 == 0 && DAT_0021c808 == 0) {
-                    DAT_0021c7c0 = 0;
-                    iVar6 = FUN_00162a78(uVar3);
-                    if (iVar6 == 0) {
-                      DAT_0021c808 = 1;
-                      uVar7 = DAT_0021ca10 + 1;
-                      if (DAT_0021ca10 < 0x14) {
-                        pcVar8 = "image_refused";
-                        goto LAB_0015cfb4;
-                      }
-                    }
-                    else {
-                      uVar7 = DAT_0021ca10 + 1;
-                      if (DAT_0021ca10 < 0x14) {
-                        pcVar8 = "image_created";
-LAB_0015cfb4:
-                        DAT_0021ca10 = DAT_0021ca10 + 1;
-                        FUN_001417c8("branding",pcVar8,0);
-                        uVar7 = DAT_0021ca10;
-                      }
-                    }
-                  }
-                  DAT_0021ca10 = uVar7;
-                  pcVar8 = (char *)FUN_00162f50(pcVar9,bVar5);
-                  goto LAB_0015cd28;
-                }
-              }
+    }
+
+    if (map_scanned_frame == frame)
+        return;
+
+    {
+        uint32_t from = map_scan_progress;
+        uint32_t to = map_scan_progress + MAP_CHUNK;
+        if (map_tile_count < to)
+            to = map_tile_count;
+        map_scanned_frame = frame;
+        for (uint32_t i = from; i < to; i++) {
+            uintptr_t tile = 0;
+            uint32_t wall = 0;
+            if (!mem_read(handle, tiles + (uintptr_t)i * 8, &tile, 8)) {
+                stage = 4;
+                index = i;
+                goto finish_reset;
             }
-          }
-          pcVar8 = (char *)FUN_00161da0(8,"name_read_refused");
-          goto LAB_0015cd28;
-        }
-      }
-LAB_0015cce4:
-      if ((DAT_0021ca00 >> 2 & 1) != 0) goto LAB_0015cd28;
-      DAT_0021ca00 = DAT_0021ca00 | 4;
-      uVar7 = DAT_0021ca10 + 1;
-      bVar5 = 0x13 < DAT_0021ca10;
-      DAT_0021ca10 = uVar7;
-      if (bVar5) goto LAB_0015cd28;
-      pcVar8 = "nameplate_refused";
-    }
-  }
-  else {
-    if (DAT_0021c9f0 != 0) goto LAB_0015cd28;
-    DAT_0021c9f0 = -1;
-    pcVar8 = (char *)FUN_0014b1d0(0x80f09c,0x20,
-                                  "ceaed7de0bf298f5764c6e7c23a9e61f0ef78d62461e51956e3ba81f858a05b5"
-                                 );
-    if (((int)pcVar8 != 0) &&
-       (pcVar8 = (char *)FUN_0014b1d0(0x5d8ad4,0x20,
-                                      "284c790c5c501cf083a6f4d323aa30275b074eb44bef7b1d64f70d9250bd6a23"
-                                     ), (int)pcVar8 != 0)) {
-      iVar6 = FUN_0014b1d0(0x5921a0,0x20,
-                           "14b79d91644b7f17357a86b8ec6d36e17be6a1c815083ec6c2fa531bee369974");
-      if (iVar6 == 0) {
-        if (DAT_0021c9f8 == (code *)0x0) {
-          local_1c0 = 0;
-          local_1b8 = (code *)0x0;
-          pcVar8 = (char *)dl_iterate_phdr(FUN_00163228,&local_1c0);
-          if (((int)local_1c0 != 1) || (local_1b8 == (code *)0x0)) goto LAB_0015cca0;
-          DAT_0021c9f8 = local_1b8;
-        }
-        pcVar8 = (char *)(*DAT_0021c9f8)(DAT_001e0978);
-        if ((int)pcVar8 != 1) goto LAB_0015cca0;
-      }
-      pcVar8 = (char *)FUN_0014b1d0(0x66ae58,0x20,
-                                    "dbee7aa155f50e7bbcb598d7292a63cdcc6b00e7bef42df179bba8e717a01cb2"
-                                   );
-      if ((((((int)pcVar8 != 0) &&
-            (pcVar8 = (char *)FUN_0014b1d0(0x66ad48,0x20,
-                                           "23f6ad205540b5dd1d4a6dfec22810176034231102bb53dc25ce7b774778e92c"
-                                          ), (int)pcVar8 != 0)) &&
-           (pcVar8 = (char *)FUN_0014b1d0(0xb7c41c,0x20,
-                                          "40459ad7d604600054570f79962f208d94703d75b3f5903e63af68cbc4ee756a"
-                                         ), (int)pcVar8 != 0)) &&
-          (((pcVar8 = (char *)FUN_0014b1d0(0x5955dc,0x20,
-                                           "c715b651533d6c19dec4381cfd0ed1002d060d936ca20c8b6bdd10aea0d24859"
-                                          ), (int)pcVar8 != 0 &&
-            (pcVar8 = (char *)FUN_0014b1d0(0x595314,0x20,
-                                           "0558f75486a424fcf1edb8b5b3cace86a0dc5620506aab1273a1df1dc7ad2ad8"
-                                          ), (int)pcVar8 != 0)) &&
-           ((pcVar8 = (char *)FUN_0014b1d0(0x594138,0x20,
-                                           "f74689171f152d63ffdcb66f59b8532476d7dd17a559c44c6fb98cfc919d42ee"
-                                          ), (int)pcVar8 != 0 &&
-            ((pcVar8 = (char *)FUN_0014b1d0(0x592368,0x20,
-                                            "74116921e171c3edbd6ae1a89ccc993046c5a12e87b8dc8fa3d44200102f34c6"
-                                           ), (int)pcVar8 != 0 &&
-             (pcVar8 = (char *)FUN_0014b1d0(0xb7c73c,0x20,
-                                            "30c08799bf93e6dc1dc368fb371a3076f43bee2d3ca800b2ea1e1aff828e000b"
-                                           ), (int)pcVar8 != 0)))))))) &&
-         ((pcVar8 = (char *)FUN_0014b1d0(0x59567c,0x20,
-                                         "9e18529b88a6285f2675ad92537b12875a9735c6fc16cbdc947b58b5e235b5f9"
-                                        ), (int)pcVar8 != 0 &&
-          (pcVar8 = (char *)FUN_0014b1d0(0x11a2840,0x20,
-                                         "7624512f3481536b03735eb7d1bad9138b0288494a9458e050b9bd27feef8f66"
-                                        ), (int)pcVar8 != 0)))) {
-        DAT_0021c9f0 = 1;
-        goto LAB_0015c8ac;
-      }
-    }
-LAB_0015cca0:
-    if ((DAT_0021ca00 & 1) != 0) goto LAB_0015cd28;
-    DAT_0021ca00 = DAT_0021ca00 | 1;
-    uVar7 = DAT_0021ca10 + 1;
-    bVar5 = 0x13 < DAT_0021ca10;
-    DAT_0021ca10 = uVar7;
-    if (bVar5) goto LAB_0015cd28;
-    pcVar8 = "abi_refused";
-  }
-  pcVar8 = (char *)FUN_001417c8("branding",pcVar8,0);
-LAB_0015cd28:
-  if (*(long *)(lVar2 + 0x28) != local_70) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(pcVar8);
-  }
-  return;
-}
-
-/* ===== FUN_00161098 @ 00161098 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00161098(long param_1,ulong param_2,int param_3,int param_4)
-
-{
-  uint uVar1;
-  char *pcVar2;
-  long lVar3;
-  long lVar4;
-  uint uVar5;
-  bool bVar6;
-  int iVar7;
-  undefined8 uVar8;
-  long lVar9;
-  uint uVar10;
-  ulong uVar11;
-  uint uVar12;
-  byte *pbVar13;
-  long lVar14;
-  long lVar15;
-  int local_300;
-  int local_2fc;
-  ulong local_2f8;
-  uint local_2ec;
-  ulong local_2e8;
-  undefined8 local_2e0;
-  ulong local_2d8;
-  ulong local_2d0;
-  timespec local_2c8 [37];
-  long local_70;
-  
-  lVar3 = tpidr_el0;
-  local_70 = *(long *)(lVar3 + 0x28);
-  local_2d8 = 0;
-  local_2d0 = 0;
-  local_2e0 = 0;
-  iVar7 = clock_gettime(1,local_2c8);
-  uVar5 = DAT_00217358;
-  lVar4 = DAT_0020d0f8;
-  lVar15 = 0;
-  if (iVar7 == 0) {
-    lVar15 = local_2c8[0].tv_sec * 1000000 + (ulong)local_2c8[0].tv_nsec / 1000;
-  }
-  if (param_4 == 0) {
-    uVar12 = 1;
-    uVar10 = 0;
-LAB_00161274:
-    iVar7 = clock_gettime(1,local_2c8);
-    if (iVar7 == 0) {
-      lVar14 = local_2c8[0].tv_sec * 1000000 + (ulong)local_2c8[0].tv_nsec / 1000;
-    }
-    else {
-      lVar14 = 0;
-    }
-    DAT_0021733c = '\0';
-    DAT_00217398 = (DAT_0020d0f8 - lVar4) + DAT_00217398;
-    DAT_00217350 = DAT_00217390 + (lVar14 - lVar15);
-    DAT_00217340 = 0;
-    DAT_00217390 = DAT_00217350;
-    if (((local_2d0 != DAT_00215d48) || (local_2d8 != DAT_00217360)) ||
-       ((local_2e0._4_4_ != DAT_0020f7f0 || ((int)local_2e0 != DAT_0020f7f4)))) {
-      DAT_0020d15c = 0;
-    }
-  }
-  else {
-    uVar8 = FUN_001428fc(iVar7,param_1 + 0xf8,&local_2d0,8);
-    uVar10 = 0;
-    if ((int)uVar8 == 0) {
-      uVar12 = 2;
-      goto LAB_00161274;
-    }
-    uVar12 = 2;
-    if (((0xfffffffffffedfff < local_2d0 - 0x10000) || ((local_2d0 & 7) != 0)) ||
-       (local_2d0 != param_2)) goto LAB_00161274;
-    uVar8 = FUN_001428fc(uVar8,param_2 + 0x20,&local_2d8,8);
-    uVar10 = 0;
-    if ((int)uVar8 == 0) {
-      uVar12 = 3;
-      goto LAB_00161274;
-    }
-    uVar12 = 3;
-    if ((local_2d8 + 0x2000 < 0x12000) || ((local_2d8 & 7) != 0)) goto LAB_00161274;
-    uVar8 = FUN_001428fc(uVar8,local_2d0 + 0xc4,(long)&local_2e0 + 4,4);
-    if ((int)uVar8 == 0) {
-      uVar10 = 0;
-      goto LAB_00161274;
-    }
-    uVar8 = FUN_001428fc(uVar8,local_2d0 + 200,&local_2e0,4);
-    uVar10 = 0;
-    if ((((int)uVar8 == 0) || (local_2e0._4_4_ < 8)) ||
-       (((int)local_2e0 < 8 || ((0x78 < local_2e0._4_4_ || (0x78 < (int)local_2e0))))))
-    goto LAB_00161274;
-    if (local_2d0 == DAT_00215d48) {
-      bVar6 = true;
-      if ((local_2d8 == DAT_00217360) && (local_2e0._4_4_ == DAT_0020f7f0)) {
-        bVar6 = (int)local_2e0 != DAT_0020f7f4;
-      }
-    }
-    else {
-      bVar6 = true;
-    }
-    if (DAT_0021733c == '\x01') {
-      if ((((local_2d0 != DAT_00217368) || (local_2d8 != DAT_00217370)) ||
-          (local_2e0._4_4_ != DAT_00217378)) || ((int)local_2e0 != DAT_0021737c)) {
-        DAT_0021733c = '\0';
-        DAT_00217340 = 0;
-        goto LAB_001614ec;
-      }
-    }
-    else {
-LAB_001614ec:
-      if ((((bVar6 == false) && (DAT_0020d15c != 0)) && ((uint)(param_3 - DAT_00217380) < 0x1e)) ||
-         ((((bVar6 | DAT_0020d15c) != 1 && (DAT_00217338 != 0)) &&
-          ((uint)(param_3 - DAT_00217338) < 5)))) goto LAB_0016144c;
-      if (bVar6 != false) {
-        DAT_0020d15c = 0;
-      }
-      DAT_00217368 = local_2d0;
-      DAT_00217384 = (int)local_2e0 * local_2e0._4_4_;
-      DAT_00217370 = local_2d8;
-      DAT_00217378 = local_2e0._4_4_;
-      DAT_0021737c = (int)local_2e0;
-      DAT_00217340 = 0;
-      DAT_00217388 = -1;
-      DAT_00217390 = 0;
-      DAT_00217398 = 0;
-      DAT_0021733c = '\x01';
-      DAT_00217338 = param_3;
-    }
-    if (DAT_00217388 == param_3) goto LAB_0016144c;
-    uVar11 = (ulong)DAT_00217340;
-    uVar1 = DAT_00217340 + 0x200;
-    if (DAT_00217384 <= DAT_00217340 + 0x200) {
-      uVar1 = DAT_00217384;
-    }
-    DAT_00217388 = param_3;
-    if (DAT_00217340 < uVar1) {
-      lVar14 = uVar11 << 3;
-      lVar9 = uVar1 - uVar11;
-      pbVar13 = &DAT_002173a0 + uVar11;
-      do {
-        uVar10 = (uint)uVar11;
-        uVar8 = FUN_001428fc(uVar8,lVar14 + local_2d8,local_2c8,8);
-        if ((int)uVar8 == 0) {
-          uVar12 = 4;
-          goto LAB_00161274;
-        }
-        uVar12 = 4;
-        if ((local_2c8[0].tv_sec + 0x2000U < 0x12000) || ((local_2c8[0].tv_sec & 7U) != 0))
-        goto LAB_00161274;
-        uVar8 = FUN_001428fc(uVar8,local_2c8[0].tv_sec,&local_2e8,8);
-        if ((int)uVar8 == 0) {
-          uVar12 = 5;
-          goto LAB_00161274;
-        }
-        uVar12 = 5;
-        if ((local_2e8 + 0x2000 < 0x12000) || ((local_2e8 & 7) != 0)) goto LAB_00161274;
-        uVar8 = FUN_001428fc(uVar8,local_2e8 + 0x54,&local_2ec,4);
-        if ((int)uVar8 == 0) {
-          uVar12 = 6;
-          goto LAB_00161274;
-        }
-        uVar11 = (ulong)(uVar10 + 1);
-        lVar14 = lVar14 + 8;
-        *pbVar13 = ((local_2ec & 0xff000000) != 0) << 6 | ((local_2ec & 0xff0000) != 0) << 7;
-        lVar9 = lVar9 + -1;
-        pbVar13 = pbVar13 + 1;
-      } while (lVar9 != 0);
-    }
-    else {
-      uVar10 = 0;
-    }
-    DAT_00217340 = uVar1;
-    lVar14 = FUN_0015b4a0();
-    DAT_00217390 = (lVar14 - lVar15) + DAT_00217390;
-    DAT_00217398 = (DAT_0020d0f8 - lVar4) + DAT_00217398;
-    if (DAT_00217340 < DAT_00217384) goto LAB_0016144c;
-    uVar8 = FUN_0013a78c(local_2d0 + 0x20,&local_2f8);
-    if ((((((int)uVar8 == 0) || (local_2f8 != local_2d8)) ||
-         (uVar8 = FUN_001428fc(uVar8,local_2d0 + 0xc4,&local_2fc,4), (int)uVar8 == 0)) ||
-        ((local_2fc != local_2e0._4_4_ ||
-         (iVar7 = FUN_001428fc(uVar8,local_2d0 + 200,&local_300,4), iVar7 == 0)))) ||
-       (local_300 != (int)local_2e0)) {
-      uVar12 = 7;
-      goto LAB_00161274;
-    }
-    memcpy(&DAT_0020f7f8,&DAT_002173a0,(ulong)DAT_00217384);
-    DAT_00217360 = local_2d8;
-    DAT_00215d48 = local_2d0;
-    DAT_0020f7f0 = local_2e0._4_4_;
-    DAT_0020f7f4 = local_300;
-    DAT_0020d15c = 1;
-    DAT_00217350 = DAT_00217390;
-    DAT_0021733c = '\0';
-    DAT_00217380 = param_3;
-    FUN_0018e7f0();
-    uVar12 = 0;
-  }
-  DAT_0021abe0 = DAT_0021abe0 + 1;
-  DAT_00217358 = uVar12;
-  DAT_0021735c = uVar10;
-  iVar7 = clock_gettime(1,local_2c8);
-  if (iVar7 == 0) {
-    lVar15 = (ulong)local_2c8[0].tv_nsec / 1000000 + local_2c8[0].tv_sec * 1000;
-  }
-  else {
-    lVar15 = 0;
-  }
-  if ((((DAT_0021abe0 < 5) || (uVar12 != uVar5)) || (DAT_0021abe8 == 0)) ||
-     (999 < (ulong)(lVar15 - DAT_0021abe8))) {
-    snprintf((char *)local_2c8,600,
-             ",\"map_known\":%u,\"failure_stage\":%u,\"failure_index\":%u,\"width\":%d,\"height\":%d,\"map\":\"0x%llx\",\"tiles\":\"0x%llx\",\"refresh_us\":%llu,\"refresh_reads\":%llu,\"refresh_attempts\":%llu"
-             ,(ulong)DAT_0020d15c,(ulong)uVar12,(ulong)uVar10,local_2e0 >> 0x20,
-             local_2e0 & 0xffffffff,local_2d0,local_2d8,DAT_00217350,DAT_00217398,DAT_0021abe0);
-    pcVar2 = "complete_source_wall_cache";
-    if (uVar12 != 0) {
-      pcVar2 = "current_map_unknown";
-    }
-    FUN_001417c8("function_map",pcVar2,local_2c8);
-    DAT_0021abe8 = lVar15;
-  }
-LAB_0016144c:
-  if (*(long *)(lVar3 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00165c60 @ 00165c60 [libNexusEvasionRuntime69252.so] ===== */
-
-undefined4 FUN_00165c60(undefined8 param_1)
-
-{
-  ulong uVar1;
-  long lVar2;
-  int iVar3;
-  undefined8 uVar4;
-  ulong uVar5;
-  ulong uVar6;
-  float fVar7;
-  undefined4 uVar8;
-  undefined4 uVar9;
-  ulong local_c8;
-  undefined8 local_c0;
-  undefined1 auStack_b8 [20];
-  char acStack_a4 [76];
-  long local_58;
-  
-  lVar2 = tpidr_el0;
-  local_58 = *(long *)(lVar2 + 0x28);
-  uVar4 = FUN_00165d8c(param_1,&local_c0);
-  uVar9 = 0;
-  if (((((int)uVar4 != 0) && (iVar3 = FUN_001428fc(uVar4,local_c0,&local_c8,8), iVar3 != 0)) &&
-      (0x11fff < local_c8 + 0x2000)) &&
-     (((local_c8 & 7) == 0 &&
-      (iVar3 = FUN_001824d8(DAT_001e0978,local_c8,FUN_001428fc,0,auStack_b8), iVar3 != 0)))) {
-    uVar5 = 0;
-    uVar6 = 0xf6;
-    do {
-      uVar1 = uVar5 + (uVar6 - uVar5 >> 1);
-      iVar3 = strcmp(acStack_a4,(&PTR_s_AlternatorWeaponDamage_001c3388)[uVar1 * 2]);
-      if (iVar3 == 0) {
-        fVar7 = (float)NEON_ucvtf(*(undefined4 *)(&UNK_001c3390 + uVar1 * 0x10));
-        uVar8 = NEON_fmin(fVar7 / 3.0,0x41a00000);
-        uVar9 = 0x3f800000;
-        if (1.0 <= fVar7 / 3.0) {
-          uVar9 = uVar8;
-        }
-        break;
-      }
-      if (-1 < iVar3) {
-        uVar5 = uVar1 + 1;
-        uVar1 = uVar6;
-      }
-      uVar6 = uVar1;
-    } while (uVar5 < uVar6);
-  }
-  if (*(long *)(lVar2 + 0x28) != local_58) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-  }
-  return uVar9;
-}
-
-/* ===== FUN_0016acc0 @ 0016acc0 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0016acc0(undefined8 param_1,ulong param_2,ulong *param_3)
-
-{
-  long lVar1;
-  bool bVar2;
-  int iVar3;
-  FILE *__stream;
-  char *pcVar4;
-  size_t sVar5;
-  int iVar6;
-  ulong uVar7;
-  uint uVar8;
-  ulong local_1190;
-  ulong uStack_1188;
-  ulong uStack_1180;
-  ulong uStack_1178;
-  ulong local_1170;
-  ulong uStack_1168;
-  ulong local_1160;
-  ulong uStack_1158;
-  ulong uStack_1150;
-  ulong uStack_1148;
-  ulong local_1140;
-  undefined8 uStack_1138;
-  char acStack_1130 [4288];
-  long local_70;
-  
-  lVar1 = tpidr_el0;
-  __stream = (FILE *)0x0;
-  local_70 = *(long *)(lVar1 + 0x28);
-  if (((param_3 != (ulong *)0x0) && (DAT_001e0978 + 0x123e0c8U == param_2)) &&
-     (__stream = fopen("/proc/self/maps","re"), __stream != (FILE *)0x0)) {
-    pcVar4 = fgets(acStack_1130,0x10c0,__stream);
-    if (pcVar4 == (char *)0x0) {
-      iVar6 = 0;
-    }
-    else {
-      uVar7 = 0;
-      uVar8 = 0;
-      iVar6 = 0;
-      bVar2 = true;
-      do {
-        sVar5 = strlen(acStack_1130);
-        if ((uVar8 >> 0xf != 0) || (uVar7 = sVar5 + uVar7, 0x800000 < uVar7 || sVar5 == 0))
-        goto LAB_0016ae0c;
-        if (acStack_1130[sVar5 - 1] != '\n') {
-          bVar2 = true;
-          goto LAB_0016ae0c;
-        }
-        iVar3 = FUN_001986c8(acStack_1130,&DAT_00209d98,&local_1190);
-        if (((iVar3 != 0) && (local_1190 <= param_2)) && (param_2 + 8 <= uStack_1188)) {
-          uStack_1158 = uStack_1188;
-          local_1160 = local_1190;
-          uStack_1148 = uStack_1178;
-          uStack_1150 = uStack_1180;
-          iVar6 = iVar6 + 1;
-          uStack_1138 = uStack_1168;
-          local_1140 = local_1170;
-        }
-        pcVar4 = fgets(acStack_1130,0x10c0,__stream);
-        uVar8 = uVar8 + 1;
-      } while (pcVar4 != (char *)0x0);
-    }
-    bVar2 = false;
-LAB_0016ae0c:
-    iVar3 = ferror(__stream);
-    fclose(__stream);
-    __stream = (FILE *)0x0;
-    if (((!bVar2) && (iVar3 == 0)) && (iVar6 == 1)) {
-      __stream = (FILE *)0x1;
-      param_3[1] = uStack_1158;
-      *param_3 = local_1160;
-      param_3[3] = uStack_1148;
-      param_3[2] = uStack_1150;
-      param_3[5] = uStack_1138;
-      param_3[4] = local_1140;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(__stream);
-}
-
-/* ===== FUN_00182610 @ 00182610 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00182610(ulong *param_1,long param_2,undefined4 *param_3)
-
-{
-  long lVar1;
-  undefined1 auVar2 [16];
-  undefined1 auVar3 [16];
-  undefined1 auVar4 [16];
-  undefined1 auVar5 [16];
-  undefined1 auVar6 [16];
-  undefined1 auVar7 [16];
-  float fVar8;
-  undefined1 auVar9 [16];
-  undefined1 auVar10 [16];
-  undefined1 auVar11 [16];
-  undefined1 auVar12 [16];
-  bool bVar13;
-  bool bVar14;
-  int iVar15;
-  char *pcVar16;
-  char *pcVar17;
-  uint uVar18;
-  ulong uVar19;
-  long lVar20;
-  ulong uVar21;
-  ulong *puVar22;
-  ulong uVar23;
-  uint uVar24;
-  undefined1 (*pauVar25) [16];
-  ulong uVar26;
-  byte bVar27;
-  undefined1 uVar28;
-  undefined1 uVar29;
-  undefined1 uVar30;
-  undefined1 uVar31;
-  undefined1 uVar32;
-  undefined1 uVar33;
-  undefined1 uVar34;
-  undefined1 uVar35;
-  byte bVar36;
-  byte bVar37;
-  byte bVar38;
-  byte bVar39;
-  byte bVar40;
-  byte bVar41;
-  byte bVar42;
-  uint5 uVar43;
-  undefined1 auVar44 [16];
-  uint5 uVar45;
-  undefined1 auVar46 [16];
-  undefined1 auVar47 [16];
-  undefined1 auVar48 [16];
-  undefined1 auVar49 [16];
-  ulong local_1a0;
-  uint local_198;
-  uint local_18c;
-  byte local_188 [4];
-  byte local_184 [4];
-  byte local_180 [4];
-  uint local_17c;
-  ulong local_178;
-  char local_16c [4];
-  long local_168;
-  int local_160;
-  int local_15c;
-  ulong local_158;
-  ulong local_150;
-  ulong local_148;
-  ulong local_140;
-  ulong local_138;
-  ulong local_130;
-  ulong local_128 [4];
-  undefined1 auStack_108 [96];
-  ulong local_a8;
-  int local_a0;
-  uint local_9c;
-  ulong local_98;
-  int local_90;
-  uint local_8c;
-  ulong local_88;
-  undefined1 auStack_80 [4];
-  uint local_7c;
-  ulong local_78;
-  long local_70;
-  
-  lVar1 = tpidr_el0;
-  local_70 = *(long *)(lVar1 + 0x28);
-  if ((param_2 + 8U < 0x10008) ||
-     (iVar15 = (*(code *)param_1[1])(param_1[2],param_2,&local_130,8), iVar15 != 1)) {
-LAB_00182898:
-    pcVar16 = (char *)0x0;
-    goto LAB_0018289c;
-  }
-  pcVar16 = (char *)0x0;
-  if ((local_130 + 0x1000 < 0x11000) ||
-     ((((local_130 & 7) != 0 || (pcVar16 = (char *)0x0, param_2 + 0x10U < 0x10008)) ||
-      (local_130 != *param_1 + 0x121f350)))) goto LAB_0018289c;
-  iVar15 = (*(code *)param_1[1])(param_1[2],param_2 + 8U,&local_138,8);
-  if (iVar15 != 1) goto LAB_00182898;
-  pcVar16 = (char *)0x0;
-  if ((local_138 + 0x1000 < 0x11000) || ((local_138 & 7) != 0)) goto LAB_0018289c;
-  iVar15 = (*(code *)param_1[1])(param_1[2],local_138 + 8,&local_15c,4);
-  pcVar16 = (char *)0x0;
-  if ((iVar15 != 1) || ((local_15c < 0 || (0x2c8 < local_15c)))) goto LAB_0018289c;
-  if ((local_138 + 8 < 0x10008) ||
-     (iVar15 = (*(code *)param_1[1])(param_1[2],local_138,&local_140,8), iVar15 != 1))
-  goto LAB_00182898;
-  pcVar16 = (char *)0x0;
-  if ((local_140 + 0x1000 < 0x11000) || ((local_140 & 7) != 0)) goto LAB_0018289c;
-  iVar15 = (*(code *)param_1[1])(param_1[2],local_140 + 0x38,&local_148,8);
-  if (iVar15 != 1) goto LAB_00182898;
-  pcVar16 = (char *)0x0;
-  if ((local_148 + 0x1000 < 0x11000) || ((local_148 & 7) != 0)) goto LAB_0018289c;
-  iVar15 = (*(code *)param_1[1])(param_1[2],local_148,&local_150,8);
-  if (iVar15 != 1) goto LAB_00182898;
-  pcVar16 = (char *)0x0;
-  if ((local_150 + 0x1000 < 0x11000) || ((local_150 & 7) != 0)) goto LAB_0018289c;
-  iVar15 = (*(code *)param_1[1])(param_1[2],local_150 + 8,&local_158,8);
-  if (iVar15 != 1) goto LAB_00182918;
-  pcVar16 = (char *)0x0;
-  if ((local_158 + 0x1000 < 0x11000) || ((local_158 & 7) != 0)) goto LAB_0018289c;
-  if ((local_158 <= (long)local_15c * -0x10 - 0x11U) &&
-     (((lVar20 = (long)local_15c * 0x10 + local_158, 0x1000f < lVar20 + 0x10U &&
-       (iVar15 = (*(code *)param_1[1])(param_1[2],lVar20,auStack_80,0x10), iVar15 == 1)) &&
-      (uVar26 = (ulong)local_7c, 0xffffffc6 < local_7c - 0x40)))) {
-    if (local_7c < 8) {
-      uVar26 = 7;
-      *(ulong *)(param_3 + 5) = local_78;
-    }
-    else {
-      pcVar16 = (char *)0x0;
-      if ((local_78 < 0x10000) || (~local_78 <= uVar26)) goto LAB_0018289c;
-      iVar15 = (*(code *)param_1[1])(param_1[2],local_78,param_3 + 5,uVar26 + 1);
-      if (iVar15 != 1) goto LAB_00182918;
-    }
-    pcVar17 = (char *)(param_3 + 5);
-    if (pcVar17[uVar26] == '\0') {
-      uVar19 = 0;
-      do {
-        bVar27 = *(byte *)((long)param_3 + uVar19 + 0x14);
-        if ((0x19 < (bVar27 & 0xffffffdf) - 0x41) && (bVar27 != 0x5f && 9 < bVar27 - 0x30))
-        goto LAB_00182918;
-        uVar19 = uVar19 + 1;
-      } while (uVar26 != uVar19);
-      pcVar16 = strstr(pcVar17,"Weapon");
-      if ((pcVar16 == (char *)0x0) ||
-         (pcVar17 = (char *)FUN_001830e8(pcVar17), pcVar16 = pcVar17, pcVar17 == (char *)0x0))
-      goto LAB_0018289c;
-      pcVar16 = (char *)0x0;
-      uVar26 = *param_1 + 0x1244c3c;
-      if ((uVar26 < 0x10000) || ((*param_1 & 0xfffffffffffffffc) == 0xfffffffffedbb3c0))
-      goto LAB_0018289c;
-      iVar15 = (*(code *)param_1[1])(param_1[2],uVar26,&local_160,4);
-      pcVar16 = (char *)0x0;
-      if ((((iVar15 != 1) || (local_160 != 0x34)) ||
-          (pcVar16 = (char *)FUN_0018307c(param_1,local_148 + 0x1a0,&local_150), (int)pcVar16 == 0))
-         || (pcVar16 = (char *)FUN_0018307c(param_1,local_150 + 0x28,&local_168), (int)pcVar16 == 0)
-         ) goto LAB_0018289c;
-      if ((((0x10000 < local_168 + local_15c + 1U) &&
-           (iVar15 = (*(code *)param_1[1])(param_1[2],local_168 + local_15c,local_16c,1),
-           iVar15 == 1)) && (0x10027 < param_2 + 0x80U)) &&
-         ((iVar15 = (*(code *)param_1[1])(param_1[2],param_2 + 0x58,&local_a8,0x28), iVar15 == 1 &&
-          (local_9c < 0x11)))) {
-        pcVar16 = (char *)0x0;
-        if ((local_a0 < (int)local_9c) || (0x400 < local_a0)) goto LAB_0018289c;
-        if (local_9c == 0) {
-          local_18c = 0;
-        }
-        else {
-          pcVar16 = (char *)0x0;
-          if ((local_a8 < 0x10000) || ((local_a8 & 7) != 0)) goto LAB_0018289c;
-          if (CARRY8(local_a8,(ulong)local_9c << 3)) goto LAB_00182918;
-          uVar26 = 0;
-          local_18c = 0;
-          do {
-            pcVar16 = (char *)FUN_0018307c(param_1,local_a8 + uVar26 * 8,&local_178);
-            if ((int)pcVar16 == 0) goto LAB_0018289c;
-            if (local_18c == 0) {
-LAB_00182ad8:
-              local_128[local_18c] = local_178;
-              local_18c = local_18c + 1;
+            if (tile < 0x10000 || (tile & 7) != 0) {
+                stage = 4;
+                index = i;
+                goto finish_reset;
             }
-            else {
-              uVar19 = (ulong)local_18c;
-              if (local_18c < 8) {
-                uVar21 = 0;
-                uVar24 = 0;
-LAB_00182bac:
-                lVar20 = uVar19 - uVar21;
-                puVar22 = local_128 + uVar21;
-                do {
-                  lVar20 = lVar20 + -1;
-                  uVar24 = uVar24 | *puVar22 == local_178;
-                  puVar22 = puVar22 + 1;
-                } while (lVar20 != 0);
-              }
-              else {
-                uVar21 = uVar19 & 0xfffffff8;
-                bVar27 = 0;
-                bVar36 = 0;
-                bVar37 = 0;
-                bVar38 = 0;
-                bVar39 = 0;
-                bVar40 = 0;
-                bVar41 = 0;
-                bVar42 = 0;
-                uVar28 = (undefined1)local_178;
-                uVar30 = (undefined1)(local_178 >> 8);
-                uVar32 = (undefined1)(local_178 >> 0x10);
-                uVar34 = (undefined1)(local_178 >> 0x18);
-                uVar29 = (undefined1)(local_178 >> 0x20);
-                uVar31 = (undefined1)(local_178 >> 0x28);
-                uVar33 = (undefined1)(local_178 >> 0x30);
-                uVar35 = (undefined1)(local_178 >> 0x38);
-                uVar23 = uVar21;
-                pauVar25 = (undefined1 (*) [16])auStack_108;
-                do {
-                  uVar23 = uVar23 - 8;
-                  auVar46[8] = uVar28;
-                  auVar46._0_8_ = local_178;
-                  auVar46[9] = uVar30;
-                  auVar46[10] = uVar32;
-                  auVar46[0xb] = uVar34;
-                  auVar46[0xc] = uVar29;
-                  auVar46[0xd] = uVar31;
-                  auVar46[0xe] = uVar33;
-                  auVar46[0xf] = uVar35;
-                  auVar46 = NEON_cmeq(pauVar25[-2],auVar46,8);
-                  auVar47[8] = uVar28;
-                  auVar47._0_8_ = local_178;
-                  auVar47[9] = uVar30;
-                  auVar47[10] = uVar32;
-                  auVar47[0xb] = uVar34;
-                  auVar47[0xc] = uVar29;
-                  auVar47[0xd] = uVar31;
-                  auVar47[0xe] = uVar33;
-                  auVar47[0xf] = uVar35;
-                  auVar47 = NEON_cmeq(pauVar25[-1],auVar47,8);
-                  auVar48[8] = uVar28;
-                  auVar48._0_8_ = local_178;
-                  auVar48[9] = uVar30;
-                  auVar48[10] = uVar32;
-                  auVar48[0xb] = uVar34;
-                  auVar48[0xc] = uVar29;
-                  auVar48[0xd] = uVar31;
-                  auVar48[0xe] = uVar33;
-                  auVar48[0xf] = uVar35;
-                  auVar48 = NEON_cmeq(*pauVar25,auVar48,8);
-                  auVar49[8] = uVar28;
-                  auVar49._0_8_ = local_178;
-                  auVar49[9] = uVar30;
-                  auVar49[10] = uVar32;
-                  auVar49[0xb] = uVar34;
-                  auVar49[0xc] = uVar29;
-                  auVar49[0xd] = uVar31;
-                  auVar49[0xe] = uVar33;
-                  auVar49[0xf] = uVar35;
-                  auVar49 = NEON_cmeq(pauVar25[1],auVar49,8);
-                  uVar43 = CONCAT14(auVar46[8],(uint)(auVar46[0] & 1)) & 0x100ffffff;
-                  uVar45 = CONCAT14(auVar48[8],(uint)(auVar48[0] & 1)) & 0x100ffffff;
-                  bVar27 = bVar27 | (byte)uVar43;
-                  bVar36 = bVar36 | (byte)(uVar43 >> 0x20);
-                  bVar37 = bVar37 | auVar47[0] & 1;
-                  bVar38 = bVar38 | auVar47[8] & 1;
-                  bVar39 = bVar39 | (byte)uVar45;
-                  bVar40 = bVar40 | (byte)(uVar45 >> 0x20);
-                  bVar41 = bVar41 | auVar49[0] & 1;
-                  bVar42 = bVar42 | auVar49[8] & 1;
-                  pauVar25 = pauVar25 + 4;
-                } while (uVar23 != 0);
-                bVar39 = bVar39 | bVar27;
-                bVar40 = bVar40 | bVar36;
-                auVar6._1_3_ = 0;
-                auVar6[0] = bVar39;
-                auVar6[4] = bVar40;
-                auVar6._5_3_ = 0;
-                auVar6[8] = bVar41 | bVar37;
-                auVar6._9_3_ = 0;
-                auVar6[0xc] = bVar42 | bVar38;
-                auVar6._13_3_ = 0;
-                auVar7._1_3_ = 0;
-                auVar7[0] = bVar39;
-                auVar7[4] = bVar40;
-                auVar7._5_3_ = 0;
-                auVar7[8] = bVar41 | bVar37;
-                auVar7._9_3_ = 0;
-                auVar7[0xc] = bVar42 | bVar38;
-                auVar7._13_3_ = 0;
-                auVar46 = NEON_ext(auVar6,auVar7,8,1);
-                uVar24 = CONCAT13(auVar46[3],
-                                  CONCAT12(auVar46[2],CONCAT11(auVar46[1],bVar39 | auVar46[0]))) |
-                         CONCAT13(auVar46[7],
-                                  CONCAT12(auVar46[6],CONCAT11(auVar46[5],bVar40 | auVar46[4])));
-                if (uVar21 != uVar19) goto LAB_00182bac;
-              }
-              if (uVar24 == 0) {
-                if (local_18c != 0x10) goto LAB_00182ad8;
-                goto LAB_00182918;
-              }
+            if (!mem_read(handle, tile + 0x54, &wall, 4)) {
+                stage = 5;
+                index = i;
+                goto finish_reset;
             }
-            uVar26 = uVar26 + 1;
-          } while (uVar26 != local_9c);
+            map_wall_bitmap[i] = (uint8_t)(((wall & 0xff000000u) != 0) << 6
+                                           | ((wall & 0x00ff0000u) != 0) << 7);
         }
-        if (local_8c < 0x11) {
-          pcVar16 = (char *)0x0;
-          if ((local_90 < (int)local_8c) || (0x400 < local_90)) goto LAB_0018289c;
-          if (local_8c != 0) {
-            pcVar16 = (char *)0x0;
-            if ((local_98 < 0x10000) || ((local_98 & 7) != 0)) goto LAB_0018289c;
-            if (CARRY8(local_98,(ulong)local_8c << 3)) goto LAB_00182918;
-            uVar26 = 0;
-            do {
-              pcVar16 = (char *)FUN_0018307c(param_1,local_98 + uVar26 * 8,&local_178);
-              if ((int)pcVar16 == 0) goto LAB_0018289c;
-              if (local_18c == 0) {
-LAB_00182c44:
-                local_128[local_18c] = local_178;
-                local_18c = local_18c + 1;
-              }
-              else {
-                uVar19 = (ulong)local_18c;
-                if (local_18c < 8) {
-                  uVar21 = 0;
-                  uVar24 = 0;
-LAB_00182d18:
-                  lVar20 = uVar19 - uVar21;
-                  puVar22 = local_128 + uVar21;
-                  do {
-                    lVar20 = lVar20 + -1;
-                    uVar24 = uVar24 | *puVar22 == local_178;
-                    puVar22 = puVar22 + 1;
-                  } while (lVar20 != 0);
-                }
-                else {
-                  uVar21 = uVar19 & 0xfffffff8;
-                  bVar27 = 0;
-                  bVar36 = 0;
-                  bVar37 = 0;
-                  bVar38 = 0;
-                  bVar39 = 0;
-                  bVar40 = 0;
-                  bVar41 = 0;
-                  bVar42 = 0;
-                  uVar28 = (undefined1)local_178;
-                  uVar30 = (undefined1)(local_178 >> 8);
-                  uVar32 = (undefined1)(local_178 >> 0x10);
-                  uVar34 = (undefined1)(local_178 >> 0x18);
-                  uVar29 = (undefined1)(local_178 >> 0x20);
-                  uVar31 = (undefined1)(local_178 >> 0x28);
-                  uVar33 = (undefined1)(local_178 >> 0x30);
-                  uVar35 = (undefined1)(local_178 >> 0x38);
-                  uVar23 = uVar21;
-                  pauVar25 = (undefined1 (*) [16])auStack_108;
-                  do {
-                    uVar23 = uVar23 - 8;
-                    auVar9[8] = uVar28;
-                    auVar9._0_8_ = local_178;
-                    auVar9[9] = uVar30;
-                    auVar9[10] = uVar32;
-                    auVar9[0xb] = uVar34;
-                    auVar9[0xc] = uVar29;
-                    auVar9[0xd] = uVar31;
-                    auVar9[0xe] = uVar33;
-                    auVar9[0xf] = uVar35;
-                    auVar46 = NEON_cmeq(pauVar25[-2],auVar9,8);
-                    auVar10[8] = uVar28;
-                    auVar10._0_8_ = local_178;
-                    auVar10[9] = uVar30;
-                    auVar10[10] = uVar32;
-                    auVar10[0xb] = uVar34;
-                    auVar10[0xc] = uVar29;
-                    auVar10[0xd] = uVar31;
-                    auVar10[0xe] = uVar33;
-                    auVar10[0xf] = uVar35;
-                    auVar47 = NEON_cmeq(pauVar25[-1],auVar10,8);
-                    auVar11[8] = uVar28;
-                    auVar11._0_8_ = local_178;
-                    auVar11[9] = uVar30;
-                    auVar11[10] = uVar32;
-                    auVar11[0xb] = uVar34;
-                    auVar11[0xc] = uVar29;
-                    auVar11[0xd] = uVar31;
-                    auVar11[0xe] = uVar33;
-                    auVar11[0xf] = uVar35;
-                    auVar48 = NEON_cmeq(*pauVar25,auVar11,8);
-                    auVar12[8] = uVar28;
-                    auVar12._0_8_ = local_178;
-                    auVar12[9] = uVar30;
-                    auVar12[10] = uVar32;
-                    auVar12[0xb] = uVar34;
-                    auVar12[0xc] = uVar29;
-                    auVar12[0xd] = uVar31;
-                    auVar12[0xe] = uVar33;
-                    auVar12[0xf] = uVar35;
-                    auVar49 = NEON_cmeq(pauVar25[1],auVar12,8);
-                    uVar43 = CONCAT14(auVar46[8],(uint)(auVar46[0] & 1)) & 0x100ffffff;
-                    uVar45 = CONCAT14(auVar48[8],(uint)(auVar48[0] & 1)) & 0x100ffffff;
-                    bVar27 = bVar27 | (byte)uVar43;
-                    bVar36 = bVar36 | (byte)(uVar43 >> 0x20);
-                    bVar37 = bVar37 | auVar47[0] & 1;
-                    bVar38 = bVar38 | auVar47[8] & 1;
-                    bVar39 = bVar39 | (byte)uVar45;
-                    bVar40 = bVar40 | (byte)(uVar45 >> 0x20);
-                    bVar41 = bVar41 | auVar49[0] & 1;
-                    bVar42 = bVar42 | auVar49[8] & 1;
-                    pauVar25 = pauVar25 + 4;
-                  } while (uVar23 != 0);
-                  bVar39 = bVar39 | bVar27;
-                  bVar40 = bVar40 | bVar36;
-                  auVar4._1_3_ = 0;
-                  auVar4[0] = bVar39;
-                  auVar4[4] = bVar40;
-                  auVar4._5_3_ = 0;
-                  auVar4[8] = bVar41 | bVar37;
-                  auVar4._9_3_ = 0;
-                  auVar4[0xc] = bVar42 | bVar38;
-                  auVar4._13_3_ = 0;
-                  auVar5._1_3_ = 0;
-                  auVar5[0] = bVar39;
-                  auVar5[4] = bVar40;
-                  auVar5._5_3_ = 0;
-                  auVar5[8] = bVar41 | bVar37;
-                  auVar5._9_3_ = 0;
-                  auVar5[0xc] = bVar42 | bVar38;
-                  auVar5._13_3_ = 0;
-                  auVar46 = NEON_ext(auVar4,auVar5,8,1);
-                  uVar24 = CONCAT13(auVar46[3],
-                                    CONCAT12(auVar46[2],CONCAT11(auVar46[1],bVar39 | auVar46[0]))) |
-                           CONCAT13(auVar46[7],
-                                    CONCAT12(auVar46[6],CONCAT11(auVar46[5],bVar40 | auVar46[4])));
-                  if (uVar21 != uVar19) goto LAB_00182d18;
-                }
-                if (uVar24 == 0) {
-                  if (local_18c != 0x10) goto LAB_00182c44;
-                  goto LAB_00182918;
-                }
-              }
-              uVar26 = uVar26 + 1;
-            } while (uVar26 != local_8c);
-          }
-          local_178 = local_88;
-          if (local_88 != 0) {
-            if (local_88 < 0x10000) goto LAB_00182918;
-            pcVar16 = (char *)0x0;
-            if ((0xffffffffffffefff < local_88) || ((local_88 & 7) != 0)) goto LAB_0018289c;
-            if (local_18c != 0) {
-              uVar26 = (ulong)local_18c;
-              if (local_18c < 8) {
-                uVar23 = 0;
-                uVar24 = 0;
-LAB_00182e18:
-                lVar20 = uVar26 - uVar23;
-                puVar22 = local_128 + uVar23;
-                do {
-                  lVar20 = lVar20 + -1;
-                  uVar24 = uVar24 | *puVar22 == local_88;
-                  puVar22 = puVar22 + 1;
-                } while (lVar20 != 0);
-              }
-              else {
-                uVar23 = uVar26 & 0xfffffff8;
-                bVar27 = 0;
-                bVar36 = 0;
-                bVar37 = 0;
-                bVar38 = 0;
-                bVar39 = 0;
-                bVar40 = 0;
-                bVar41 = 0;
-                bVar42 = 0;
-                auVar44._8_8_ = local_88;
-                auVar44._0_8_ = local_88;
-                pauVar25 = (undefined1 (*) [16])auStack_108;
-                uVar19 = uVar23;
-                do {
-                  uVar19 = uVar19 - 8;
-                  auVar46 = NEON_cmeq(pauVar25[-2],auVar44,8);
-                  auVar47 = NEON_cmeq(pauVar25[-1],auVar44,8);
-                  auVar48 = NEON_cmeq(*pauVar25,auVar44,8);
-                  auVar49 = NEON_cmeq(pauVar25[1],auVar44,8);
-                  uVar43 = CONCAT14(auVar46[8],(uint)(auVar46[0] & 1)) & 0x100ffffff;
-                  bVar27 = bVar27 | (byte)uVar43;
-                  bVar36 = bVar36 | (byte)(uVar43 >> 0x20);
-                  bVar37 = bVar37 | auVar47[0] & 1;
-                  bVar38 = bVar38 | auVar47[8] & 1;
-                  uVar43 = CONCAT14(auVar48[8],(uint)(auVar48[0] & 1)) & 0x100ffffff;
-                  bVar39 = bVar39 | (byte)uVar43;
-                  bVar40 = bVar40 | (byte)(uVar43 >> 0x20);
-                  bVar41 = bVar41 | auVar49[0] & 1;
-                  bVar42 = bVar42 | auVar49[8] & 1;
-                  pauVar25 = pauVar25 + 4;
-                } while (uVar19 != 0);
-                bVar39 = bVar39 | bVar27;
-                bVar40 = bVar40 | bVar36;
-                auVar2._1_3_ = 0;
-                auVar2[0] = bVar39;
-                auVar2[4] = bVar40;
-                auVar2._5_3_ = 0;
-                auVar2[8] = bVar41 | bVar37;
-                auVar2._9_3_ = 0;
-                auVar2[0xc] = bVar42 | bVar38;
-                auVar2._13_3_ = 0;
-                auVar3._1_3_ = 0;
-                auVar3[0] = bVar39;
-                auVar3[4] = bVar40;
-                auVar3._5_3_ = 0;
-                auVar3[8] = bVar41 | bVar37;
-                auVar3._9_3_ = 0;
-                auVar3[0xc] = bVar42 | bVar38;
-                auVar3._13_3_ = 0;
-                auVar46 = NEON_ext(auVar2,auVar3,8,1);
-                uVar24 = CONCAT13(auVar46[3],
-                                  CONCAT12(auVar46[2],CONCAT11(auVar46[1],bVar39 | auVar46[0]))) |
-                         CONCAT13(auVar46[7],
-                                  CONCAT12(auVar46[6],CONCAT11(auVar46[5],bVar40 | auVar46[4])));
-                if (uVar23 != uVar26) goto LAB_00182e18;
-              }
-              if (uVar24 != 0) goto LAB_00182e60;
-              if (local_18c == 0x10) goto LAB_00182918;
+        map_scan_progress = to;
+        map_read_us_acc += source_now_us() - t0;
+        map_read_count_acc += g_mem_reads - reads0;
+        if (map_scan_progress < map_tile_count)
+            return;
+    }
+
+    if (!mem_read_array(map_ptr + 0x20, &h2) || h2 != tiles
+        || !mem_read(handle, map_ptr + 0xc4, &h, 4) || h != map_scan_h
+        || !mem_read(handle, map_ptr + 0xc8, &w, 4) || w != map_scan_w) {
+        stage = 7;
+        goto finish_reset;
+    }
+    memcpy(source_wall_cache, map_wall_bitmap, map_tile_count);
+    map_cached_tiles = tiles;
+    map_cached_map = map_ptr;
+    map_cached_h = h;
+    map_cached_w = w;
+    map_known = 1;
+    map_refresh_us = map_read_us_acc;
+    map_scan_active = 0;
+    map_complete_frame = frame;
+    map_cache_publish();
+    stage = 0;
+    goto finish;
+
+finish_reset:
+    map_scan_active = 0;
+    map_read_count_acc += g_mem_reads - reads0;
+    map_refresh_us = map_read_us_acc + (monotonic_us() - t0);
+    map_scan_progress = 0;
+    map_read_us_acc = map_refresh_us;
+    if (map_ptr != map_cached_map || tiles != map_cached_tiles
+        || h != map_cached_h || w != map_cached_w)
+        map_known = 0;
+
+finish:
+    map_attempts++;
+    map_failure_stage = stage;
+    map_failure_index = index;
+    now_ms = monotonic_ms();
+    if (map_attempts < 5 || stage != prev_stage || map_last_log_ms == 0
+        || now_ms - map_last_log_ms > 999) {
+        snprintf(json, sizeof json,
+                 ",\"map_known\":%u,\"failure_stage\":%u,\"failure_index\":%u,"
+                 "\"width\":%d,\"height\":%d,\"map\":\"0x%llx\",\"tiles\":\"0x%llx\","
+                 "\"refresh_us\":%llu,\"refresh_reads\":%llu,\"refresh_attempts\":%llu",
+                 (unsigned)map_known, (unsigned)stage, (unsigned)index,
+                 (int)w, (int)h, (unsigned long long)map_ptr,
+                 (unsigned long long)tiles, (unsigned long long)map_refresh_us,
+                 (unsigned long long)map_read_count_acc,
+                 (unsigned long long)map_attempts);
+        log_event("function_map",
+                  stage != 0 ? "current_map_unknown" : "complete_source_wall_cache",
+                  json);
+        map_last_log_ms = now_ms;
+    }
+}
+
+float alternator_damage_scale(uintptr_t token_slot)
+{
+    float result = 1.0f;
+    char namebuf[96];
+    uintptr_t obj = 0;
+    uintptr_t inner = 0;
+    uintptr_t handle = projectile_read_handle(token_slot, &obj);
+
+    if (handle != 0
+        && mem_read(handle, obj, &inner, 8)
+        && inner >= 0x10000 && (inner & 7) == 0
+        && resolve_weapon_name(g_game_base, inner, mem_read, 0, namebuf)) {
+        const char *name = namebuf + 20;
+        int lo = 0;
+        int hi = ALTERNATOR_TABLE_LEN;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            int c = strcmp(name, alternator_damage_table[mid].name);
+            if (c == 0) {
+                float v = (float)alternator_damage_table[mid].value;
+                float t = v / 3.0f;
+                float capped = (t < 20.0f) ? t : 20.0f;
+                result = (t >= 1.0f) ? capped : 1.0f;
+                break;
             }
-            local_128[local_18c] = local_88;
-            local_18c = local_18c + 1;
-          }
-LAB_00182e60:
-          uVar24 = 0;
-          local_198 = local_18c;
-          if (local_18c != 0) {
-            puVar22 = local_128;
-            local_1a0 = (ulong)local_18c;
-            local_198 = (uint)(local_18c != 0);
-            do {
-              uVar26 = *puVar22;
-              iVar15 = FUN_0018307c(param_1,uVar26,&local_130);
-              if (((((iVar15 == 0) || (local_130 != *param_1 + 0x121ea60)) ||
-                   (uVar26 + 0x130 < 0x10000)) ||
-                  ((((uVar26 & 0xfffffffffffffffc) == 0xfffffffffffffecc ||
-                    (iVar15 = (*(code *)param_1[1])(param_1[2],uVar26 + 0x130,&local_17c,4),
-                    uVar26 < 0xfef8)) ||
-                   ((iVar15 != 1 || (((int)local_17c < 0 || (5000 < (int)local_17c)))))))) ||
-                 ((iVar15 = (*(code *)param_1[1])(param_1[2],uVar26 + 0x108,local_180,1),
-                  uVar26 + 0x1e6 < 0x10001 ||
-                  ((iVar15 != 1 ||
-                   (iVar15 = (*(code *)param_1[1])(param_1[2],uVar26 + 0x1e5,local_184,1),
-                   iVar15 != 1)))))) goto LAB_00182918;
-              if (uVar26 + 0x23d < 0x10001) {
-                bVar14 = false;
-              }
-              else {
-                iVar15 = (*(code *)param_1[1])(param_1[2],uVar26 + 0x23c,local_188,1);
-                bVar14 = iVar15 == 1;
-              }
-              if ((((!bVar14) || (1 < local_180[0])) || (1 < local_184[0])) || (1 < local_188[0]))
-              goto LAB_00182918;
-              puVar22 = puVar22 + 1;
-              uVar18 = local_17c;
-              if (local_17c <= uVar24) {
-                uVar18 = uVar24;
-              }
-              if ((local_180[0] == 0 && local_184[0] == 0) && local_188[0] == 0) {
-                local_198 = 0;
-                uVar24 = uVar18;
-              }
-              local_1a0 = local_1a0 - 1;
-            } while (local_1a0 != 0);
-          }
-          uVar18 = (uint)(local_198 != 0);
-          if (local_16c[0] == '\x01') {
-            uVar18 = 1;
-          }
-          if ((uVar24 == *(ushort *)(pcVar17 + 8)) && ((byte)pcVar17[10] == uVar18)) {
-            param_3[1] = uVar24;
-            param_3[2] = uVar18;
-            *(long *)(param_3 + 0x16) = param_2;
-            *param_3 = 1;
-            param_3[3] = local_18c;
-            if (uVar24 == 0) {
-              uVar28 = 0xec;
-              uVar30 = 0x51;
-              uVar32 = 0x38;
-              uVar34 = 0x3e;
-            }
-            else {
-              fVar8 = (float)uVar24 / 300.0;
-              uVar28 = SUB41(fVar8,0);
-              uVar30 = (undefined1)((uint)fVar8 >> 8);
-              uVar32 = (undefined1)((uint)fVar8 >> 0x10);
-              uVar34 = (undefined1)((uint)fVar8 >> 0x18);
-            }
-            pcVar16 = (char *)0x1;
-            bVar14 = NAN((float)CONCAT13(uVar34,CONCAT12(uVar32,CONCAT11(uVar30,uVar28))));
-            bVar13 = true;
-            if ((!bVar14 && (float)CONCAT13(uVar34,CONCAT12(uVar32,CONCAT11(uVar30,uVar28))) == 1.25
-                 || (float)CONCAT13(uVar34,CONCAT12(uVar32,CONCAT11(uVar30,uVar28))) < 1.25 !=
-                    bVar14) &&
-               (bVar13 = false,
-               !NAN((float)CONCAT13(uVar34,CONCAT12(uVar32,CONCAT11(uVar30,uVar28)))))) {
-              bVar13 = (float)CONCAT13(uVar34,CONCAT12(uVar32,CONCAT11(uVar30,uVar28))) < 0.08;
-            }
-            uVar29 = 0;
-            uVar31 = 0;
-            uVar33 = 0;
-            uVar35 = 0x3f;
-            if (!bVar13) {
-              uVar29 = uVar28;
-              uVar31 = uVar30;
-              uVar33 = uVar32;
-              uVar35 = uVar34;
-            }
-            param_3[4] = CONCAT13(uVar35,CONCAT12(uVar33,CONCAT11(uVar31,uVar29)));
-            goto LAB_0018289c;
-          }
+            if (c > 0)
+                lo = mid + 1;
+            else
+                hi = mid;
         }
-      }
     }
-  }
-LAB_00182918:
-  pcVar16 = (char *)0x0;
-LAB_0018289c:
-  if (*(long *)(lVar1 + 0x28) != local_70) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(pcVar16);
-  }
-  return;
+    return result;
 }
 
-/* ===== FUN_001830e8 @ 001830e8 [libNexusEvasionRuntime69252.so] ===== */
-
-undefined8 * FUN_001830e8(char *param_1)
-
+static const weapon_desc_t *weapon_table_lookup(const char *name)
 {
-  ulong uVar1;
-  ulong uVar2;
-  int iVar3;
-  ulong uVar4;
-  ulong uVar5;
-  
-  uVar4 = 0;
-  uVar5 = 0xf6;
-  do {
-    if (uVar5 < uVar4 || uVar5 - uVar4 == 0) {
-      return (undefined8 *)0x0;
+    int lo = 0;
+    int hi = WEAPON_TABLE_LEN;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        int c = strcmp(name, weapon_table[mid].name);
+        if (c == 0)
+            return &weapon_table[mid];
+        if (c > 0)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    uVar1 = uVar4 + (uVar5 - uVar4 >> 1);
-    iVar3 = strcmp(param_1,*(char **)(&UNK_001ca320 + uVar1 * 0x10));
-    uVar2 = uVar1;
-    if (-1 < iVar3) {
-      uVar4 = uVar1 + 1;
-      uVar2 = uVar5;
-    }
-    uVar5 = uVar2;
-  } while (iVar3 != 0);
-  return (undefined8 *)(&UNK_001ca320 + uVar1 * 0x10);
+    return NULL;
 }
 
-/* ===== FUN_0019df04 @ 0019df04 [libNexusEvasionRuntime69252.so] ===== */
-
-undefined4 FUN_0019df04(long param_1,undefined8 *param_2,long param_3,long param_4)
-
+int weapon_controller_read(const game_reader_t *reader, uintptr_t obj,
+                           weapon_info_t *out)
 {
-  long lVar1;
-  int iVar2;
-  long *plVar3;
-  undefined4 uVar4;
-  long lVar5;
-  ulong local_e0;
-  long local_d8;
-  long lStack_d0;
-  char local_c8;
-  long local_98;
-  long lStack_90;
-  long local_88;
-  char local_80;
-  undefined7 uStack_7f;
-  int local_78;
-  long local_58;
-  
-  lVar1 = tpidr_el0;
-  uVar4 = 0;
-  local_58 = *(long *)(lVar1 + 0x28);
-  if ((((param_1 == 0) || (param_2 == (undefined8 *)0x0)) || (uVar4 = 0, param_3 + 8U < 0x10008)) ||
-     ((code *)param_2[1] == (code *)0x0)) goto LAB_0019e0b4;
-  iVar2 = (*(code *)param_2[1])(*param_2,param_3,&local_e0,8);
-  if (iVar2 == 1) {
-    uVar4 = 0;
-    if ((local_e0 + 0x1001 < 0x11001) || ((local_e0 & 7) != 0)) goto LAB_0019e0b4;
-    iVar2 = FUN_0019dbd4(param_2,param_3,&local_98);
-    if (iVar2 == 0) goto LAB_0019e0b0;
-    if ((local_98 == 0x6c6c6f72746e6f43 && lStack_90 == 0x725069746c557265) &&
-        (local_88 == 0x656c697463656a6f && local_80 == '\0')) {
-      lVar5 = 0;
-LAB_0019e084:
-      iVar2 = FUN_0019dbd4(param_2,param_4,&local_d8);
-      if ((iVar2 == 0) ||
-         (iVar2 = strcmp((char *)&local_d8,(&PTR_s_ControllerUltiProjectile_001cb280)[lVar5]),
-         iVar2 != 0)) goto LAB_0019e0b0;
-      *(undefined4 *)(param_1 + 0x38) = 0;
-      plVar3 = (long *)(param_1 + lVar5 * 0x18);
-      uVar4 = 1;
-      *plVar3 = param_3;
-      plVar3[1] = local_e0;
-      plVar3[2] = param_4;
-    }
-    else {
-      if ((((local_98 == 0x6c6c6f72746e6f43 && lStack_90 == 0x764f69746c557265) &&
-           local_88 == 0x6567726168637265) && CONCAT71(uStack_7f,local_80) == 0x7463656a6f725064) &&
-          local_78 == 0x656c69) {
-        lVar5 = 1;
-        goto LAB_0019e084;
-      }
-      uVar4 = 0;
-    }
-    if (((*(long *)(param_1 + 0x30) == 0) &&
-        (iVar2 = FUN_0019dbd4(param_2,param_4,&local_d8), iVar2 != 0)) &&
-       ((local_d8 == 0x7250796465657053 && lStack_d0 == 0x656c697463656a6f) && local_c8 == '\0')) {
-      *(long *)(param_1 + 0x30) = param_4;
-    }
-  }
-  else {
-LAB_0019e0b0:
-    uVar4 = 0;
-  }
-LAB_0019e0b4:
-  if (*(long *)(lVar1 + 0x28) == local_58) {
-    return uVar4;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
+    uintptr_t vt = 0;
+    uintptr_t inner = 0;
+    uintptr_t mid = 0;
+    uintptr_t holder = 0;
+    uintptr_t entries = 0;
+    uintptr_t tail = 0;
+    uintptr_t stats_holder = 0;
+    uintptr_t stats = 0;
+    uintptr_t active;
+    int32_t count = 0;
+    name_header_t hdr;
+    uint32_t len;
+    const weapon_desc_t *entry;
+    uintptr_t ver_addr;
+    uint32_t ver = 0;
+    uint8_t stats_byte = 0;
+    target_arrays_t arr;
+    uintptr_t targets[TARGET_LIST_MAX];
+    uint32_t ntargets = 0;
+    uint32_t max_clear = 0;
+    uint32_t flagged;
+    uint32_t elite;
+    float speed;
 
-/* ===== FUN_0019e158 @ 0019e158 [libNexusEvasionRuntime69252.so] ===== */
+    if (obj < 0x10000 || reader->read == NULL)
+        return 0;
+    if (!reader->read(reader->ctx, obj, &vt, 8))
+        return 0;
+    if (vt < 0x10000 || (vt & 7) != 0 || vt != reader->game_base + 0x121f350)
+        return 0;
+    if (!reader->read(reader->ctx, obj + 8, &inner, 8))
+        return 0;
+    if (inner < 0x10000 || (inner & 7) != 0)
+        return 0;
+    if (!reader->read(reader->ctx, inner + 8, &count, 4))
+        return 0;
+    if (count < 0 || count > CONTROLLER_ENTRY_MAX)
+        return 0;
+    if (!reader->read(reader->ctx, inner, &mid, 8))
+        return 0;
+    if (mid < 0x10000 || (mid & 7) != 0)
+        return 0;
+    if (!reader->read(reader->ctx, mid + 0x38, &holder, 8))
+        return 0;
+    if (holder < 0x10000 || (holder & 7) != 0)
+        return 0;
+    if (!reader->read(reader->ctx, holder, &entries, 8))
+        return 0;
+    if (entries < 0x10000 || (entries & 7) != 0)
+        return 0;
+    if (!reader->read(reader->ctx, entries + 8, &tail, 8))
+        return 0;
+    if (tail < 0x10000 || (tail & 7) != 0)
+        return 0;
 
-void FUN_0019e158(long *param_1,undefined8 *param_2,uint param_3,long param_4)
+    if (tail > UINT64_MAX - (uintptr_t)count * 0x10 - 0x10)
+        return 0;
+    active = tail + (uintptr_t)count * 0x10;
+    if (active < 0x10000)
+        return 0;
+    if (!reader->read(reader->ctx, active, &hdr, 0x10))
+        return 0;
+    len = hdr.len;
+    if (len < WEAPON_MIN_LEN || len > WEAPON_MAX_LEN)
+        return 0;
+    if (len < BRAND_SSO_THRESHOLD) {
+        memcpy(out->name, &hdr.ptr, 8);
+    } else {
+        if (hdr.ptr < 0x10000 || hdr.ptr > UINT64_MAX - len)
+            return 0;
+        if (!reader->read(reader->ctx, hdr.ptr, out->name, len + 1))
+            return 0;
+    }
+    if (out->name[len] != '\0')
+        return 0;
+    for (uint32_t i = 0; i < len; i++) {
+        char c = out->name[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+              || c == '_' || (c >= '0' && c <= '9')))
+            return 0;
+    }
+    if (strstr(out->name, "Weapon") == NULL)
+        return 0;
+    entry = weapon_table_lookup(out->name);
+    if (entry == NULL)
+        return 0;
 
-{
-  long lVar1;
-  bool bVar2;
-  int iVar3;
-  uint uVar4;
-  ulong uVar5;
-  bool bVar6;
-  char *__s2;
-  ulong *puVar7;
-  long lVar8;
-  long *plVar9;
-  ulong local_b8;
-  ulong local_b0;
-  long local_a8;
-  long lStack_a0;
-  char local_98;
-  long local_68;
-  
-  lVar1 = tpidr_el0;
-  local_68 = *(long *)(lVar1 + 0x28);
-  uVar5 = 0;
-  if (((param_1 == (long *)0x0) || (param_2 == (undefined8 *)0x0)) || (param_4 == 0))
-  goto LAB_0019e224;
-  if ((param_3 < 2) && (*param_1 != 0)) {
-    uVar5 = 0;
-    if ((param_1[3] == 0) || (*param_1 == param_1[3])) goto LAB_0019e224;
-    if (param_3 == 0) {
-LAB_0019e254:
-      lVar8 = 0;
-      bVar6 = true;
-      while( true ) {
-        plVar9 = param_1 + lVar8 * 3;
-        if ((*plVar9 + 8U < 0x10008 || (code *)param_2[1] == (code *)0x0) ||
-           (iVar3 = (*(code *)param_2[1])(*param_2,*plVar9,&local_b8,8), iVar3 != 1))
-        goto LAB_0019e220;
-        uVar5 = 0;
-        if ((local_b8 + 0x1001 < 0x11001) || ((local_b8 & 7) != 0)) break;
-        if (local_b8 != param_1[lVar8 * 3 + 1]) goto LAB_0019e220;
-        uVar5 = FUN_0019dbd4(param_2,*plVar9,&local_a8);
-        if ((int)uVar5 == 0) break;
-        __s2 = (&PTR_s_ControllerUltiProjectile_001cb280)[lVar8];
-        iVar3 = strcmp((char *)&local_a8,__s2);
-        if (iVar3 != 0) goto LAB_0019e220;
-        puVar7 = (ulong *)(param_1 + lVar8 * 3 + 2);
-        uVar5 = FUN_0019dbd4(param_2,*puVar7,&local_a8);
-        if ((int)uVar5 == 0) break;
-        uVar4 = strcmp((char *)&local_a8,__s2);
-        uVar5 = (ulong)uVar4;
-        if (uVar4 != 0) goto LAB_0019e220;
-        if ((*plVar9 + 0x70U < 0x10008) || ((code *)param_2[1] == (code *)0x0)) break;
-        iVar3 = (*(code *)param_2[1])(*param_2,*plVar9 + 0x68,&local_b0,8);
-        if (iVar3 != 1) goto LAB_0019e220;
-        uVar5 = 0;
-        if ((local_b0 + 0x1001 < 0x11001) || ((local_b0 & 7) != 0)) break;
-        if ((local_b0 != *puVar7) && (local_b0 != param_1[6])) goto LAB_0019e220;
-        uVar5 = 1;
-        if (param_3 != 0) {
-          puVar7 = (ulong *)(param_1 + 6);
+    ver_addr = reader->game_base + 0x1244c3c;
+    if (ver_addr < 0x10000 || ver_addr > UINT64_MAX - 3)
+        return 0;
+    if (!reader->read(reader->ctx, ver_addr, &ver, 4) || ver != WEAPON_VERSION_EXPECTED)
+        return 0;
+    if (!mem_read_ptr(reader, holder + 0x1a0, &stats_holder))
+        return 0;
+    if (!mem_read_ptr(reader, stats_holder + 0x28, &stats))
+        return 0;
+    if (stats + (uintptr_t)count + 1 < 0x10001)
+        return 0;
+    if (!reader->read(reader->ctx, stats + (uintptr_t)count, &stats_byte, 1))
+        return 0;
+
+    if (!reader->read(reader->ctx, obj + 0x58, &arr, 0x28))
+        return 0;
+    if (arr.count1 > TARGET_LIST_MAX)
+        return 0;
+    if (arr.cap1 < (int32_t)arr.count1 || arr.cap1 > 0x400)
+        return 0;
+    if (arr.count1 != 0) {
+        if (arr.list1 < 0x10000 || (arr.list1 & 7) != 0)
+            return 0;
+        if (arr.list1 > UINT64_MAX - (uint64_t)arr.count1 * 8)
+            return 0;
+        for (uint32_t i = 0; i < arr.count1; i++) {
+            uintptr_t t = 0;
+            if (!mem_read_ptr(reader, arr.list1 + (uintptr_t)i * 8, &t))
+                return 0;
+            if (!targets_push(targets, &ntargets, t))
+                return 0;
         }
-        *(ulong *)(param_4 + lVar8 * 8) = *puVar7;
-        lVar8 = 1;
-        bVar2 = !bVar6;
-        bVar6 = false;
-        if (bVar2) break;
-      }
-      goto LAB_0019e224;
     }
-    if (param_1[6] != 0) {
-      uVar5 = FUN_0019dbd4(param_2,param_1[6],&local_a8);
-      if ((int)uVar5 == 0) goto LAB_0019e224;
-      if ((local_a8 == 0x7250796465657053 && lStack_a0 == 0x656c697463656a6f) && local_98 == '\0')
-      goto LAB_0019e254;
+    if (arr.count2 > TARGET_LIST_MAX)
+        return 0;
+    if (arr.cap2 < (int32_t)arr.count2 || arr.cap2 > 0x400)
+        return 0;
+    if (arr.count2 != 0) {
+        if (arr.list2 < 0x10000 || (arr.list2 & 7) != 0)
+            return 0;
+        if (arr.list2 > UINT64_MAX - (uint64_t)arr.count2 * 8)
+            return 0;
+        for (uint32_t i = 0; i < arr.count2; i++) {
+            uintptr_t t = 0;
+            if (!mem_read_ptr(reader, arr.list2 + (uintptr_t)i * 8, &t))
+                return 0;
+            if (!targets_push(targets, &ntargets, t))
+                return 0;
+        }
     }
-  }
-LAB_0019e220:
-  uVar5 = 0;
-LAB_0019e224:
-  if (*(long *)(lVar1 + 0x28) == local_68) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar5);
+    if (arr.extra != 0) {
+        if (arr.extra < 0x10000 || arr.extra > UINT64_MAX - 0x1000
+            || (arr.extra & 7) != 0)
+            return 0;
+        if (!targets_push(targets, &ntargets, arr.extra))
+            return 0;
+    }
+
+    flagged = (ntargets != 0);
+    for (uint32_t i = 0; i < ntargets; i++) {
+        uintptr_t t = targets[i];
+        uintptr_t tvt = 0;
+        uint32_t dmg = 0;
+        uint8_t f1 = 0;
+        uint8_t f2 = 0;
+        uint8_t f3 = 0;
+        uint32_t m;
+        if (!mem_read_ptr(reader, t, &tvt))
+            return 0;
+        if (tvt != reader->game_base + 0x121ea60)
+            return 0;
+        if (t < 0x10000 - 0x130 || t > UINT64_MAX - 0x130)
+            return 0;
+        if (!reader->read(reader->ctx, t + 0x130, &dmg, 4))
+            return 0;
+        if (dmg > WEAPON_DAMAGE_MAX)
+            return 0;
+        if (!reader->read(reader->ctx, t + 0x108, &f1, 1))
+            return 0;
+        if (!reader->read(reader->ctx, t + 0x1e5, &f2, 1))
+            return 0;
+        if (!reader->read(reader->ctx, t + 0x23c, &f3, 1))
+            return 0;
+        if (f1 > 1 || f2 > 1 || f3 > 1)
+            return 0;
+        m = (dmg > max_clear) ? dmg : max_clear;
+        if (f1 == 0 && f2 == 0 && f3 == 0) {
+            flagged = 0;
+            max_clear = m;
+        }
+    }
+    elite = flagged;
+    if (stats_byte == 1)
+        elite = 1;
+    if (max_clear != entry->damage || entry->elite != (uint8_t)elite)
+        return 0;
+
+    out->damage = max_clear;
+    out->elite = elite;
+    out->obj = obj;
+    out->valid = 1;
+    out->targets = ntargets;
+    speed = bits_to_float(WEAPON_SPEED_DEFAULT_BITS);
+    if (max_clear != 0) {
+        float f = (float)max_clear / 300.0f;
+        if (f >= 0.08f && f < 1.25f)
+            speed = f;
+    }
+    out->speed_scale = speed;
+    return 1;
 }
 
-/* ===== mmap @ 0031c1a8 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Control flow encountered bad instruction data */
-/* WARNING: Unknown calling convention -- yet parameter storage is locked */
-
-void * mmap(void *__addr,size_t __len,int __prot,int __flags,int __fd,__off_t __offset)
-
+int controller_pair_register(controller_state_t *state, const game_reader_t *reader,
+                             uintptr_t a, uintptr_t b)
 {
-                    /* WARNING: Bad instruction - Truncating control flow here */
-  halt_baddata();
+    char name[64];
+    uintptr_t vt = 0;
+    int slot = -1;
+
+    if (state == NULL || reader == NULL || reader->read == NULL)
+        return 0;
+    if (a < 0x10000)
+        return 0;
+    if (!reader->read(reader->ctx, a, &vt, 8))
+        return 0;
+    if (vt < 0x10000 || (vt & 7) != 0)
+        return 0;
+    if (!mem_read_cstr(reader, a, name))
+        return 0;
+
+    if (strcmp(name, controller_kind_names[0]) == 0)
+        slot = 0;
+    else if (strcmp(name, controller_kind_names[1]) == 0)
+        slot = 1;
+
+    if (slot >= 0
+        && mem_read_cstr(reader, b, name)
+        && strcmp(name, controller_kind_names[slot]) == 0) {
+        state->generation = 0;
+        state->slot[slot].obj = a;
+        state->slot[slot].vtable = vt;
+        state->slot[slot].pair = b;
+    }
+
+    if (state->speed_obj == 0
+        && mem_read_cstr(reader, b, name)
+        && strcmp(name, "SpeedProjectile") == 0)
+        state->speed_obj = b;
+
+    return slot >= 0;
 }
 
-/* ===== munmap @ 0031c1b0 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Control flow encountered bad instruction data */
-/* WARNING: Unknown calling convention -- yet parameter storage is locked */
-
-int munmap(void *__addr,size_t __len)
-
+void controller_projectiles_collect(controller_state_t *state,
+                                    const game_reader_t *reader,
+                                    uint32_t mode, uintptr_t *out)
 {
-                    /* WARNING: Bad instruction - Truncating control flow here */
-  halt_baddata();
-}
+    char name[64];
 
+    if (state == NULL || reader == NULL || out == NULL)
+        return;
+    if (mode >= 2)
+        return;
+    if (state->slot[0].obj == 0)
+        return;
+    if (state->slot[1].obj == 0)
+        return;
+    if (state->slot[0].obj == state->slot[1].obj)
+        return;
+    if (mode != 0) {
+        if (state->speed_obj == 0)
+            return;
+        if (!mem_read_cstr(reader, state->speed_obj, name))
+            return;
+        if (strcmp(name, "SpeedProjectile") != 0)
+            return;
+    }
+
+    for (int slot = 0; slot < 2; slot++) {
+        uintptr_t obj = state->slot[slot].obj;
+        uintptr_t vt = 0;
+        uintptr_t active = 0;
+
+        if (obj + 8 < 0x10008 || reader->read == NULL)
+            return;
+        if (!reader->read(reader->ctx, obj, &vt, 8))
+            return;
+        if (vt < 0x10000 || (vt & 7) != 0)
+            return;
+        if (vt != state->slot[slot].vtable)
+            return;
+        if (!mem_read_cstr(reader, obj, name))
+            return;
+        if (strcmp(name, controller_kind_names[slot]) != 0)
+            return;
+        if (!mem_read_cstr(reader, state->slot[slot].pair, name))
+            return;
+        if (strcmp(name, controller_kind_names[slot]) != 0)
+            return;
+        if (obj + 0x70 < 0x10008)
+            return;
+        if (!reader->read(reader->ctx, obj + 0x68, &active, 8))
+            return;
+        if (active < 0x10000 || (active & 7) != 0)
+            return;
+        if (active != state->slot[slot].pair && active != state->speed_obj)
+            return;
+        out[slot] = (mode == 0) ? state->slot[slot].pair : state->speed_obj;
+    }
+}

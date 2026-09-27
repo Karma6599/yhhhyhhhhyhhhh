@@ -1,0 +1,2258 @@
+{
+ "module": "libNexusEvasionRuntime69252.so",
+ "ghidra_image_base": "0x100000",
+ "phase_names_vaddr": "0xc3298",
+ "alternator_table_vaddr": "0xc3388",
+ "weapon_table_vaddr": "0xca320",
+ "controller_names_vaddr": "0xcb280",
+ "phase_names": [
+  "mmap",
+  "prepare",
+  "plan_contract",
+  "plan_status",
+  "plan_unbound",
+  "plan_current_entry",
+  "plan_capacity",
+  "enter",
+  "resume",
+  "seal",
+  "entry_busy",
+  "entry_unbound",
+  "entry_read",
+  "entry_word",
+  "gap_window",
+  "gap_open",
+  "gap_read",
+  "gap_maps",
+  "gap_bounds",
+  "gap_parse",
+  "gap_close",
+  "gap_empty",
+  "gap_range",
+  "gap_mmap",
+  "gap_return",
+  "gap_unmap"
+ ],
+ "alternator_table": [
+  {
+   "name": "AlternatorWeaponDamage",
+   "value": 25
+  },
+  {
+   "name": "AlternatorWeaponHeal",
+   "value": 25
+  },
+  {
+   "name": "AlternatorWeaponSlow",
+   "value": 25
+  },
+  {
+   "name": "AlternatorWeaponSpeed",
+   "value": 25
+  },
+  {
+   "name": "AmbusherWeapon",
+   "value": 6
+  },
+  {
+   "name": "ArcadeWeapon",
+   "value": 30
+  },
+  {
+   "name": "ArcadeWeaponOvercharged",
+   "value": 30
+  },
+  {
+   "name": "ArtilleryDudeWeapon",
+   "value": 26
+  },
+  {
+   "name": "AssaultShotgunOverchargedWeapon",
+   "value": 25
+  },
+  {
+   "name": "AssaultShotgunWeapon",
+   "value": 25
+  },
+  {
+   "name": "AttacherWeapon",
+   "value": 11
+  },
+  {
+   "name": "AttacherWeaponAlternate",
+   "value": 22
+  },
+  {
+   "name": "AttacherWeaponAlternateOvercharge",
+   "value": 30
+  },
+  {
+   "name": "AttractorWeapon",
+   "value": 27
+  },
+  {
+   "name": "AxeJugglerWeapon",
+   "value": 24
+  },
+  {
+   "name": "BarkeepWeapon",
+   "value": 22
+  },
+  {
+   "name": "BarrelBotWeapon",
+   "value": 18
+  },
+  {
+   "name": "BarrelBotWeaponNanoPower",
+   "value": 18
+  },
+  {
+   "name": "BaseballOverchargedWeapon",
+   "value": 11
+  },
+  {
+   "name": "BaseballWeapon",
+   "value": 11
+  },
+  {
+   "name": "BeamerWeapon",
+   "value": 27
+  },
+  {
+   "name": "BeeSniperWeapon",
+   "value": 30
+  },
+  {
+   "name": "BlackHoleWeapon",
+   "value": 24
+  },
+  {
+   "name": "BlowerWeapon",
+   "value": 25
+  },
+  {
+   "name": "BoneThrowerWeapon",
+   "value": 27
+  },
+  {
+   "name": "BowDudeOverchargedWeapon",
+   "value": 26
+  },
+  {
+   "name": "BowDudeWeapon",
+   "value": 26
+  },
+  {
+   "name": "BullDudeOverchargedWeapon",
+   "value": 14
+  },
+  {
+   "name": "BullDudeWeapon",
+   "value": 16
+  },
+  {
+   "name": "BulletstormWeapon",
+   "value": 30
+  },
+  {
+   "name": "BulletstormWeaponLastShot",
+   "value": 30
+  },
+  {
+   "name": "CactusOverchargedWeapon",
+   "value": 23
+  },
+  {
+   "name": "CactusWeapon",
+   "value": 23
+  },
+  {
+   "name": "CannonGirlSmallWeapon",
+   "value": 15
+  },
+  {
+   "name": "CannonGirlWeapon",
+   "value": 27
+  },
+  {
+   "name": "CannonGirlWeaponNanoPower",
+   "value": 27
+  },
+  {
+   "name": "ChronomancerWeapon",
+   "value": 25
+  },
+  {
+   "name": "ClusterBombDudeWeapon",
+   "value": 26
+  },
+  {
+   "name": "CocoonerPetWeapon",
+   "value": 6
+  },
+  {
+   "name": "CocoonerWeapon",
+   "value": 27
+  },
+  {
+   "name": "ConductorWeapon",
+   "value": 18
+  },
+  {
+   "name": "ConductorWeaponOvercharged",
+   "value": 18
+  },
+  {
+   "name": "ControllerWeapon",
+   "value": 26
+  },
+  {
+   "name": "CookerWeapon",
+   "value": 27
+  },
+  {
+   "name": "CookerWeaponNanoPower",
+   "value": 27
+  },
+  {
+   "name": "CrabWeapon1",
+   "value": 23
+  },
+  {
+   "name": "CrabWeapon2",
+   "value": 23
+  },
+  {
+   "name": "CrabWeapon3",
+   "value": 23
+  },
+  {
+   "name": "CrossBomberWeapon",
+   "value": 23
+  },
+  {
+   "name": "CrowOverchargedWeapon",
+   "value": 26
+  },
+  {
+   "name": "CrowWeapon",
+   "value": 26
+  },
+  {
+   "name": "DancerWeaponDouble",
+   "value": 18
+  },
+  {
+   "name": "DancerWeaponSingle",
+   "value": 24
+  },
+  {
+   "name": "DancerWeaponTriple",
+   "value": 14
+  },
+  {
+   "name": "DaredevilWeapon",
+   "value": 10
+  },
+  {
+   "name": "DeadMariachiWeapon",
+   "value": 21
+  },
+  {
+   "name": "DeadMariachiWeaponNanoPower",
+   "value": 21
+  },
+  {
+   "name": "DeadMariachiWeaponOvercharged",
+   "value": 21
+  },
+  {
+   "name": "DiggerDrillWeapon",
+   "value": 5
+  },
+  {
+   "name": "DiggerWeapon",
+   "value": 15
+  },
+  {
+   "name": "DomainWeapon",
+   "value": 10
+  },
+  {
+   "name": "DoorManWeapon",
+   "value": 27
+  },
+  {
+   "name": "DoorManWeaponNanoPower",
+   "value": 33
+  },
+  {
+   "name": "DragonRiderDragonWeapon",
+   "value": 17
+  },
+  {
+   "name": "DragonRiderWeapon",
+   "value": 12
+  },
+  {
+   "name": "DrillerWeapon",
+   "value": 10
+  },
+  {
+   "name": "DuelistWeapon",
+   "value": 16
+  },
+  {
+   "name": "DuplicatorOverchargedPetWeapon",
+   "value": 27
+  },
+  {
+   "name": "DuplicatorWeapon",
+   "value": 27
+  },
+  {
+   "name": "ElectroSniperWeapon",
+   "value": 30
+  },
+  {
+   "name": "EnragerOverchargedWeapon",
+   "value": 6
+  },
+  {
+   "name": "EnragerWeapon",
+   "value": 6
+  },
+  {
+   "name": "FireDudeOverchargedWeapon",
+   "value": 25
+  },
+  {
+   "name": "FireDudeWeapon",
+   "value": 25
+  },
+  {
+   "name": "FishTankWeapon",
+   "value": 10
+  },
+  {
+   "name": "FleaPetWeapon",
+   "value": 8
+  },
+  {
+   "name": "FleaWeapon",
+   "value": 28
+  },
+  {
+   "name": "FuryWeapon",
+   "value": 22
+  },
+  {
+   "name": "FuryWeaponSp",
+   "value": 22
+  },
+  {
+   "name": "FutureGirlWeapon",
+   "value": 24
+  },
+  {
+   "name": "GeishaTransformedWeapon",
+   "value": 20
+  },
+  {
+   "name": "GeishaWeapon",
+   "value": 8
+  },
+  {
+   "name": "GhostWeapon",
+   "value": 11
+  },
+  {
+   "name": "GladiatorWeapon",
+   "value": 8
+  },
+  {
+   "name": "GladiatorWeaponFirePunch",
+   "value": 8
+  },
+  {
+   "name": "GodzillaWeapon1",
+   "value": 13
+  },
+  {
+   "name": "GodzillaWeapon2",
+   "value": 13
+  },
+  {
+   "name": "GunslingerOverchargedWeapon",
+   "value": 27
+  },
+  {
+   "name": "GunslingerWeapon",
+   "value": 27
+  },
+  {
+   "name": "HammerDudeOverchargedWeapon",
+   "value": 18
+  },
+  {
+   "name": "HammerDudeWeapon",
+   "value": 18
+  },
+  {
+   "name": "HookWeapon",
+   "value": 17
+  },
+  {
+   "name": "IceDudeWeapon",
+   "value": 28
+  },
+  {
+   "name": "InsectManWeapon",
+   "value": 30
+  },
+  {
+   "name": "InsectManWeaponNanoPower",
+   "value": 30
+  },
+  {
+   "name": "InsectManWeaponPoison",
+   "value": 30
+  },
+  {
+   "name": "InstagibWeapon",
+   "value": 30
+  },
+  {
+   "name": "JesterWeapon",
+   "value": 25
+  },
+  {
+   "name": "JetpackGirlWeapon",
+   "value": 12
+  },
+  {
+   "name": "KatanaKidWeaponFullChargeRanged",
+   "value": 24
+  },
+  {
+   "name": "KatanaKidWeaponRanged",
+   "value": 24
+  },
+  {
+   "name": "KatanaKidWeaponSlash",
+   "value": 11
+  },
+  {
+   "name": "KickerDudeWeapon",
+   "value": 8
+  },
+  {
+   "name": "KnightWeapon",
+   "value": 14
+  },
+  {
+   "name": "LeaperWeapon",
+   "value": 12
+  },
+  {
+   "name": "LightyearFlightWeapon",
+   "value": 20
+  },
+  {
+   "name": "LightyearSwordWeapon",
+   "value": 11
+  },
+  {
+   "name": "LightyearWeapon",
+   "value": 27
+  },
+  {
+   "name": "LuchadorOverchargedWeapon",
+   "value": 10
+  },
+  {
+   "name": "LuchadorWeapon",
+   "value": 9
+  },
+  {
+   "name": "MagicalGirlWeapon",
+   "value": 17
+  },
+  {
+   "name": "MagicalGirlWeaponTransformed",
+   "value": 11
+  },
+  {
+   "name": "MaisieWeapon",
+   "value": 26
+  },
+  {
+   "name": "MaisieWeaponNanoPower",
+   "value": 26
+  },
+  {
+   "name": "MechaDudeBigWeapon",
+   "value": 22
+  },
+  {
+   "name": "MechaDudeBigWeaponBuddy",
+   "value": 22
+  },
+  {
+   "name": "MechaDudeWeapon",
+   "value": 27
+  },
+  {
+   "name": "MechaDudeWeaponOverChargedBuddy",
+   "value": 27
+  },
+  {
+   "name": "MechaVanFriendlyMegBossWeapon",
+   "value": 22
+  },
+  {
+   "name": "MechanicWeapon",
+   "value": 27
+  },
+  {
+   "name": "MeepleWallWeapon",
+   "value": 23
+  },
+  {
+   "name": "MeepleWeapon",
+   "value": 23
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeapon",
+   "value": 50
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponForth",
+   "value": 50
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponSecond",
+   "value": 50
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponThird",
+   "value": 50
+  },
+  {
+   "name": "MegaBossBlackHoleWeapon",
+   "value": 50
+  },
+  {
+   "name": "MegaBossCactusSecondWeapon",
+   "value": 30
+  },
+  {
+   "name": "MegaBossCactusWeapon",
+   "value": 30
+  },
+  {
+   "name": "MegaBossCrossBombWeapon360",
+   "value": 32
+  },
+  {
+   "name": "MegaBossCrossBomberWeapon",
+   "value": 32
+  },
+  {
+   "name": "MegaBossCrossBomberWeaponSecond",
+   "value": 32
+  },
+  {
+   "name": "MegaBossCrowSecondWeapon",
+   "value": 40
+  },
+  {
+   "name": "MegaBossCrowWeapon",
+   "value": 40
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL1",
+   "value": 26
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL2",
+   "value": 30
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL3",
+   "value": 24
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL1",
+   "value": 26
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL2",
+   "value": 30
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL3",
+   "value": 42
+  },
+  {
+   "name": "MegaBossDuoWeapon",
+   "value": 100
+  },
+  {
+   "name": "MegaBossDuoWeapon360",
+   "value": 100
+  },
+  {
+   "name": "MegaBossFinxKittenWeapon",
+   "value": 7
+  },
+  {
+   "name": "MegaBossFinxReturnedWeaponSkill",
+   "value": 50
+  },
+  {
+   "name": "MegaBossFinxWeaponSkill",
+   "value": 45
+  },
+  {
+   "name": "MegaBossFrankPetWeapon",
+   "value": 8
+  },
+  {
+   "name": "MegaBossInsectManWeapon",
+   "value": 100
+  },
+  {
+   "name": "MegaBossInsectManWeaponSecond",
+   "value": 100
+  },
+  {
+   "name": "MegaBossMaisieWeapon",
+   "value": 45
+  },
+  {
+   "name": "MegaBossNitaWeapon",
+   "value": 80
+  },
+  {
+   "name": "MegaBossPercenterWeapon",
+   "value": 35
+  },
+  {
+   "name": "MegaBossPercenterWeapon360",
+   "value": 30
+  },
+  {
+   "name": "MegaBossPercenterWeaponLarge",
+   "value": 100
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponBasic",
+   "value": 45
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponRotatingStream",
+   "value": 45
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponRotatingStreamOvercharged",
+   "value": 45
+  },
+  {
+   "name": "MegaBossSplitterWeapon",
+   "value": 30
+  },
+  {
+   "name": "MegaBossSplitterWeaponRange",
+   "value": 200
+  },
+  {
+   "name": "MegaBossStickyBombWeapon",
+   "value": 35
+  },
+  {
+   "name": "MegaBossStickyBombWeaponSecond",
+   "value": 55
+  },
+  {
+   "name": "MegaBossTrickshot2Weapon",
+   "value": 25
+  },
+  {
+   "name": "MegaBossTrickshot2WeaponSecond",
+   "value": 25
+  },
+  {
+   "name": "MegaBossTrickshotWeapon",
+   "value": 25
+  },
+  {
+   "name": "MegaBossTrickshotWeaponSecond",
+   "value": 25
+  },
+  {
+   "name": "MegaKatanaKidWeaponRanged",
+   "value": 40
+  },
+  {
+   "name": "MegaKatanaKidWeaponSlash",
+   "value": 25
+  },
+  {
+   "name": "MegaTickWeapon",
+   "value": 15
+  },
+  {
+   "name": "MegaTickWeaponSecond",
+   "value": 30
+  },
+  {
+   "name": "MenderWeapon",
+   "value": 22
+  },
+  {
+   "name": "MinigunDudeWeapon",
+   "value": 27
+  },
+  {
+   "name": "MinigunDudeWeaponNano",
+   "value": 27
+  },
+  {
+   "name": "MorningstarWeapon",
+   "value": 24
+  },
+  {
+   "name": "MummyOverchargedWeapon",
+   "value": 20
+  },
+  {
+   "name": "MummyWeapon",
+   "value": 20
+  },
+  {
+   "name": "NinjaOverchargedWeapon",
+   "value": 29
+  },
+  {
+   "name": "NinjaWeapon",
+   "value": 29
+  },
+  {
+   "name": "PainterWeapon",
+   "value": 19
+  },
+  {
+   "name": "PercenterOverchargedWeapon",
+   "value": 26
+  },
+  {
+   "name": "PercenterWeapon",
+   "value": 26
+  },
+  {
+   "name": "PowerLevelerWeapon",
+   "value": 20
+  },
+  {
+   "name": "PowerLevelerWeaponOverchargedBuddy",
+   "value": 20
+  },
+  {
+   "name": "PuppeteerWeapon",
+   "value": 22
+  },
+  {
+   "name": "RedirecterSnakePetWeapon",
+   "value": 8
+  },
+  {
+   "name": "RedirecterWeapon",
+   "value": 18
+  },
+  {
+   "name": "RedirecterWeaponSecondary",
+   "value": 20
+  },
+  {
+   "name": "ReviverWeapon",
+   "value": 10
+  },
+  {
+   "name": "RocketGirlWeapon",
+   "value": 27
+  },
+  {
+   "name": "RocketGirlWeaponBuddy",
+   "value": 27
+  },
+  {
+   "name": "RollerWeapon",
+   "value": 23
+  },
+  {
+   "name": "RopeDudeWeapon",
+   "value": 8
+  },
+  {
+   "name": "RosaWeapon",
+   "value": 11
+  },
+  {
+   "name": "RuffsWeapon",
+   "value": 27
+  },
+  {
+   "name": "SamuraiWeaponDash",
+   "value": 8
+  },
+  {
+   "name": "SamuraiWeaponSlash",
+   "value": 11
+  },
+  {
+   "name": "SandstormWeapon",
+   "value": 18
+  },
+  {
+   "name": "ShadowdemonWeapon",
+   "value": 22
+  },
+  {
+   "name": "ShamanOverchargedWeapon",
+   "value": 20
+  },
+  {
+   "name": "ShamanWeapon",
+   "value": 18
+  },
+  {
+   "name": "ShieldTankWeapon",
+   "value": 16
+  },
+  {
+   "name": "ShotgunGirlOverchargedWeapon",
+   "value": 23
+  },
+  {
+   "name": "ShotgunGirlWeapon",
+   "value": 23
+  },
+  {
+   "name": "SilencerWeapon",
+   "value": 27
+  },
+  {
+   "name": "SkaterWeapon",
+   "value": 19
+  },
+  {
+   "name": "SnakeOilWeapon",
+   "value": 30
+  },
+  {
+   "name": "SniperWeapon",
+   "value": 30
+  },
+  {
+   "name": "SniperWeaponNanoPower",
+   "value": 30
+  },
+  {
+   "name": "SoulCollectorOverchargedWeapon",
+   "value": 28
+  },
+  {
+   "name": "SoulCollectorWeapon",
+   "value": 28
+  },
+  {
+   "name": "SpawnerDudeWeapon",
+   "value": 21
+  },
+  {
+   "name": "SpeedyWeapon",
+   "value": 25
+  },
+  {
+   "name": "SpeedyWeaponOverchargedBuddy",
+   "value": 25
+  },
+  {
+   "name": "SplitterLegsWeapon",
+   "value": 10
+  },
+  {
+   "name": "SplitterWeapon",
+   "value": 30
+  },
+  {
+   "name": "SplitterWeaponNanoPower",
+   "value": 30
+  },
+  {
+   "name": "StackerWeapon",
+   "value": 25
+  },
+  {
+   "name": "StalkerWeaponDash",
+   "value": 8
+  },
+  {
+   "name": "StalkerWeaponJump",
+   "value": 11
+  },
+  {
+   "name": "StickyBombWeapon",
+   "value": 23
+  },
+  {
+   "name": "SuperNovaBeeSniperWeapon",
+   "value": 28
+  },
+  {
+   "name": "SuperNovaBeeSniperWeaponSecond",
+   "value": 40
+  },
+  {
+   "name": "SuperNovaCactusWeapon",
+   "value": 11
+  },
+  {
+   "name": "SuperNovaChronomancerWeapon",
+   "value": 25
+  },
+  {
+   "name": "SuperNovaFireDudeWeapon",
+   "value": 17
+  },
+  {
+   "name": "SuperNovaMagicalGirlWeaponTransformed",
+   "value": 11
+  },
+  {
+   "name": "SuperNovaPercenterWeapon",
+   "value": 26
+  },
+  {
+   "name": "SuperNovaVoodooPetWeapon",
+   "value": 16
+  },
+  {
+   "name": "SuperNovaVoodooWeaponEarth",
+   "value": 10
+  },
+  {
+   "name": "SuperNovaVoodooWeaponForest",
+   "value": 10
+  },
+  {
+   "name": "SuperNovaVoodooWeaponWater",
+   "value": 10
+  },
+  {
+   "name": "TntDudeWeapon",
+   "value": 22
+  },
+  {
+   "name": "TrickshotDudeWeapon",
+   "value": 29
+  },
+  {
+   "name": "TrickshotDudeWeaponBuddyOvercharged",
+   "value": 29
+  },
+  {
+   "name": "TwinsWeaponShotgun",
+   "value": 20
+  },
+  {
+   "name": "TwinsWeaponThrower",
+   "value": 22
+  },
+  {
+   "name": "UndertakerOverchargedWeapon",
+   "value": 8
+  },
+  {
+   "name": "UndertakerWeapon",
+   "value": 8
+  },
+  {
+   "name": "VoodooWeaponAll",
+   "value": 27
+  },
+  {
+   "name": "VoodooWeaponEarth",
+   "value": 19
+  },
+  {
+   "name": "VoodooWeaponForest",
+   "value": 27
+  },
+  {
+   "name": "VoodooWeaponWater",
+   "value": 19
+  },
+  {
+   "name": "WallyWeapon",
+   "value": 15
+  },
+  {
+   "name": "WeaponThrowerUlti",
+   "value": 26
+  },
+  {
+   "name": "WeaponThrowerUlti2",
+   "value": 26
+  },
+  {
+   "name": "WeaponThrowerWeapon",
+   "value": 9
+  },
+  {
+   "name": "WeaponThrowerWeapon2",
+   "value": 9
+  },
+  {
+   "name": "WhirlwindWeapon",
+   "value": 25
+  }
+ ],
+ "weapon_table": [
+  {
+   "name": "AlternatorWeaponDamage",
+   "damage": 225,
+   "elite": 0
+  },
+  {
+   "name": "AlternatorWeaponHeal",
+   "damage": 225,
+   "elite": 0
+  },
+  {
+   "name": "AlternatorWeaponSlow",
+   "damage": 225,
+   "elite": 0
+  },
+  {
+   "name": "AlternatorWeaponSpeed",
+   "damage": 225,
+   "elite": 0
+  },
+  {
+   "name": "AmbusherWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "ArcadeWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "ArcadeWeaponOvercharged",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "ArtilleryDudeWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "AssaultShotgunOverchargedWeapon",
+   "damage": 80,
+   "elite": 0
+  },
+  {
+   "name": "AssaultShotgunWeapon",
+   "damage": 80,
+   "elite": 0
+  },
+  {
+   "name": "AttacherWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "AttacherWeaponAlternate",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "AttacherWeaponAlternateOvercharge",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "AttractorWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "AxeJugglerWeapon",
+   "damage": 125,
+   "elite": 0
+  },
+  {
+   "name": "BarkeepWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "BarrelBotWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "BarrelBotWeaponNanoPower",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "BaseballOverchargedWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "BaseballWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "BeamerWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "BeeSniperWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "BlackHoleWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "BlowerWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "BoneThrowerWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "BowDudeOverchargedWeapon",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "BowDudeWeapon",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "BullDudeOverchargedWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "BullDudeWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "BulletstormWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "BulletstormWeaponLastShot",
+   "damage": 110,
+   "elite": 0
+  },
+  {
+   "name": "CactusOverchargedWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CactusWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CannonGirlSmallWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "CannonGirlWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CannonGirlWeaponNanoPower",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "ChronomancerWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "ClusterBombDudeWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "CocoonerPetWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "CocoonerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "ConductorWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "ConductorWeaponOvercharged",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "ControllerWeapon",
+   "damage": 40,
+   "elite": 0
+  },
+  {
+   "name": "CookerWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "CookerWeaponNanoPower",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "CrabWeapon1",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CrabWeapon2",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CrabWeapon3",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "CrossBomberWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "CrowOverchargedWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "CrowWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "DancerWeaponDouble",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "DancerWeaponSingle",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DancerWeaponTriple",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DaredevilWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "DeadMariachiWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DeadMariachiWeaponNanoPower",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DeadMariachiWeaponOvercharged",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DiggerDrillWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "DiggerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "DomainWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "DoorManWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "DoorManWeaponNanoPower",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "DragonRiderDragonWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "DragonRiderWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "DrillerWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "DuelistWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "DuplicatorOverchargedPetWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "DuplicatorWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "ElectroSniperWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "EnragerOverchargedWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "EnragerWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "FireDudeOverchargedWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "FireDudeWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "FishTankWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "FleaPetWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "FleaWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "FuryWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "FuryWeaponSp",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "FutureGirlWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "GeishaTransformedWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "GeishaWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "GhostWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "GladiatorWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "GladiatorWeaponFirePunch",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "GodzillaWeapon1",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "GodzillaWeapon2",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "GunslingerOverchargedWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "GunslingerWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "HammerDudeOverchargedWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "HammerDudeWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "HookWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "IceDudeWeapon",
+   "damage": 60,
+   "elite": 0
+  },
+  {
+   "name": "InsectManWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "InsectManWeaponNanoPower",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "InsectManWeaponPoison",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "InstagibWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "JesterWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "JetpackGirlWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "KatanaKidWeaponFullChargeRanged",
+   "damage": 130,
+   "elite": 0
+  },
+  {
+   "name": "KatanaKidWeaponRanged",
+   "damage": 130,
+   "elite": 0
+  },
+  {
+   "name": "KatanaKidWeaponSlash",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "KickerDudeWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "KnightWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "LeaperWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "LightyearFlightWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "LightyearSwordWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "LightyearWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "LuchadorOverchargedWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "LuchadorWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MagicalGirlWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "MagicalGirlWeaponTransformed",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "MaisieWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "MaisieWeaponNanoPower",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "MechaDudeBigWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MechaDudeBigWeaponBuddy",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MechaDudeWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MechaDudeWeaponOverChargedBuddy",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MechaVanFriendlyMegBossWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MechanicWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MeepleWallWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MeepleWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponForth",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponSecond",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossAssaultShotgunWeaponThird",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossBlackHoleWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossCactusSecondWeapon",
+   "damage": 195,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossCactusWeapon",
+   "damage": 195,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossCrossBombWeapon360",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossCrossBomberWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossCrossBomberWeaponSecond",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossCrowSecondWeapon",
+   "damage": 40,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossCrowWeapon",
+   "damage": 40,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL1",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL2",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponL3",
+   "damage": 225,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL1",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL2",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDragonCrowWeaponSecondL3",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDuoWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossDuoWeapon360",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossFinxKittenWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossFinxReturnedWeaponSkill",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossFinxWeaponSkill",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossFrankPetWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossInsectManWeapon",
+   "damage": 110,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossInsectManWeaponSecond",
+   "damage": 180,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossMaisieWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossNitaWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossPercenterWeapon",
+   "damage": 140,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossPercenterWeapon360",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossPercenterWeaponLarge",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponBasic",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponRotatingStream",
+   "damage": 75,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossRocketGirlWeaponRotatingStreamOvercharged",
+   "damage": 75,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossSplitterWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossSplitterWeaponRange",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaBossStickyBombWeapon",
+   "damage": 140,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossStickyBombWeaponSecond",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossTrickshot2Weapon",
+   "damage": 85,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossTrickshot2WeaponSecond",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossTrickshotWeapon",
+   "damage": 85,
+   "elite": 0
+  },
+  {
+   "name": "MegaBossTrickshotWeaponSecond",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MegaKatanaKidWeaponRanged",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "MegaKatanaKidWeaponSlash",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "MegaTickWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MegaTickWeaponSecond",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "MenderWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "MinigunDudeWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MinigunDudeWeaponNano",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "MorningstarWeapon",
+   "damage": 170,
+   "elite": 0
+  },
+  {
+   "name": "MummyOverchargedWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "MummyWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "NinjaOverchargedWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "NinjaWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "PainterWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "PercenterOverchargedWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "PercenterWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "PowerLevelerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "PowerLevelerWeaponOverchargedBuddy",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "PuppeteerWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "RedirecterSnakePetWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "RedirecterWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "RedirecterWeaponSecondary",
+   "damage": 80,
+   "elite": 0
+  },
+  {
+   "name": "ReviverWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "RocketGirlWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "RocketGirlWeaponBuddy",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "RollerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "RopeDudeWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "RosaWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "RuffsWeapon",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "SamuraiWeaponDash",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "SamuraiWeaponSlash",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "SandstormWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "ShadowdemonWeapon",
+   "damage": 70,
+   "elite": 0
+  },
+  {
+   "name": "ShamanOverchargedWeapon",
+   "damage": 300,
+   "elite": 0
+  },
+  {
+   "name": "ShamanWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "ShieldTankWeapon",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "ShotgunGirlOverchargedWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "ShotgunGirlWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "SilencerWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "SkaterWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "SnakeOilWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "SniperWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "SniperWeaponNanoPower",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "SoulCollectorOverchargedWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "SoulCollectorWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "SpawnerDudeWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "SpeedyWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "SpeedyWeaponOverchargedBuddy",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "SplitterLegsWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "SplitterWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "SplitterWeaponNanoPower",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "StackerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "StalkerWeaponDash",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "StalkerWeaponJump",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "StickyBombWeapon",
+   "damage": 50,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaBeeSniperWeapon",
+   "damage": 105,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaBeeSniperWeaponSecond",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "SuperNovaCactusWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaChronomancerWeapon",
+   "damage": 100,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaFireDudeWeapon",
+   "damage": 200,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaMagicalGirlWeaponTransformed",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaPercenterWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaVoodooPetWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "SuperNovaVoodooWeaponEarth",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "SuperNovaVoodooWeaponForest",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "SuperNovaVoodooWeaponWater",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "TntDudeWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "TrickshotDudeWeapon",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "TrickshotDudeWeaponBuddyOvercharged",
+   "damage": 101,
+   "elite": 0
+  },
+  {
+   "name": "TwinsWeaponShotgun",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "TwinsWeaponThrower",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "UndertakerOverchargedWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "UndertakerWeapon",
+   "damage": 0,
+   "elite": 0
+  },
+  {
+   "name": "VoodooWeaponAll",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "VoodooWeaponEarth",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "VoodooWeaponForest",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "VoodooWeaponWater",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "WallyWeapon",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "WeaponThrowerUlti",
+   "damage": 250,
+   "elite": 0
+  },
+  {
+   "name": "WeaponThrowerUlti2",
+   "damage": 0,
+   "elite": 1
+  },
+  {
+   "name": "WeaponThrowerWeapon",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "WeaponThrowerWeapon2",
+   "damage": 150,
+   "elite": 0
+  },
+  {
+   "name": "WhirlwindWeapon",
+   "damage": 250,
+   "elite": 0
+  }
+ ],
+ "controller_names": [
+  "ControllerUltiProjectile",
+  "ControllerUltiOverchargedProjectile"
+ ]
+}
