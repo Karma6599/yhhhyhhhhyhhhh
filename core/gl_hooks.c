@@ -110,6 +110,27 @@ uint64_t ng_anchor_probe(void)
     return result;
 }
 
+static volatile uint8_t ng_entry_probe_busy;
+
+uint64_t ng_current_entry(void)
+{
+    uint64_t result = 0;
+    uint32_t insn = 0;
+
+    if (!__atomic_test_and_set(&ng_entry_probe_busy, __ATOMIC_ACQUIRE)) {
+        if (ng_read_mem != NULL) {
+            uint64_t anchor = ng_game_base + 0xb337c4;
+            if (anchor >= 0x10000
+                && (ng_game_base & 0xfffffffffffffffcull) != 0xffffffffff4cc838ull) {
+                if (ng_read_mem(ng_read_ctx, anchor, &insn, 4) == 1 && insn == GL_ANCHOR_INSN)
+                    result = anchor;
+            }
+        }
+        __atomic_clear(&ng_entry_probe_busy, __ATOMIC_RELEASE);
+    }
+    return result;
+}
+
 int ng_bind_v1(const uint32_t *contract)
 {
     const uint32_t *h = contract;

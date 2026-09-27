@@ -1,936 +1,579 @@
-/*
- * memory_observers — Core plumbing
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: ng_* observer bind/feed pipeline reading game state.
- */
+#define _GNU_SOURCE 1
 
-/* ===== JNI_OnUnload @ 0011d0e8 [libNexusEvasion69252.so] ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/mman.h>
+
+#define GAME_IMAGE_SPAN 0x1400000
+#define OBSERVER_RING_STEP 0x100000
+#define OBSERVER_RING_LIMIT 0x7000001
+#define OBSERVER_BRANCH_REACH 0x8000000
+#define OBSERVER_MIN_ADDR 0x10000
+#define OBSERVER_PLAN_MAGIC 0x0000003000000001ull
+#define OBSERVER_STATUS_MAGIC 0x000000d000000001ull
+#define OBSERVER_FEED_MAGIC 0x0000002800000001ull
+#define OBSERVER_ANCHOR_WORD 0xd10243ffu
+#define OBSERVER_TPL_SIZE 0x158
+#define OBSERVER_TPL_TAIL_OFF 0x148
+#define OBSERVER_TPL_WORD_OFF 0x144
+#define OBSERVER_TPL_BODY_OFF 0x150
+#define OBSERVER_SLOTS_MAX 64
+#define OBSERVER_MAPS_MAX_LINES 0x8000
+#define OBSERVER_MAPS_MAX_BYTES 0x800000
+#define OBSERVER_MAPS_LINE_MAX 0x2000
+#define OBSERVER_ADDR_CEILING 0xfffffffffffff000ull
+#define OBSERVER_PAIR_OFFSET 0xfac
+#define OBSERVER_VALUE_BASE 0xea61
+#define OBSERVER_VALUE_MASK 0xfffe2b3eu
+
+typedef struct {
+    const char *phase;
+    uint32_t err;
+} observer_phase_cell_t;
+
+typedef struct {
+    uintptr_t game_base;
+    uintptr_t target;
+    uintptr_t lo;
+    uintptr_t hi;
+    uintptr_t slots[OBSERVER_SLOTS_MAX];
+    size_t size;
+    size_t tail;
+    uint32_t count;
+    uint32_t index;
+} observer_gap_window_t;
+
+typedef struct {
+    uint64_t magic;
+    uintptr_t entry;
+    uintptr_t home;
+    uintptr_t resume;
+    uint32_t original_word;
+    uint32_t enter_branch;
+    uint32_t template_size;
+    uint32_t tail_pad;
+} observer_plan_t;
+
+typedef struct {
+    uint64_t magic;
+    uint64_t reserved1[4];
+    uint64_t expect_addr;
+    uint64_t reserved2[6];
+    uint64_t bound_entry;
+    uint64_t bound_observer;
+    uint64_t reserved3[12];
+} observer_status_t;
+
+extern size_t g_page_size;
+extern uintptr_t g_game_base;
+extern int g_observer_ready;
+extern int g_observer_thread;
+extern int g_runtime_ready;
+extern uint32_t g_remote_write_fd;
+extern uint32_t ng_saved_entry_word;
+extern int32_t g_binder_pin_fd;
+extern int32_t g_binder_spray_fd;
+extern char ng_phase_key[];
+extern char ng_latch_key[];
+extern char ng_prepare_key[];
+extern void *cell_lock(void *key);
+extern void cache_flush(void *begin, void *end);
+extern void ng_phase_fail(const char *label);
+extern long remote_write(uint32_t fd, const void *buf, long len, uintptr_t addr);
+extern void observer_gap_offer(observer_gap_window_t *window, uintptr_t prev_end,
+                               uintptr_t cur_start);
+extern int ng_status_v1(uint64_t *desc);
+extern uint64_t ng_current_entry(void);
+extern void ng_feed_v1(void *record);
+extern void ng_observer_body(uint64_t *regs);
+extern void nexus_evasion_unbind(void);
+
+static const uint32_t ng_observer_template[OBSERVER_TPL_SIZE / 4] = {
+    0xd10c43ff, 0xa90007e0, 0xa9010fe2, 0xa90217e4,
+    0xa9031fe6, 0xa90427e8, 0xa9052fea, 0xa90637ec,
+    0xa9073fee, 0xa90847f0, 0xa9094ff2, 0xa90a57f4,
+    0xa90b5ff6, 0xa90c67f8, 0xa90d6ffa, 0xa90e77fc,
+    0xf9007bfe, 0xd53b4209, 0xf9007fe9, 0xd53b4409,
+    0xf90083e9, 0xd53b4429, 0xf90087e9, 0xad0887e0,
+    0xad098fe2, 0xad0a97e4, 0xad0b9fe6, 0xad0ca7e8,
+    0xad0dafea, 0xad0eb7ec, 0xad0fbfee, 0xad10c7f0,
+    0xad11cff2, 0xad12d7f4, 0xad13dff6, 0xad14e7f8,
+    0xad15effa, 0xad16f7fc, 0xad17fffe, 0x910003e0,
+    0x58000590, 0xd63f0200, 0xad4887e0, 0xad498fe2,
+    0xad4a97e4, 0xad4b9fe6, 0xad4ca7e8, 0xad4dafea,
+    0xad4eb7ec, 0xad4fbfee, 0xad50c7f0, 0xad51cff2,
+    0xad52d7f4, 0xad53dff6, 0xad54e7f8, 0xad55effa,
+    0xad56f7fc, 0xad57fffe, 0xf94087e9, 0xd51b4429,
+    0xf94083e9, 0xd51b4409, 0xf9407fe9, 0xd51b4209,
+    0xf9407bfe, 0xa94e77fc, 0xa94d6ffa, 0xa94c67f8,
+    0xa94b5ff6, 0xa94a57f4, 0xa9494ff2, 0xa94847f0,
+    0xa9473fee, 0xa94637ec, 0xa9452fea, 0xa94427e8,
+    0xa9431fe6, 0xa94217e4, 0xa9410fe2, 0xa94007e0,
+    0x910c43ff, 0xd503201f, 0x14000000, 0xd503201f,
+    0x00000000, 0x00000000,
+};
+
+static uint64_t ng_observer_hits;
+
+static void close_fd_slot(int32_t *slot)
+{
+    int32_t old = __atomic_exchange_n(slot, -1, __ATOMIC_ACQ_REL);
+
+    if (old >= 0)
+        close(old);
+}
 
 void JNI_OnUnload(void)
-
 {
-  char cVar1;
-  bool bVar2;
-  int iVar3;
-  
-  do {
-    iVar3 = DAT_00129128;
-    cVar1 = '\x01';
-    bVar2 = (bool)ExclusiveMonitorPass(0x129128,0x10);
-    if (bVar2) {
-      DAT_00129128 = -1;
-      cVar1 = ExclusiveMonitorsStatus();
-    }
-  } while (cVar1 != '\0');
-  if (-1 < iVar3) {
-    close(iVar3);
-  }
-  do {
-    iVar3 = DAT_0012912c;
-    cVar1 = '\x01';
-    bVar2 = (bool)ExclusiveMonitorPass(0x12912c,0x10);
-    if (bVar2) {
-      DAT_0012912c = -1;
-      cVar1 = ExclusiveMonitorsStatus();
-    }
-  } while (cVar1 != '\0');
-  if (-1 < iVar3) {
-    iVar3 = close(iVar3);
-  }
-  nexus_evasion_unbind(iVar3);
-  return;
+    close_fd_slot(&g_binder_pin_fd);
+    close_fd_slot(&g_binder_spray_fd);
+    nexus_evasion_unbind();
 }
 
-/* ===== nexus_evasion_unbind @ 0011d580 [libNexusEvasion69252.so] ===== */
-
-void nexus_evasion_unbind(void)
-
+void ng_observe_registers_v1(uint64_t *regs)
 {
-  (*(code *)PTR_nexus_evasion_unbind_00124f80)();
-  return;
+    uint64_t record[5];
+    int saved_errno = errno;
+
+    if (regs != NULL) {
+        record[0] = OBSERVER_FEED_MAGIC;
+        record[1] = __atomic_add_fetch(&ng_observer_hits, 1, __ATOMIC_SEQ_CST);
+        record[2] = regs[0];
+        record[3] = regs[1];
+        record[4] = regs[2];
+        ng_feed_v1(record);
+    }
+    errno = saved_errno;
 }
-
-/* ===== FUN_00144160 @ 00144160 [libNexusEvasionRuntime69252.so] ===== */
-
-void * FUN_00144160(void *param_1)
-
-{
-  void *pvVar1;
-  ulong uVar2;
-  char cVar3;
-  byte bVar4;
-  long lVar5;
-  bool bVar6;
-  undefined8 uVar7;
-  undefined *puVar8;
-  void *pvVar9;
-  bool bVar10;
-  int iVar11;
-  uint uVar12;
-  int iVar13;
-  undefined8 *puVar14;
-  undefined4 *puVar15;
-  undefined4 *puVar16;
-  void *pvVar17;
-  undefined4 *puVar18;
-  int *piVar19;
-  FILE *__stream;
-  int *piVar20;
-  char *pcVar21;
-  size_t sVar22;
-  void *__addr;
-  uint uVar23;
-  ulong uVar24;
-  ulong uVar25;
-  ulong uVar26;
-  long lVar27;
-  long lVar28;
-  void *pvVar29;
-  ulong uVar30;
-  void *pvVar31;
-  char *local_2300;
-  void *local_22f8;
-  long local_22f0;
-  void *local_22b8;
-  void *pvStack_22b0;
-  ulong local_22a8;
-  ulong uStack_22a0;
-  undefined8 auStack_2298 [64];
-  ulong local_2098;
-  long local_2090;
-  uint local_2088;
-  undefined4 local_2084;
-  undefined8 local_2080;
-  void *local_2078;
-  undefined8 local_2070;
-  undefined8 uStack_2068;
-  undefined8 uStack_2060;
-  ulong local_2058;
-  long local_80;
-  
-  lVar5 = tpidr_el0;
-  local_80 = *(long *)(lVar5 + 0x28);
-  uVar30 = -DAT_00209d88 & (ulong)param_1;
-  puVar14 = (undefined8 *)FUN_001bd828(&DAT_001cfc98);
-  *(undefined4 *)(puVar14 + 1) = 0;
-  *puVar14 = &DAT_0011e39a;
-  puVar15 = (undefined4 *)FUN_001bd828(&DAT_001cfc78);
-  puVar16 = (undefined4 *)FUN_001bd828(&DAT_001cfc58);
-  uVar7 = DAT_0010e580;
-  lVar28 = (long)PTR_DAT_001cb6c0 - (long)PTR_DAT_001cb6b0;
-  uVar26 = 0x100000;
-  do {
-    pvVar29 = (void *)0x0;
-    if (uVar26 <= uVar30) {
-      pvVar29 = (void *)(uVar30 - uVar26);
-    }
-    if ((void *)(uVar30 + uVar26) != (void *)0x0) {
-      pvVar17 = mmap((void *)(uVar30 + uVar26),DAT_00209d88,3,0x22,-1,0);
-      if (pvVar17 == (void *)0xffffffffffffffff) {
-        puVar18 = (undefined4 *)__errno();
-        *(undefined4 *)(puVar14 + 1) = *puVar18;
-        *puVar14 = &DAT_0011e39a;
-        goto joined_r0x00144330;
-      }
-      local_2080 = uVar7;
-      uStack_2068 = 0;
-      local_2070 = 0;
-      local_2058 = 0;
-      uStack_2060 = 0;
-      *(undefined4 *)(puVar14 + 1) = 0;
-      *puVar14 = "prepare";
-      *puVar15 = 0;
-      *puVar16 = 1;
-      local_2078 = param_1;
-      iVar11 = ng_prepare_observer_v1(pvVar17,pvVar17,DAT_00209d88,&local_2080);
-      *puVar16 = 0;
-      if (iVar11 != 0) {
-        *(code **)((long)pvVar17 + lVar28) = FUN_001455a4;
-        FUN_001bdaf0(pvVar17,(long)pvVar17 + (local_2058 & 0xffffffff));
-        uVar12 = mprotect(pvVar17,DAT_00209d88,5);
-        piVar19 = (int *)(ulong)uVar12;
-        if (uVar12 == 0) goto LAB_00144e98;
-        puVar18 = (undefined4 *)__errno();
-        *(undefined4 *)(puVar14 + 1) = *puVar18;
-        *puVar14 = &DAT_0011a7ce;
-      }
-      iVar11 = munmap(pvVar17,DAT_00209d88);
-      if (iVar11 == 0) goto joined_r0x00144330;
-LAB_00144578:
-      piVar19 = (int *)__errno();
-      iVar11 = *piVar19;
-      pvVar17 = (void *)0x0;
-      *puVar14 = "gap_unmap";
-      *(int *)(puVar14 + 1) = iVar11;
-      goto LAB_00144ea4;
-    }
-joined_r0x00144330:
-    if (uVar26 < uVar30) {
-      pvVar17 = mmap(pvVar29,DAT_00209d88,3,0x22,-1,0);
-      if (pvVar17 == (void *)0xffffffffffffffff) {
-        puVar18 = (undefined4 *)__errno();
-        *(undefined4 *)(puVar14 + 1) = *puVar18;
-        *puVar14 = &DAT_0011e39a;
-      }
-      else {
-        local_2080 = uVar7;
-        uStack_2068 = 0;
-        local_2070 = 0;
-        local_2058 = 0;
-        uStack_2060 = 0;
-        *(undefined4 *)(puVar14 + 1) = 0;
-        *puVar14 = "prepare";
-        *puVar15 = 0;
-        *puVar16 = 1;
-        local_2078 = param_1;
-        iVar11 = ng_prepare_observer_v1(pvVar17,pvVar17,DAT_00209d88,&local_2080);
-        *puVar16 = 0;
-        if (iVar11 != 0) {
-          *(code **)((long)pvVar17 + lVar28) = FUN_001455a4;
-          FUN_001bdaf0(pvVar17,(long)pvVar17 + (local_2058 & 0xffffffff));
-          uVar12 = mprotect(pvVar17,DAT_00209d88,5);
-          piVar19 = (int *)(ulong)uVar12;
-          if (uVar12 == 0) goto LAB_00144e98;
-          puVar18 = (undefined4 *)__errno();
-          *(undefined4 *)(puVar14 + 1) = *puVar18;
-          *puVar14 = &DAT_0011a7ce;
-        }
-        iVar11 = munmap(pvVar17,DAT_00209d88);
-        if (iVar11 != 0) goto LAB_00144578;
-      }
-    }
-    uVar25 = DAT_00209d88;
-    pvVar29 = DAT_001e0978;
-    bVar10 = uVar26 < 0x6f00001;
-    uVar26 = uVar26 + 0x100000;
-  } while (bVar10);
-  piVar19 = (int *)memset(auStack_2298,0,0x218);
-  puVar8 = PTR_DAT_001cb6b0;
-  if ((((((ulong)((long)param_1 - (long)pvVar29) >> 0x16 < 5) && (pvVar29 <= param_1)) &&
-       (pvVar29 < (void *)0xfffffffffec00000)) &&
-      ((uVar25 == 0x1000 || uVar25 == 0x4000 && (((ulong)param_1 & 3) == 0)))) &&
-     ((3 < (ulong)((long)PTR_DAT_001cb6b8 - (long)PTR_DAT_001cb6b0) &&
-      (((ulong)((long)PTR_DAT_001cb6b8 - (long)PTR_DAT_001cb6b0) <= uVar25 - 4 &&
-       (((int)PTR_DAT_001cb6b8 - (int)PTR_DAT_001cb6b0 & 3U) == 0)))))) {
-    local_2090 = (long)PTR_DAT_001cb6b8 - (long)PTR_DAT_001cb6b0;
-    local_2098 = uVar25;
-    uVar26 = (long)param_1 - 0x8000000;
-    local_22b8 = pvVar29;
-    if (uVar26 < 0x10001) {
-      uVar26 = 0x10000;
-    }
-    if ((ulong)param_1 >> 0x1b == 0) {
-      uVar26 = 0x10000;
-    }
-    uVar30 = 4;
-    if (3 < local_2090 - 4U) {
-      uVar30 = local_2090 - 4U;
-    }
-    uStack_22a0 = (long)param_1 + (0x8000000 - uVar30);
-    if ((void *)~(0x8000000 - uVar30) < param_1) {
-      uStack_22a0 = 0xffffffffffffffff;
-    }
-    if (~uVar25 <= uStack_22a0) {
-      uStack_22a0 = ~uVar25;
-    }
-    local_22a8 = (uVar25 - 1) + uVar26 & -uVar25;
-    uStack_22a0 = uStack_22a0 & -uVar25;
-    pvStack_22b0 = param_1;
-    if (local_22a8 <= uStack_22a0) {
-      __stream = fopen("/proc/self/maps","r");
-      if (__stream != (FILE *)0x0) {
-LAB_001445b4:
-        piVar20 = (int *)__errno();
-        uVar12 = 0;
-        local_22f8 = (void *)0x0;
-        local_22f0 = 0;
-        bVar10 = false;
-LAB_001445e0:
-        bVar6 = bVar10;
-        *piVar20 = 0;
-        pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-        if (pcVar21 != (char *)0x0) {
-LAB_00144794:
-          sVar22 = strlen((char *)&local_2080);
-          if ((sVar22 != 0) && (*(char *)((long)&local_2084 + sVar22 + 3) == '\n')) {
-            iVar11 = 0;
-            uVar12 = uVar12 + 1;
-            if (uVar12 < 0x8001) {
-              pcVar21 = "gap_bounds";
-              if (sVar22 <= 0x800000U - local_22f0) {
-                lVar28 = 0;
-                pvVar29 = (void *)0x0;
-                local_22f0 = sVar22 + local_22f0;
-                do {
-                  bVar4 = *(byte *)((long)&local_2080 + lVar28);
-                  uVar23 = (uint)bVar4;
-                  if (bVar4 - 0x30 < 10) {
-                    iVar11 = -0x30;
-                  }
-                  else {
-                    iVar11 = -0x57;
-                    if (5 < bVar4 - 0x61) {
-                      if (5 < uVar23 - 0x41) goto LAB_00144848;
-                      iVar11 = -0x37;
-                    }
-                  }
-                  if ((ulong)pvVar29 >> 0x3c != 0) goto LAB_001449d4;
-                  lVar28 = lVar28 + 1;
-                  pvVar29 = (void *)((ulong)(iVar11 + uVar23) + (long)pvVar29 * 0x10);
-                } while( true );
-              }
-              goto LAB_001449d8;
-            }
-          }
-          iVar11 = 0;
-          pcVar21 = "gap_bounds";
-          goto LAB_001449d8;
-        }
-        iVar11 = *piVar20;
-        iVar13 = ferror(__stream);
-        if ((iVar13 == 0) || (iVar11 != 4)) {
-LAB_00144ba4:
-          if (iVar13 == 0) {
-            iVar13 = feof(__stream);
-            iVar11 = 0;
-            if (iVar13 != 0) {
-              pcVar21 = "gap_maps";
-              if ((uVar12 == 0) || (!bVar6)) goto LAB_001449d8;
-              FUN_0015b650(&local_22b8,local_22f8,0xffffffffffffffff);
-              uVar12 = fclose(__stream);
-              lVar28 = local_2090;
-              uVar26 = local_2098;
-              pvVar9 = pvStack_22b0;
-              pvVar29 = local_22b8;
-              piVar19 = (int *)(ulong)uVar12;
-              if (uVar12 == 0) {
-                *puVar14 = "gap_empty";
-                *(undefined4 *)(puVar14 + 1) = 0;
-                pvVar1 = (void *)((long)local_22b8 + 0x1400000);
-                uVar24 = local_2098 - 1;
-                uVar25 = (ulong)local_2084;
-                pvVar31 = (void *)~local_2098;
-                uVar30 = (long)pvStack_22b0 + 4;
-                local_2300 = "gap_range";
-                lVar27 = (long)PTR_DAT_001cb6c0 - (long)puVar8;
-                goto LAB_00144c8c;
-              }
-              pvVar17 = (void *)0x0;
-              *(int *)(puVar14 + 1) = *piVar20;
-              *puVar14 = "gap_close";
-              goto LAB_00144ea4;
-            }
-          }
-        }
-        else {
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-          clearerr(__stream);
-          *piVar20 = 0;
-          pcVar21 = fgets((char *)&local_2080,0x2000,__stream);
-          if (pcVar21 != (char *)0x0) goto LAB_00144794;
-          iVar11 = *piVar20;
-          iVar13 = ferror(__stream);
-          if ((iVar13 == 0) || (iVar11 != 4)) goto LAB_00144ba4;
-        }
-        pcVar21 = "gap_read";
-        goto LAB_001449d8;
-      }
-      piVar19 = (int *)__errno();
-      iVar11 = *piVar19;
-      if (iVar11 == 4) {
-        __stream = fopen("/proc/self/maps","r");
-        if (__stream != (FILE *)0x0) goto LAB_001445b4;
-        piVar19 = (int *)__errno();
-        iVar11 = *piVar19;
-        if (iVar11 == 4) {
-          __stream = fopen("/proc/self/maps","r");
-          if (__stream != (FILE *)0x0) goto LAB_001445b4;
-          piVar19 = (int *)__errno();
-          iVar11 = *piVar19;
-          if (iVar11 == 4) {
-            __stream = fopen("/proc/self/maps","r");
-            if (__stream != (FILE *)0x0) goto LAB_001445b4;
-            piVar19 = (int *)__errno();
-            iVar11 = *piVar19;
-            if (iVar11 == 4) {
-              __stream = fopen("/proc/self/maps","r");
-              if (__stream != (FILE *)0x0) goto LAB_001445b4;
-              piVar19 = (int *)__errno();
-              iVar11 = *piVar19;
-              if (iVar11 == 4) {
-                __stream = fopen("/proc/self/maps","r");
-                if (__stream != (FILE *)0x0) goto LAB_001445b4;
-                piVar19 = (int *)__errno();
-                iVar11 = *piVar19;
-                if (iVar11 == 4) {
-                  __stream = fopen("/proc/self/maps","r");
-                  if (__stream != (FILE *)0x0) goto LAB_001445b4;
-                  piVar19 = (int *)__errno();
-                  iVar11 = *piVar19;
-                  if (iVar11 == 4) {
-                    __stream = fopen("/proc/self/maps","r");
-                    if (__stream != (FILE *)0x0) goto LAB_001445b4;
-                    piVar19 = (int *)__errno();
-                    iVar11 = *piVar19;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      *(int *)(puVar14 + 1) = iVar11;
-      pvVar17 = (void *)0x0;
-      *puVar14 = "gap_open";
-      goto LAB_00144ea4;
-    }
-  }
-  pvVar17 = (void *)0x0;
-  *(undefined4 *)(puVar14 + 1) = 0;
-  *puVar14 = "gap_window";
-LAB_00144ea4:
-  if (*(long *)(lVar5 + 0x28) != local_80) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(piVar19);
-  }
-  return pvVar17;
-LAB_00144848:
-  iVar11 = 0;
-  if ((int)lVar28 != 0) {
-    pcVar21 = "gap_parse";
-    if (uVar23 == 0x2d) {
-      lVar27 = 0;
-      pvVar17 = (void *)0x0;
-      do {
-        bVar4 = *(byte *)((long)&local_2080 + lVar27 + lVar28 + 1);
-        uVar23 = (uint)bVar4;
-        if (bVar4 - 0x30 < 10) {
-          iVar11 = -0x30;
-        }
-        else {
-          iVar11 = -0x57;
-          if (5 < bVar4 - 0x61) {
-            if (5 < uVar23 - 0x41) goto LAB_001448bc;
-            iVar11 = -0x37;
-          }
-        }
-        if ((ulong)pvVar17 >> 0x3c != 0) goto LAB_001449d4;
-        lVar27 = lVar27 + 1;
-        pvVar17 = (void *)((ulong)(iVar11 + uVar23) + (long)pvVar17 * 0x10);
-      } while( true );
-    }
-    goto LAB_001449d8;
-  }
-LAB_001449d4:
-  iVar11 = 0;
-  pcVar21 = "gap_parse";
-  goto LAB_001449d8;
-LAB_001448bc:
-  if ((int)lVar27 == 0) goto LAB_001449d4;
-  if (uVar23 == 0x20) {
-    pcVar21 = (char *)((long)&local_2080 + lVar28 + lVar27 + 2);
-    sVar22 = strlen(pcVar21);
-    if ((sVar22 < 5) || ((cVar3 = *pcVar21, cVar3 != 'r' && (cVar3 != '-')))) goto LAB_00144b54;
-    cVar3 = *(char *)((long)&local_2080 + lVar28 + lVar27 + 3);
-    if (((cVar3 == 'w') || (cVar3 == '-')) &&
-       ((cVar3 = *(char *)((long)&local_2080 + lVar28 + lVar27 + 4), cVar3 == 'x' || (cVar3 == '-'))
-       )) {
-      cVar3 = *(char *)((long)&local_2080 + lVar28 + lVar27 + 5);
-      if (((cVar3 == 's') || (cVar3 == 'p')) &&
-         (*(char *)((long)&local_2080 + lVar28 + lVar27 + 6) == ' ')) {
-        iVar11 = 0;
-        pcVar21 = "gap_parse";
-        if ((pvVar17 <= pvVar29) || (pvVar29 < local_22f8)) goto LAB_001449d8;
-        if ((((ulong)pvVar17 | (ulong)pvVar29) & uVar25 - 1) != 0) goto LAB_00144b54;
-        FUN_0015b650(&local_22b8,local_22f8,pvVar29);
-        bVar10 = bVar6;
-        if ((void *)((long)param_1 + 4U) <= pvVar17) {
-          bVar10 = true;
-        }
-        local_22f8 = pvVar17;
-        if (param_1 < pvVar29 || (void *)0xfffffffffffffffb < param_1) {
-          bVar10 = bVar6;
-        }
-        goto LAB_001445e0;
-      }
-    }
-    iVar11 = 0;
-    pcVar21 = "gap_parse";
-    goto LAB_001449d8;
-  }
-LAB_00144b54:
-  iVar11 = 0;
-  pcVar21 = "gap_parse";
-LAB_001449d8:
-  *puVar14 = pcVar21;
-  *(int *)(puVar14 + 1) = iVar11;
-  uVar12 = fclose(__stream);
-  piVar19 = (int *)(ulong)uVar12;
-  pvVar17 = (void *)0x0;
-  goto LAB_00144ea4;
-LAB_00144c8c:
-  if (uVar25 < local_2088) {
-    do {
-      pvVar17 = (void *)auStack_2298[uVar25];
-      if ((((pvVar17 < (void *)0x10000) || ((uVar24 & (ulong)pvVar17) != 0 || pvVar31 < pvVar17)) ||
-          ((pvVar17 < pvVar1 && (pvVar29 < (void *)(uVar26 + (long)pvVar17))))) ||
-         ((((uint)pvVar9 | (uint)pvVar17) & 3) != 0)) {
-LAB_00144ee4:
-        iVar11 = 0;
-        goto LAB_00144ef0;
-      }
-      bVar10 = 0x8000000 < (ulong)((long)pvVar9 - (long)pvVar17);
-      if (pvVar9 <= pvVar17) {
-        bVar10 = ((long)pvVar17 - (long)pvVar9 & 0xfffffffff8000000U) != 0;
-      }
-      if ((bVar10) || (uVar2 = lVar28 + (long)pvVar17, (((uint)uVar2 | (uint)pvVar9) & 3) != 0))
-      goto LAB_00144ee4;
-      bVar10 = 0x8000000 < uVar2 - uVar30;
-      if (uVar2 <= uVar30) {
-        bVar10 = (uVar30 - uVar2 & 0xfffffffff8000000) != 0;
-      }
-      if (bVar10) goto LAB_00144ee4;
-      __addr = mmap(pvVar17,uVar26,3,0x100022,-1,0);
-      if (__addr == (void *)0xffffffffffffffff) {
-        iVar11 = *piVar20;
-        *puVar14 = "gap_mmap";
-        *(int *)(puVar14 + 1) = iVar11;
-        piVar19 = (int *)0xffffffffffffffff;
-      }
-      else {
-        if (pvVar17 == __addr) goto LAB_00144db8;
-        *(undefined4 *)(puVar14 + 1) = 0;
-        *puVar14 = "gap_return";
-        uVar12 = munmap(__addr,uVar26);
-        piVar19 = (int *)(ulong)uVar12;
-        if (uVar12 != 0) {
-          iVar11 = *piVar20;
-          local_2300 = "gap_unmap";
-          goto LAB_00144ef0;
-        }
-      }
-      pvVar17 = (void *)0x0;
-      uVar25 = uVar25 + 1;
-      if (local_2088 == uVar25) goto LAB_00144ea4;
-    } while( true );
-  }
-  pvVar17 = (void *)0x0;
-  goto LAB_00144ea4;
-LAB_00144db8:
-  local_2080 = uVar7;
-  uStack_2068 = 0;
-  local_2070 = 0;
-  local_2058 = 0;
-  uStack_2060 = 0;
-  *(undefined4 *)(puVar14 + 1) = 0;
-  *puVar14 = "prepare";
-  *puVar15 = 0;
-  *puVar16 = 1;
-  local_2078 = param_1;
-  iVar11 = ng_prepare_observer_v1(pvVar17,pvVar17,DAT_00209d88,&local_2080);
-  *puVar16 = 0;
-  if (iVar11 != 0) {
-    *(code **)((long)pvVar17 + lVar27) = FUN_001455a4;
-    FUN_001bdaf0(pvVar17,(long)pvVar17 + (local_2058 & 0xffffffff));
-    uVar12 = mprotect(pvVar17,DAT_00209d88,5);
-    piVar19 = (int *)(ulong)uVar12;
-    if (uVar12 == 0) goto LAB_00144e98;
-    iVar11 = *piVar20;
-    *puVar14 = &DAT_0011a7ce;
-    *(int *)(puVar14 + 1) = iVar11;
-  }
-  uVar12 = munmap(pvVar17,DAT_00209d88);
-  piVar19 = (int *)(ulong)uVar12;
-  uVar25 = uVar25 + 1 & 0xffffffff;
-  if (uVar12 != 0) goto code_r0x00144e80;
-  goto LAB_00144c8c;
-LAB_00144e98:
-  DAT_0020adb0 = uStack_2060._4_4_;
-  goto LAB_00144ea4;
-code_r0x00144e80:
-  local_2300 = "gap_unmap";
-  iVar11 = *piVar20;
-LAB_00144ef0:
-  pvVar17 = (void *)0x0;
-  *puVar14 = local_2300;
-  *(int *)(puVar14 + 1) = iVar11;
-  goto LAB_00144ea4;
-}
-
-/* ===== FUN_00150434 @ 00150434 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00150434(undefined8 param_1,ulong param_2,int param_3,int param_4)
-
-{
-  long lVar1;
-  bool bVar2;
-  int iVar3;
-  int iVar4;
-  long lVar5;
-  int local_120;
-  int iStack_11c;
-  undefined8 local_118;
-  undefined8 local_110;
-  undefined8 uStack_108;
-  undefined8 local_100;
-  undefined8 uStack_f8;
-  ulong local_f0;
-  undefined8 uStack_e8;
-  undefined8 local_e0;
-  undefined8 uStack_d8;
-  undefined8 uStack_d0;
-  undefined8 uStack_c8;
-  undefined8 local_c0;
-  undefined8 uStack_b8;
-  undefined8 local_b0;
-  undefined8 uStack_a8;
-  undefined8 local_a0;
-  undefined8 uStack_98;
-  undefined8 local_90;
-  undefined8 uStack_88;
-  undefined8 local_80;
-  undefined8 uStack_78;
-  undefined8 local_70;
-  undefined8 uStack_68;
-  undefined8 local_60;
-  undefined8 uStack_58;
-  undefined8 local_50;
-  long local_48;
-  
-  iVar4 = DAT_00209cd8;
-  lVar1 = tpidr_el0;
-  local_48 = *(long *)(lVar1 + 0x28);
-  bVar2 = false;
-  uStack_58 = 0;
-  local_60 = 0;
-  uStack_68 = 0;
-  local_70 = 0;
-  uStack_78 = 0;
-  local_80 = 0;
-  uStack_88 = 0;
-  local_90 = 0;
-  uStack_98 = 0;
-  local_a0 = 0;
-  uStack_f8 = 0;
-  local_100 = 0;
-  uStack_e8 = 0;
-  local_f0 = 0;
-  uStack_d8 = 0;
-  local_e0 = 0;
-  uStack_c8 = 0;
-  uStack_d0 = 0;
-  uStack_b8 = 0;
-  local_c0 = 0;
-  uStack_a8 = 0;
-  local_b0 = 0;
-  uStack_108 = 0;
-  local_110 = 0;
-  local_50 = 0;
-  local_118 = DAT_0010e808;
-  if ((DAT_00209cd0 != 0) && ((int)DAT_001dfff0 != 0)) {
-    iVar3 = gettid(0);
-    if (iVar4 == iVar3) {
-      iVar4 = ng_status_v1(&local_118);
-      bVar2 = false;
-      if ((((iVar4 != 0) && ((int)local_b0 != 0)) && (bVar2 = false, 0xfffe2b3e < param_4 - 0xea61U)
-          ) && (((0xfffe2b3e < param_3 - 0xea61U && (param_2 < 0xfffffffffffff000)) &&
-                (local_f0 == param_2)))) {
-        local_120 = param_3;
-        iStack_11c = param_4;
-        lVar5 = FUN_0014bef8(DAT_001cfb4c,&local_120,8,param_2 + 0xfac);
-        bVar2 = lVar5 == 8;
-      }
-    }
-    else {
-      bVar2 = false;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_48) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(bVar2);
-}
-
-/* ===== ng_observe_registers_v1 @ 0018d008 [libNexusEvasionRuntime69252.so] ===== */
-
-void ng_observe_registers_v1(undefined8 *param_1)
-
-{
-  undefined4 uVar1;
-  char cVar2;
-  bool bVar3;
-  long lVar4;
-  undefined4 *puVar5;
-  undefined8 local_60;
-  long local_58;
-  undefined8 local_50;
-  undefined8 uStack_48;
-  undefined8 local_40;
-  long local_38;
-  
-  lVar4 = tpidr_el0;
-  local_38 = *(long *)(lVar4 + 0x28);
-  puVar5 = (undefined4 *)__errno();
-  uVar1 = *puVar5;
-  if (param_1 != (undefined8 *)0x0) {
-    local_60 = DAT_0010e668;
-    do {
-      local_58 = DAT_002fe098 + 1;
-      cVar2 = '\x01';
-      bVar3 = (bool)ExclusiveMonitorPass(0x2fe098,0x10);
-      if (bVar3) {
-        cVar2 = ExclusiveMonitorsStatus();
-        DAT_002fe098 = local_58;
-      }
-    } while (cVar2 != '\0');
-    uStack_48 = param_1[1];
-    local_50 = *param_1;
-    local_40 = param_1[2];
-    ng_feed_v1(&local_60);
-  }
-  *puVar5 = uVar1;
-  if (*(long *)(lVar4 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== ng_observer_template_size @ 0018d0a8 [libNexusEvasionRuntime69252.so] ===== */
 
 long ng_observer_template_size(void)
-
 {
-  return (long)PTR_FUN_001cb6d0 - (long)PTR_DAT_001cb6b0;
+    return OBSERVER_TPL_SIZE;
 }
 
-/* ===== ng_prepare_observer_v1 @ 0018d0c0 [libNexusEvasionRuntime69252.so] ===== */
-
-void ng_prepare_observer_v1(ulong param_1,void *param_2,ulong param_3,int *param_4)
-
+static int branch_reachable(uintptr_t from, uintptr_t to)
 {
-  ulong uVar1;
-  long lVar2;
-  undefined *puVar3;
-  int iVar4;
-  ulong uVar5;
-  undefined8 uVar6;
-  char *pcVar7;
-  uint uVar8;
-  long lVar9;
-  uint uVar10;
-  ulong __n;
-  long lVar11;
-  undefined8 local_140;
-  undefined8 local_138;
-  undefined8 uStack_130;
-  undefined8 local_128;
-  undefined8 uStack_120;
-  undefined8 local_118;
-  undefined8 uStack_110;
-  undefined8 local_108;
-  undefined8 uStack_100;
-  undefined8 local_f8;
-  undefined8 uStack_f0;
-  undefined8 local_e8;
-  undefined8 uStack_e0;
-  undefined8 local_d8;
-  undefined8 uStack_d0;
-  undefined8 local_c8;
-  undefined8 uStack_c0;
-  undefined8 local_b8;
-  undefined8 uStack_b0;
-  undefined8 local_a8;
-  undefined8 uStack_a0;
-  undefined8 local_98;
-  undefined8 uStack_90;
-  undefined8 local_88;
-  undefined8 uStack_80;
-  undefined8 local_78;
-  long local_70;
-  
-  lVar2 = tpidr_el0;
-  local_70 = *(long *)(lVar2 + 0x28);
-  local_78 = 0;
-  uStack_80 = 0;
-  local_88 = 0;
-  uStack_90 = 0;
-  local_98 = 0;
-  uStack_a0 = 0;
-  local_a8 = 0;
-  uStack_b0 = 0;
-  local_b8 = 0;
-  uStack_c0 = 0;
-  local_c8 = 0;
-  uStack_d0 = 0;
-  local_d8 = 0;
-  uStack_e0 = 0;
-  local_e8 = 0;
-  uStack_f0 = 0;
-  local_f8 = 0;
-  uStack_100 = 0;
-  local_108 = 0;
-  uStack_110 = 0;
-  local_118 = 0;
-  uStack_120 = 0;
-  local_128 = 0;
-  uStack_130 = 0;
-  local_138 = 0;
-  local_140 = DAT_0010e808;
-  if (((((param_4 == (int *)0x0) || (*param_4 != 1)) || (param_2 == (void *)0x0)) ||
-      ((param_4[1] != 0x30 || (param_1 < 0x10000)))) || ((param_1 & 0xf) != 0)) {
-    pcVar7 = "plan_contract";
-  }
-  else {
-    iVar4 = ng_status_v1(&local_140);
-    if (iVar4 == 0) {
-      pcVar7 = "plan_status";
-    }
-    else if ((int)uStack_e0 == 0) {
-      pcVar7 = "plan_unbound";
-    }
-    else {
-      uVar5 = FUN_0018b930();
-      puVar3 = PTR_DAT_001cb6b0;
-      if ((uVar5 == 0) || (*(ulong *)(param_4 + 2) != uVar5)) {
-        pcVar7 = "plan_current_entry";
-      }
-      else {
-        __n = (long)PTR_FUN_001cb6d0 - (long)PTR_DAT_001cb6b0;
-        if ((~__n < param_1) || (param_3 < __n)) {
-          pcVar7 = "plan_capacity";
-        }
-        else {
-          if ((((uint)uVar5 | (uint)param_1) & 3) == 0) {
-            uVar1 = uVar5 - param_1;
-            if (uVar5 < param_1 || uVar1 == 0) {
-              if (param_1 - uVar5 >> 0x1b == 0) {
-                uVar8 = (uint)(param_1 - uVar5 >> 2);
-                goto LAB_0018d27c;
-              }
-            }
-            else if (uVar1 < 0x8000001) {
-              uVar8 = -((uint)uVar1 >> 2) & 0x3ffffff;
-LAB_0018d27c:
-              lVar11 = (long)PTR_DAT_001cb6b8 - (long)PTR_DAT_001cb6b0;
-              uVar1 = param_1 + lVar11;
-              if ((((uint)uVar5 | (uint)uVar1) & 3) == 0) {
-                uVar5 = uVar5 + 4;
-                if (uVar5 < uVar1) {
-                  if (uVar1 - uVar5 < 0x8000001) {
-                    uVar10 = -((uint)(uVar1 - uVar5) >> 2) & 0x3ffffff;
-LAB_0018d2d8:
-                    memcpy(param_2,PTR_DAT_001cb6b0,__n);
-                    uVar6 = 1;
-                    lVar9 = (long)PTR_DAT_001cb6c0 - (long)puVar3;
-                    *(undefined4 *)((long)param_2 + ((long)PTR_DAT_001cb6c8 - (long)puVar3)) =
-                         0xd10243ff;
-                    puVar3 = PTR_ng_observe_registers_v1_001cb738;
-                    *(uint *)((long)param_2 + lVar11) = uVar10 | 0x14000000;
-                    *(undefined **)((long)param_2 + lVar9) = puVar3;
-                    *(ulong *)(param_4 + 4) = param_1;
-                    *(ulong *)(param_4 + 6) = uVar5;
-                    param_4[8] = -0x2efdbc01;
-                    param_4[9] = uVar8 | 0x14000000;
-                    param_4[10] = (int)__n;
-                    param_4[0xb] = 0;
-                    goto LAB_0018d1ec;
-                  }
-                }
-                else if (uVar5 - uVar1 >> 0x1b == 0) {
-                  uVar10 = (uint)(uVar5 - uVar1 >> 2);
-                  goto LAB_0018d2d8;
-                }
-              }
-              pcVar7 = "resume";
-              goto LAB_0018d1e4;
-            }
-          }
-          pcVar7 = "enter";
-        }
-      }
-    }
-  }
-LAB_0018d1e4:
-  FUN_00140548(pcVar7);
-  uVar6 = 0;
-LAB_0018d1ec:
-  if (*(long *)(lVar2 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar6);
+    if (from < to)
+        return (to - from) < OBSERVER_BRANCH_REACH;
+    if (to < from)
+        return (from - to) <= OBSERVER_BRANCH_REACH;
+    return 1;
 }
 
+static int branch_word(uintptr_t from, uintptr_t to, uint32_t *out)
+{
+    uint64_t diff;
+    uint32_t imm;
+
+    if (((uint32_t)from | (uint32_t)to) & 3u)
+        return 0;
+    if (to > from) {
+        diff = to - from;
+        if (diff >> 0x1b != 0)
+            return 0;
+        imm = (uint32_t)(diff >> 2);
+    } else if (to < from) {
+        diff = from - to;
+        if (diff > OBSERVER_BRANCH_REACH)
+            return 0;
+        imm = (uint32_t)(0u - (uint32_t)(diff >> 2)) & 0x3ffffffu;
+    } else {
+        imm = 0;
+    }
+    *out = 0x14000000u | imm;
+    return 1;
+}
+
+int ng_prepare_observer_v1(uintptr_t home, void *dest, size_t size, observer_plan_t *plan)
+{
+    observer_status_t status;
+    uintptr_t entry;
+    uint32_t resume_branch;
+    const char *stage = "plan_contract";
+
+    if (plan == NULL || plan->magic != OBSERVER_PLAN_MAGIC || dest == NULL
+        || home < OBSERVER_MIN_ADDR || (home & 0xf) != 0)
+        goto fail;
+    memset(&status, 0, sizeof status);
+    status.magic = OBSERVER_STATUS_MAGIC;
+    if (ng_status_v1((uint64_t *)&status) == 0) {
+        stage = "plan_status";
+        goto fail;
+    }
+    if (status.bound_entry == 0) {
+        stage = "plan_unbound";
+        goto fail;
+    }
+    entry = ng_current_entry();
+    if (entry == 0 || plan->entry != entry) {
+        stage = "plan_current_entry";
+        goto fail;
+    }
+    if (size < OBSERVER_TPL_SIZE || home > UINT64_MAX - OBSERVER_TPL_SIZE) {
+        stage = "plan_capacity";
+        goto fail;
+    }
+    if (!branch_word(entry, home, &plan->enter_branch)) {
+        stage = "enter";
+        goto fail;
+    }
+    if (!branch_word(home + OBSERVER_TPL_TAIL_OFF, entry + 4, &resume_branch)) {
+        stage = "resume";
+        goto fail;
+    }
+    memcpy(dest, ng_observer_template, OBSERVER_TPL_SIZE);
+    *(uint32_t *)((char *)dest + OBSERVER_TPL_WORD_OFF) = OBSERVER_ANCHOR_WORD;
+    *(uint32_t *)((char *)dest + OBSERVER_TPL_TAIL_OFF) = resume_branch;
+    *(void **)((char *)dest + OBSERVER_TPL_BODY_OFF) = ng_observe_registers_v1;
+    plan->home = home;
+    plan->resume = entry + 4;
+    plan->original_word = OBSERVER_ANCHOR_WORD;
+    plan->template_size = OBSERVER_TPL_SIZE;
+    plan->tail_pad = 0;
+    return 1;
+fail:
+    ng_phase_fail(stage);
+    return 0;
+}
+
+static int hex_value(int c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static FILE *open_proc_maps(void)
+{
+    FILE *f;
+
+    for (int tries = 0; tries < 8; tries++) {
+        f = fopen("/proc/self/maps", "r");
+        if (f != NULL)
+            return f;
+        if (errno != EINTR)
+            return NULL;
+    }
+    return NULL;
+}
+
+static int maps_getline(FILE *f, char *buf, size_t size)
+{
+    for (int tries = 0; tries < 9; tries++) {
+        errno = 0;
+        if (fgets(buf, (int)size, f) != NULL)
+            return 1;
+        if (!(ferror(f) && errno == EINTR))
+            break;
+        clearerr(f);
+    }
+    return ferror(f) ? -1 : 0;
+}
+
+static int observer_home_try(uintptr_t entry, void *m, size_t page,
+                             observer_plan_t *plan, observer_phase_cell_t *phase,
+                             int *latch, int *in_prepare, void **home_out)
+{
+    int r;
+
+    memset(plan, 0, sizeof *plan);
+    plan->magic = OBSERVER_PLAN_MAGIC;
+    plan->entry = entry;
+
+    phase->err = 0;
+    phase->phase = "prepare";
+    *latch = 0;
+    *in_prepare = 1;
+    r = ng_prepare_observer_v1((uintptr_t)m, m, page, plan);
+    *in_prepare = 0;
+    if (r) {
+        *(void **)((char *)m + OBSERVER_TPL_BODY_OFF) = ng_observer_body;
+        cache_flush(m, (char *)m + plan->template_size);
+        if (mprotect(m, page, PROT_READ | PROT_EXEC) == 0) {
+            ng_saved_entry_word = plan->original_word;
+            *home_out = m;
+            return 1;
+        }
+        phase->err = errno;
+        phase->phase = "seal";
+    }
+    if (munmap(m, page) != 0) {
+        phase->err = errno;
+        phase->phase = "gap_unmap";
+        return -1;
+    }
+    return 0;
+}
+
+void *ng_install_observer(const void *entry_ptr)
+{
+    uintptr_t entry = (uintptr_t)entry_ptr;
+    size_t page = g_page_size;
+    uintptr_t aligned = entry & -page;
+    uintptr_t tail_off = OBSERVER_TPL_TAIL_OFF;
+    observer_phase_cell_t *phase = cell_lock(ng_phase_key);
+    int *latch = cell_lock(ng_latch_key);
+    int *in_prepare = cell_lock(ng_prepare_key);
+    observer_plan_t plan;
+    observer_gap_window_t window;
+    void *home = NULL;
+    void *m;
+    uintptr_t off;
+    int r;
+
+    phase->err = 0;
+    phase->phase = "mmap";
+
+    off = OBSERVER_RING_STEP;
+    do {
+        if (aligned + off != 0) {
+            m = mmap((void *)(aligned + off), page, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (m == MAP_FAILED) {
+                phase->err = errno;
+                phase->phase = "mmap";
+            } else {
+                r = observer_home_try(entry, m, page, &plan, phase, latch, in_prepare, &home);
+                if (r == 1)
+                    return home;
+                if (r < 0)
+                    return NULL;
+            }
+        }
+        if (off < aligned) {
+            m = mmap((void *)(aligned - off), page, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (m == MAP_FAILED) {
+                phase->err = errno;
+                phase->phase = "mmap";
+            } else {
+                r = observer_home_try(entry, m, page, &plan, phase, latch, in_prepare, &home);
+                if (r == 1)
+                    return home;
+                if (r < 0)
+                    return NULL;
+            }
+        }
+        off += OBSERVER_RING_STEP;
+    } while (off < OBSERVER_RING_LIMIT);
+
+    memset(&window, 0, sizeof window);
+
+    if (g_game_base <= entry && (entry - g_game_base) >> 0x16 < 5
+        && g_game_base < 0xfffffffffec00000ull
+        && (page == 0x1000 || (page == 0x4000 && (entry & 3) == 0))
+        && tail_off > 3 && tail_off <= page - 4 && (tail_off & 3) == 0) {
+        uintptr_t lo_raw;
+        uintptr_t hi_raw;
+        uintptr_t max_tail;
+        FILE *f;
+
+        lo_raw = entry - OBSERVER_BRANCH_REACH;
+        if (lo_raw < 0x10001)
+            lo_raw = 0x10000;
+        if (entry >> 0x1b == 0)
+            lo_raw = 0x10000;
+        max_tail = tail_off - 4;
+        if (max_tail < 4)
+            max_tail = 4;
+        hi_raw = entry + (OBSERVER_BRANCH_REACH - max_tail);
+        if (entry > ~(OBSERVER_BRANCH_REACH - max_tail))
+            hi_raw = UINT64_MAX;
+        if (~page <= hi_raw)
+            hi_raw = ~page;
+
+        window.game_base = g_game_base;
+        window.target = entry;
+        window.size = page;
+        window.tail = tail_off;
+        window.lo = (page - 1 + lo_raw) & -page;
+        window.hi = hi_raw & -page;
+
+        if (window.lo > window.hi) {
+            phase->err = 0;
+            phase->phase = "gap_window";
+            return NULL;
+        }
+        f = open_proc_maps();
+        if (f == NULL) {
+            phase->err = errno;
+            phase->phase = "gap_open";
+            return NULL;
+        }
+        {
+            char line[OBSERVER_MAPS_LINE_MAX];
+            uint32_t lines = 0;
+            size_t total = 0;
+            uintptr_t prev_end = 0;
+            int covered = 0;
+            int gr;
+
+            while ((gr = maps_getline(f, line, sizeof line)) == 1) {
+                size_t len = strlen(line);
+                uintptr_t start = 0;
+                uintptr_t end = 0;
+                const char *perms;
+                int i = 0;
+                int j = 0;
+                int c;
+
+                if (len == 0 || line[len - 1] != '\n')
+                    goto gap_bounds;
+                lines++;
+                if (lines > OBSERVER_MAPS_MAX_LINES)
+                    goto gap_bounds;
+                if (len > OBSERVER_MAPS_MAX_BYTES - total)
+                    goto gap_bounds;
+                total += len;
+                while ((c = hex_value((unsigned char)line[i])) >= 0) {
+                    start = start * 16 + (uintptr_t)c;
+                    i++;
+                    if (start >> 60)
+                        goto gap_parse;
+                }
+                if (i == 0 || line[i] != '-')
+                    goto gap_parse;
+                i++;
+                while ((c = hex_value((unsigned char)line[i + j])) >= 0) {
+                    end = end * 16 + (uintptr_t)c;
+                    j++;
+                    if (end >> 60)
+                        goto gap_parse;
+                }
+                if (j == 0 || line[i + j] != ' ')
+                    goto gap_parse;
+                perms = line + i + j + 1;
+                if (strlen(perms) < 5
+                    || (perms[0] != 'r' && perms[0] != '-')
+                    || (perms[1] != 'w' && perms[1] != '-')
+                    || (perms[2] != 'x' && perms[2] != '-')
+                    || (perms[3] != 's' && perms[3] != 'p')
+                    || perms[4] != ' '
+                    || end <= start
+                    || start < prev_end
+                    || ((page - 1) & (start | end)) != 0)
+                    goto gap_parse;
+                observer_gap_offer(&window, prev_end, start);
+                if (entry >= start && entry <= UINT64_MAX - 4 && entry + 4 <= end)
+                    covered = 1;
+                prev_end = end;
+                continue;
+gap_bounds:
+                phase->err = 0;
+                phase->phase = "gap_bounds";
+                goto scan_fail;
+gap_parse:
+                phase->err = 0;
+                phase->phase = "gap_parse";
+                goto scan_fail;
+            }
+            if (gr < 0) {
+                phase->err = ferror(f) ? errno : 0;
+                phase->phase = "gap_read";
+                goto scan_fail;
+            }
+            if (lines == 0 || !covered) {
+                phase->err = 0;
+                phase->phase = "gap_maps";
+                goto scan_fail;
+            }
+            observer_gap_offer(&window, prev_end, UINT64_MAX);
+            if (fclose(f) != 0) {
+                phase->err = errno;
+                phase->phase = "gap_close";
+                return NULL;
+            }
+        }
+        phase->err = 0;
+        phase->phase = "gap_empty";
+        {
+            uintptr_t limit = window.game_base + GAME_IMAGE_SPAN;
+            uintptr_t page_mask = page - 1;
+            uintptr_t top = ~page;
+            uintptr_t resume = entry + 4;
+            uint32_t idx;
+
+            for (idx = 0; idx < window.count; idx++) {
+                uintptr_t cand = window.slots[idx];
+
+                if (cand < OBSERVER_MIN_ADDR || (cand & page_mask) != 0 || cand > top
+                    || (cand < limit && window.game_base < cand + page)
+                    || ((uint32_t)(entry | cand) & 3u) != 0
+                    || !branch_reachable(entry, cand)
+                    || !branch_reachable(cand + tail_off, resume)) {
+                    phase->err = 0;
+                    phase->phase = "gap_range";
+                    return NULL;
+                }
+                m = mmap((void *)cand, page, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+                if (m == MAP_FAILED) {
+                    phase->err = errno;
+                    phase->phase = "gap_mmap";
+                    continue;
+                }
+                if ((uintptr_t)m != cand) {
+                    phase->err = 0;
+                    phase->phase = "gap_return";
+                    if (munmap(m, page) != 0) {
+                        phase->err = errno;
+                        phase->phase = "gap_unmap";
+                        return NULL;
+                    }
+                    continue;
+                }
+                r = observer_home_try(entry, m, page, &plan, phase, latch, in_prepare, &home);
+                if (r == 1)
+                    return home;
+                if (r < 0)
+                    return NULL;
+            }
+        }
+        return NULL;
+scan_fail:
+        fclose(f);
+        return NULL;
+    }
+    phase->err = 0;
+    phase->phase = "gap_window";
+    return NULL;
+}
+
+static int value_plausible(int v)
+{
+    return (uint32_t)(v - OBSERVER_VALUE_BASE) > OBSERVER_VALUE_MASK;
+}
+
+void ng_remote_store_pair(uint64_t token, uintptr_t addr, int lo, int hi)
+{
+    observer_status_t status;
+    uint32_t pair[2];
+
+    (void)token;
+    if (g_observer_ready == 0 || g_runtime_ready == 0)
+        return;
+    if (g_observer_thread != gettid())
+        return;
+    memset(&status, 0, sizeof status);
+    status.magic = OBSERVER_STATUS_MAGIC;
+    if (ng_status_v1((uint64_t *)&status) == 0)
+        return;
+    if (status.bound_observer == 0)
+        return;
+    if (!value_plausible(hi) || !value_plausible(lo))
+        return;
+    if (addr >= OBSERVER_ADDR_CEILING || status.expect_addr != addr)
+        return;
+    pair[0] = (uint32_t)lo;
+    pair[1] = (uint32_t)hi;
+    remote_write(g_remote_write_fd, pair, 8, addr + OBSERVER_PAIR_OFFSET);
+}
