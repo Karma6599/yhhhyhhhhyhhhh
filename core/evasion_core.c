@@ -1116,6 +1116,18 @@ int32_t evasion_get_requested(const char *name)
     return p ? (int32_t)state[p->state_index] : INT32_MIN;
 }
 
+int32_t evasion_prop_kind(const char *name)
+{
+    const nexus_property_t *p = find_property(name);
+    return p ? p->kind : -1;
+}
+
+int32_t evasion_prop_dependency_gated(const char *name)
+{
+    const nexus_property_t *p = find_property(name);
+    return p ? (int32_t)p->active : -1;
+}
+
 static void state_lock_acquire(void)
 {
     int expected;

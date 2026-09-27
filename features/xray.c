@@ -1,125 +1,106 @@
-/*
- * X-Ray / ShadowX — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: ShadowX subsystem: nexus_shadowx_set_feature, target cycling, name display.
- */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <pthread.h>
 
-/* ===== nexus_shadowx_set_feature @ 0011a72c [libNexusEvasion69252.so] ===== */
+extern int evasion_set(const char *name, uint32_t value, int is_parameter);
 
-bool nexus_shadowx_set_feature(undefined8 param_1,undefined8 param_2)
+extern pthread_once_t g_snapshot_plus_once;
+extern long (*snapshot_plus_active_fn)(void);
+extern void snapshot_plus_once_init(void);
 
+extern void *g_snapshot_keys_fn;
+extern int   g_snapshot_keys_ready;
+
+typedef int (*snapshot_keys_fn_t)(const char *const *keys, int32_t *triples,
+                                  int count, int64_t *epoch, int32_t *status);
+
+#define SNAPSHOT_TRIPLE_REQUESTED 0
+#define SNAPSHOT_TRIPLE_EFFECTIVE 1
+#define SNAPSHOT_TRIPLE_FLAGS     2
+
+#define SNAPSHOT_FLAG_ACTIVE 2
+
+typedef struct {
+    uint64_t zero;
+    uint64_t epoch;
+    int32_t  xray_enabled;
+    int32_t  aim_enabled;
+    int32_t  target_mode;
+    int32_t  show_names;
+    uint64_t reserved_20;
+    uint64_t reserved_28;
+    int32_t  box_w;
+    int32_t  box_h;
+    uint64_t reserved_38[8];
+} shadowx_snapshot_t;
+
+_Static_assert(sizeof(shadowx_snapshot_t) == 0x78, "shadowx_snapshot_t size");
+
+bool nexus_shadowx_set_feature(const char *name, uint32_t value)
 {
-  int iVar1;
-  
-  iVar1 = FUN_0010ec90(param_1,param_2,0);
-  return iVar1 == 1;
+    return evasion_set(name, value, 0) == 1;
 }
 
-/* ===== nexus_shadowx_set_param @ 0011a74c [libNexusEvasion69252.so] ===== */
-
-bool nexus_shadowx_set_param(undefined8 param_1,undefined8 param_2)
-
+bool nexus_shadowx_set_param(const char *name, uint32_t value)
 {
-  int iVar1;
-  
-  iVar1 = FUN_0010ec90(param_1,param_2,1);
-  return iVar1 == 1;
+    return evasion_set(name, value, 1) == 1;
 }
 
-/* ===== FUN_00164c78 @ 00164c78 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00164c78(undefined8 *param_1)
-
+int shadowx_snapshot_fetch(shadowx_snapshot_t *out)
 {
-  long lVar1;
-  undefined8 uVar2;
-  int iVar3;
-  undefined8 uVar4;
-  int local_74;
-  long local_70;
-  undefined1 auStack_68 [4];
-  int local_64;
-  int local_60;
-  int local_58;
-  int local_54;
-  int local_4c;
-  int local_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  uVar4 = 0;
-  local_70 = 0;
-  local_74 = -1;
-  if (((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) {
-    iVar3 = pthread_once((pthread_once_t *)&DAT_0021ca04,FUN_00164598);
-    if ((DAT_0021ca08 == (code *)0x0) || (iVar3 = (*DAT_0021ca08)(iVar3), iVar3 != 1)) {
-      uVar4 = 0;
-    }
-    else {
-      iVar3 = (*DAT_00214930)(&PTR_s_isXrayEnabled_001c3368,auStack_68,4,&local_70,&local_74);
-      uVar4 = 0;
-      if (((((iVar3 == 1) && (local_70 != 0)) && (local_74 == 0)) &&
-          (((uVar4 = 0, local_60 == 2 && (local_54 == 2)) &&
-           ((-1 < local_64 && ((local_64 < 2 && (-1 < local_58)))))))) &&
-         ((local_58 < 2 &&
-          ((((0 < local_4c && (local_4c < 3)) && (-1 < local_40)) && (local_40 < 2)))))) {
-        uVar4 = 1;
-        *param_1 = 0;
-        param_1[1] = local_70;
-        *(int *)(param_1 + 2) = local_64;
-        *(int *)((long)param_1 + 0x14) = local_40;
-        uVar2 = DAT_0010e5c0;
-        *(int *)(param_1 + 3) = local_4c;
-        *(int *)((long)param_1 + 0x1c) = local_58;
-        param_1[4] = 0;
-        param_1[5] = 0;
-        param_1[6] = uVar2;
-        param_1[8] = 0;
-        param_1[7] = 0;
-        param_1[10] = 0;
-        param_1[9] = 0;
-        param_1[0xc] = 0;
-        param_1[0xb] = 0;
-        param_1[0xe] = 0;
-        param_1[0xd] = 0;
-      }
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar4);
-}
+    static const char *const keys[4] = {
+        "isXrayEnabled",
+        "xrayShowTargetName",
+        "xrayTargetMode",
+        "aopAimEnabled",
+    };
 
+    if (__atomic_load_n(&g_snapshot_keys_ready, __ATOMIC_ACQUIRE) != 1
+        || g_snapshot_keys_fn == NULL)
+        return 0;
+
+    pthread_once(&g_snapshot_plus_once, snapshot_plus_once_init);
+    if (snapshot_plus_active_fn == NULL || snapshot_plus_active_fn() != 1)
+        return 0;
+
+    int32_t triples[12];
+    int64_t epoch = 0;
+    int32_t status = -1;
+
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+    if (query(keys, triples, 4, &epoch, &status) != 1)
+        return 0;
+    if (epoch == 0 || status != 0)
+        return 0;
+
+    int32_t xray_flags     = triples[0 * 3 + SNAPSHOT_TRIPLE_FLAGS];
+    int32_t showname_flags = triples[1 * 3 + SNAPSHOT_TRIPLE_FLAGS];
+    if (xray_flags != SNAPSHOT_FLAG_ACTIVE || showname_flags != SNAPSHOT_FLAG_ACTIVE)
+        return 0;
+
+    int32_t xray_eff      = triples[0 * 3 + SNAPSHOT_TRIPLE_EFFECTIVE];
+    int32_t showname_eff  = triples[1 * 3 + SNAPSHOT_TRIPLE_EFFECTIVE];
+    int32_t target_eff    = triples[2 * 3 + SNAPSHOT_TRIPLE_EFFECTIVE];
+    int32_t aim_eff       = triples[3 * 3 + SNAPSHOT_TRIPLE_EFFECTIVE];
+
+    if (xray_eff < 0 || xray_eff > 1)
+        return 0;
+    if (showname_eff < 0 || showname_eff > 1)
+        return 0;
+    if (target_eff < 1 || target_eff > 2)
+        return 0;
+    if (aim_eff < 0 || aim_eff > 1)
+        return 0;
+
+    memset(out, 0, sizeof *out);
+    out->epoch = epoch;
+    out->xray_enabled = xray_eff;
+    out->aim_enabled = aim_eff;
+    out->target_mode = target_eff;
+    out->show_names = showname_eff;
+    out->box_w = 100;
+    out->box_h = 200;
+    return 1;
+}

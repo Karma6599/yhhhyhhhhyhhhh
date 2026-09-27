@@ -45,20 +45,20 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `bolt_mod.c` | 5 | |
 | `brawler_mods.c` | 8 | |
 | `debug_menu.c` | 8 | — exports: `nexus_menu_debug_open()`, `nexus_menu_debug_action()`, `nexus_menu_debug_pump()`, `nexus_menu_diagnostics()` — bridge to the game's own 40-command dev menu (see [docs/debug_menu.md](docs/debug_menu.md)) |
-| `esp.c` | 1 | |
-| `follow.c` | 2 | |
+| `esp.c` | 1 | **RECONSTRUCTED** — `evasion_key_is_visual_only()`: the ESP feature-family classifier consumed by the core activation gates (espEnabled / espShowTracer / espTeamFilter*) |
+| `follow.c` | 2+118 | **RECONSTRUCTED** — UI provider pump + the full 118-slot UI query table recovered from .data.rel.ro (nexus_sx_* / nexus_vis_* / nexus_dodge_* keys with min/max/defaults): `ui_provider_poll()` walks 8 backend slots x 118 keys with range validation into the shadow values + revision counter, then refreshes all 168 action records; `ui_values_set_key()` bulk setter |
 | `hold_fire.c` | 8 | — exports: `nexus_evasion_hold_register_v1()`, `nexus_evasion_hold_lease_v1()`, `nexus_evasion_hold_recheck_v1()` |
 | `killaura.c` | 4 | |
 | `map_editor.c` | 8 | — exports: `nexus_menu_editor_open()`, `nexus_menu_editor_action()`, `nexus_menu_editor_pump()`, `nexus_menu_editor_scroll_revision()` — unlocks the hidden map editor (20 cmds incl. save/placement bypasses) |
 | `outline.c` | 5 | |
-| `prediction.c` | 2 | |
+| `prediction.c` | 3 | **RECONSTRUCTED** — predictor-version gating: `evasion_prediction_alias_ok()` (generic property gate for the gates fallback), `evasion_prediction_version_ok()` (aopTargetMode in [0,3), predict-off fast pass, aopPredictVersion in 1..2 under dep-bit 2), `evasion_prediction_dependency_ok()` wrapper |
 | `smart_aim.c` | 4 | |
 | `spectate.c` | 5 | |
 | `speed_fly.c` | 3 | — exports: `nexus_script_port_client_performance_apply()` |
 | `spin.c` | 18 | — exports: `nexus_evasion_get_port_state()`, `nexus_evasion_spin_snapshot_v1()`, `nexus_evasion_get_requested()`, `nexus_evasion_get_effective()`, `nexus_evasion_get_port_state()` |
 | `trophies.c` | 7 | |
 | `visual_tweaks.c` | 60 | — exports: `nexus_script_port_query()`, `nexus_script_port_set()`, `nexus_script_port_reset()`, `nexus_script_port_camera_snapshot()`, `nexus_script_port_hud_snapshot()`, `nexus_script_port_chat_snapshot()` +5 more |
-| `xray.c` | 3 | — exports: `nexus_shadowx_set_feature()`, `nexus_shadowx_set_param()` |
+| `xray.c` | 3 | **RECONSTRUCTED** — ShadowX bridge: `nexus_shadowx_set_feature/set_param()` over the core dispatcher; `shadowx_snapshot_fetch()` pulls the 4-key triple snapshot (isXrayEnabled, xrayShowTargetName, xrayTargetMode, aopAimEnabled) via `nexus_evasion_snapshot_keys_v1` with flags==ACTIVE checks, Nexus+ entitlement gate through the delivery-module validator, 0x78 descriptor with {100,200} marker constants |
 
 ## ui/
 
