@@ -1,13 +1,3 @@
-/*
- * bolt_mod - Bolt autopilot (mixed: reconstructed attack engine + raw pathing remainder)
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so
- * Layout note: FUN_00112940 (adapter-family classifier), FUN_0015fe20 (auto-attack tick),
- * FUN_0016944c (armed check) and FUN_00169b3c (guarded-write verify) are reconstructed below.
- * Still raw at the end: FUN_00167544, the 0x700-line wall-avoidance pathing engine
- * (smooth movement with the wall grid at DAT_00215aac/ab8/ac0/b00/b04, aim vector
- * DAT_002284b0/b4, threat state 0x228728-0x2287a8 family).
- */
-
 #define _GNU_SOURCE 1
 
 #include <stdint.h>
@@ -360,709 +350,620 @@ void bolt_auto_attack_tick(void *frame)
         break;
     }
 }
-/* ===== FUN_00167544 @ 00167544 [libNexusEvasionRuntime69252.so] ===== */
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+extern void wall_grid_acquire(void *grid);
+extern void feature_section_begin(void *frame, const char *key, uint32_t section,
+                                  void *state0, void *state1, void *state2);
+extern int evasion_runtime_gate(void);
+extern int entity_team_block(uintptr_t world, uintptr_t ctrl,
+                             uint32_t team_a, uint32_t team_b);
+extern uintptr_t plan_for_triple(const int32_t *triple);
+extern void aim_solution_resolve(void *solution, uintptr_t plan,
+                                 int32_t *aim_dx, int32_t *aim_dy, void **aux);
+extern float aim_travel_time(void *ctx, uint64_t marker, void *state, int flags);
+extern float aim_lead_solve(float dx, float dy, float vx, float vy,
+                            float travel, float min_arc, float max_arc, void *out);
+extern void aim_path_walk(void *aux, float dist, float lead, void *solution,
+                          float *px, float *py);
+extern void aim_path_refine(float ox, float oy, float tx, float ty,
+                            float vx, float vy, float lead, float *px, float *py);
+extern int wall_avoid_step(float ox, float oy, float px, float py, void *state,
+                           uint32_t exit_hold_ms, float smooth,
+                           float *out_dx, float *out_dy, uint32_t *out_flags);
+extern void wall_avoid_adjust(float ox, float oy, void *state, const void *params,
+                              uint32_t tick, float *out_dx, float *out_dy);
+extern void autofarm_plan_seed(uint64_t epoch, void *out);
+extern int entity_los_check(uintptr_t world, uintptr_t ctrl, float x, float y,
+                            int32_t aim_a, int32_t aim_b, void *read_fn,
+                            int flags, int range);
+extern float entity_threat_score(uintptr_t entity);
+extern int autofarm_target_pick(void *state, void *query, uint64_t *epoch);
+extern void los_read_stub(void);
 
-void FUN_00167544(undefined8 *param_1)
+extern uint64_t g_ctx_frame_no;
+extern uint64_t g_ctx_self;
+extern uint64_t g_team_world;
+extern uint64_t g_team_ctrl;
+extern uint64_t g_los_world;
+extern uint64_t g_los_ctrl;
+extern uint32_t g_ctx_odometer;
+extern int32_t g_ctx_aim_a;
+extern int32_t g_ctx_aim_b;
+extern uint32_t g_evasion_gate;
+extern void *g_aim_ctx;
+extern void *g_colt_aim_state;
+extern uint64_t g_colt_avoid_state;
 
+extern uint8_t g_wall_grid[0x68];
+extern uint8_t g_threat_table[32 * 0xf8];
+extern uint8_t g_bolt_frame_published[0x110];
+extern uint32_t g_bolt_vel_tick;
+extern uint32_t g_bolt_vel_frame;
+extern float g_bolt_vel_last_x;
+extern float g_bolt_vel_last_y;
+extern uint64_t g_bolt_track_epoch;
+extern int64_t g_bolt_hold_counter;
+extern uint64_t g_colt_state[8];
+extern uint64_t g_autofarm_state[13];
+extern uint64_t g_kitnani_state[3];
+extern uint64_t g_speedexp_state[3];
+
+#define GRID_TICK     (*(uint32_t *)(g_wall_grid + 0x0c))
+#define GRID_WORLD    (*(uint64_t *)(g_wall_grid + 0x18))
+#define GRID_CTRL     (*(uint64_t *)(g_wall_grid + 0x20))
+#define GRID_EPOCH    (*(uint64_t *)(g_wall_grid + 0x28))
+#define GRID_AUX      (*(uint64_t *)(g_wall_grid + 0x30))
+#define GRID_FRAME    (*(uint64_t *)(g_wall_grid + 0x60))
+#define GRID_POS_RAW  (*(int64_t *)(g_wall_grid + 0x64))
+
+#define THREAT_ENTITY(i)    (*(uint64_t *)(g_threat_table + (i) * 0xf8))
+#define THREAT_ID(i)        (*(uint32_t *)(g_threat_table + (i) * 0xf8 + 0x08))
+#define THREAT_VELOCITY(i)  (*(uint64_t *)(g_threat_table + (i) * 0xf8 + 0x14))
+#define THREAT_LAST_SEEN(i) (*(int32_t *)(g_threat_table + (i) * 0xf8 + 0x20))
+
+#define ROD_BOLT_TAG_A    (*(const uint64_t *)(uintptr_t)0x112950)
+#define ROD_BOLT_TAG_B    (*(const uint64_t *)(uintptr_t)0x112958)
+#define ROD_BOLT_PARAM_A  (*(const uint64_t *)(uintptr_t)0x112840)
+#define ROD_BOLT_PARAM_B  (*(const uint64_t *)(uintptr_t)0x112848)
+#define ROD_BOLT_AUX_A    (*(const uint64_t *)(uintptr_t)0x112c40)
+#define ROD_BOLT_AUX_B    (*(const uint64_t *)(uintptr_t)0x112c48)
+#define ROD_BOLT_PLAN_ID  (*(const uint64_t *)(uintptr_t)0x10e680)
+#define ROD_COLT_TAG_A    (*(const uint64_t *)(uintptr_t)0x112a20)
+#define ROD_COLT_TAG_B    (*(const uint64_t *)(uintptr_t)0x112a28)
+#define ROD_COLT_PLAN     (*(const uint64_t *)(uintptr_t)0x10e6a8)
+#define ROD_COLT_ROUTE    (*(const uint64_t *)(uintptr_t)0x10e720)
+#define ROD_AF_TAG_A      (*(const uint64_t *)(uintptr_t)0x112850)
+#define ROD_AF_TAG_B      (*(const uint64_t *)(uintptr_t)0x112858)
+#define ROD_ADJUST_HI     (*(const uint64_t *)(uintptr_t)0x1c57e0)
+#define ROD_ADJUST_FN     (*(const uint64_t *)(uintptr_t)0x1c57e8)
+#define ROD_AF_KEYS_LO    (*(const uint64_t *)(uintptr_t)0x1c57f0)
+#define ROD_AF_KEYS_HI    (*(const uint64_t *)(uintptr_t)0x1c57f8)
+
+#define BOLT_MOVE_MARKER   0x00f4246au
+#define COLT_MOVE_MARKER   0x00f42401u
+
+typedef struct {
+    uint32_t id;
+    uint32_t team_block;
+    uint32_t age;
+    uint32_t los;
+    uint64_t entity;
+    uint64_t pos_pair;
+    uint64_t velocity;
+    float hp_ratio;
+    float threat;
+    float confidence;
+    uint32_t pad;
+} farm_record_t;
+
+static uint64_t pack_vec2(float x, float y)
 {
-  int *piVar1;
-  long *plVar2;
-  uint uVar3;
-  ulong uVar4;
-  long lVar5;
-  undefined8 uVar6;
-  int iVar7;
-  undefined *puVar8;
-  int iVar9;
-  bool bVar10;
-  int iVar11;
-  int iVar12;
-  int iVar13;
-  uint uVar14;
-  long lVar15;
-  long lVar16;
-  long lVar17;
-  uint uVar18;
-  long lVar19;
-  long lVar20;
-  ulong uVar21;
-  long lVar22;
-  uint uVar23;
-  ulong uVar24;
-  float fVar25;
-  float fVar26;
-  undefined4 uVar27;
-  undefined4 uVar28;
-  undefined8 uVar29;
-  undefined1 auVar30 [16];
-  float fVar31;
-  undefined8 uVar32;
-  float fVar33;
-  float fVar34;
-  float fVar35;
-  float fVar36;
-  float fVar37;
-  undefined8 uVar38;
-  float fVar39;
-  float fVar40;
-  undefined4 local_870;
-  undefined4 local_86c;
-  undefined4 uStack_868;
-  undefined1 auStack_864 [4];
-  float local_860;
-  float fStack_85c;
-  undefined4 local_858;
-  undefined4 local_854;
-  undefined8 local_850;
-  undefined8 uStack_848;
-  undefined4 local_840;
-  undefined4 uStack_83c;
-  undefined4 uStack_838;
-  undefined8 uStack_834;
-  long local_820;
-  undefined8 local_818;
-  undefined8 local_810;
-  undefined4 local_808;
-  undefined4 uStack_804;
-  char *local_800;
-  undefined *puStack_7f8;
-  undefined *local_7f0;
-  undefined8 local_7e8;
-  uint local_7e0;
-  float fStack_7dc;
-  float fStack_7d8;
-  float fStack_7d4;
-  undefined8 local_7d0;
-  undefined *local_7c8;
-  uint *local_7c0;
-  uint local_7b8;
-  undefined4 local_7b4;
-  uint local_7b0 [4];
-  long local_7a0;
-  undefined4 uStack_794;
-  undefined8 uStack_790;
-  float local_788 [11];
-  int local_75c;
-  long local_b0;
-  
-  lVar5 = tpidr_el0;
-  local_b0 = *(long *)(lVar5 + 0x28);
-  if (param_1 == (undefined8 *)0x0) goto LAB_00168358;
-  param_1[3] = 0;
-  param_1[2] = 0;
-  param_1[5] = 0;
-  param_1[4] = 0;
-  param_1[7] = 0;
-  param_1[6] = 0;
-  param_1[9] = 0;
-  param_1[8] = 0;
-  param_1[0xb] = 0;
-  param_1[10] = 0;
-  param_1[0xd] = 0;
-  param_1[0xc] = 0;
-  param_1[0xf] = 0;
-  param_1[0xe] = 0;
-  param_1[0x11] = 0;
-  param_1[0x10] = 0;
-  param_1[0x13] = 0;
-  param_1[0x12] = 0;
-  param_1[0x15] = 0;
-  param_1[0x14] = 0;
-  param_1[0x17] = 0;
-  param_1[0x16] = 0;
-  param_1[0x19] = 0;
-  param_1[0x18] = 0;
-  param_1[0x1b] = 0;
-  param_1[0x1a] = 0;
-  param_1[0x1d] = 0;
-  param_1[0x1c] = 0;
-  param_1[0x1f] = 0;
-  param_1[0x1e] = 0;
-  param_1[0x21] = 0;
-  param_1[0x20] = 0;
-  param_1[1] = 0;
-  *param_1 = 0;
-  FUN_00168604(&DAT_00215aa0);
-  FUN_0016881c(param_1,"kitNaniModEnabled",0x79,&DAT_00228600,&DAT_00228608,&DAT_00228610);
-  if (*(int *)((long)param_1 + 0xc) != 0) goto LAB_00168358;
-  local_850 = 0;
-  puStack_7f8 = PTR_s_boltWallAvoidEnabled_001c57a0;
-  local_800 = PTR_s_boltModEnabled_001c5798;
-  local_7e8 = PTR_s_boltSafeExitEnabled_001c57b0;
-  local_7f0 = PTR_s_boltPredictionEnabled_001c57a8;
-  iVar11 = DAT_0020f694 + -1000000;
-  if (999999 < DAT_0020f694 + 0xfefc99c0U) {
-    iVar11 = DAT_0020f694;
-  }
-  fStack_7d8 = SUB164(_PTR_s_boltSmoothPercent_001c57b8,8);
-  fStack_7d4 = SUB164(_PTR_s_boltSmoothPercent_001c57b8,0xc);
-  local_7e0 = SUB164(_PTR_s_boltSmoothPercent_001c57b8,0);
-  fStack_7dc = SUB164(_PTR_s_boltSmoothPercent_001c57b8,4);
-  local_7c8 = PTR_s_boltTargetRange_001c57d0;
-  local_7d0 = PTR_s_boltExitHoldMs_001c57c8;
-  if ((((((iVar11 == 0xf4246a) && (DAT_00214930 != (code *)0x0)) &&
-        (iVar11 = (*DAT_00214930)(&local_800,local_7b0,8,&local_850,&local_820), iVar11 == 1)) &&
-       (((local_850 != 0 && ((int)local_820 == 0)) &&
-        ((local_7b0[1] == 1 &&
-         ((iVar12 = FUN_001550fc(), uVar27 = (undefined4)local_7a0, lVar17 = local_850,
-          iVar9 = DAT_00215b00, puVar8 = DAT_00215ad0, lVar15 = DAT_00215ac0, uVar23 = DAT_00215aac,
-          iVar7 = DAT_0020f7f4, iVar11 = DAT_0020f7f0, iVar12 != 0 && (local_75c != 0)))))))) &&
-      (DAT_00215ab8 == DAT_0020f650)) &&
-     ((((DAT_00215ac0 == DAT_0020f6f8 && (local_850 == DAT_00215ac8)) &&
-       (DAT_00215b00 == DAT_0020f690)) && ((DAT_0020d15c & 1) != 0)))) {
-    uVar32 = 0;
-    uVar38 = 0;
-    uVar29 = NEON_scvtf(CONCAT44(DAT_00215b04._4_4_,(int)DAT_00215b04),4);
-    fVar34 = (float)uVar29 / 300.0;
-    fVar36 = (float)((ulong)uVar29 >> 0x20) / 300.0;
-    if ((DAT_0022872c == DAT_00215b00) && (uVar38 = 0, DAT_00228728 != 0)) {
-      uVar38 = 0;
-      uVar18 = DAT_00215aac - DAT_00228728;
-      if ((DAT_00228728 <= DAT_00215aac && uVar18 != 0) && (uVar38 = 0, uVar18 < 9)) {
-        fVar37 = (fVar34 - DAT_00228730) * (30.0 / (float)uVar18);
-        fVar39 = (fVar36 - DAT_00228734) * (30.0 / (float)uVar18);
-        uVar38 = CONCAT44(fVar39,fVar37);
-        fVar37 = fVar39 * fVar39 + fVar37 * fVar37;
-        if (fVar37 != 400.0 && fVar37 < 400.0 == NAN(fVar37)) {
-          uVar38 = 0;
-        }
-      }
-    }
-    fVar37 = (float)NEON_ucvtf(DAT_0020f6bc);
-    DAT_0022872c = DAT_00215b00;
-    DAT_00228728 = DAT_00215aac;
-    DAT_00228730 = fVar34;
-    DAT_00228734 = fVar36;
-    if (DAT_0020f6c8 == 0) {
-      fVar26 = 0.0;
-      fVar39 = 0.0;
-      fVar35 = 0.0;
-      iVar12 = 0;
-    }
-    else {
-      uVar32 = 0;
-      fVar35 = 0.0;
-      fVar39 = 0.0;
-      fVar40 = 1e+09;
-      fVar26 = 0.0;
-      uVar24 = 0;
-      iVar12 = 0;
-      fVar25 = ((float)local_75c / 100.0) * ((float)local_75c / 100.0);
-      lVar22 = DAT_0020f6c0;
-      do {
-        plVar2 = (long *)(lVar22 + uVar24 * 0x40);
-        lVar16 = lVar22;
-        if (((*(int *)((long)plVar2 + 0x2c) != 0) && ((int)plVar2[5] != 0)) &&
-           ((*(int *)(lVar22 + uVar24 * 0x40 + 0x30) != 0 && (*plVar2 != DAT_0020f680)))) {
-          lVar19 = lVar22 + uVar24 * 0x40;
-          iVar13 = FUN_0017fba8(DAT_0020f698,DAT_0020f69c,*(undefined4 *)(lVar19 + 0x18),
-                                *(undefined4 *)(lVar19 + 0x1c));
-          lVar16 = DAT_0020f6c0;
-          if (iVar13 == 0) {
-            fVar31 = *(float *)(lVar19 + 0x38) - fVar36;
-            fVar33 = *(float *)(lVar19 + 0x34) - fVar34;
-            fVar31 = (float)NEON_fmadd(fVar33,fVar33,fVar31 * fVar31);
-            if ((0.04 <= fVar31) &&
-               (fVar31 == fVar25 || fVar31 < fVar25 != (NAN(fVar31) || NAN(fVar25)))) {
-              piVar1 = (int *)(lVar22 + uVar24 * 0x40 + 0x10);
-              lVar20 = -0x1f00;
-              do {
-                if (((*plVar2 == *(long *)(lVar20 + 0x20f0c0)) &&
-                    (iVar13 = *(int *)(lVar20 + 0x20f0c8), iVar13 == *piVar1)) &&
-                   (*(int *)(lVar20 + 0x20f0e0) - 1U < uVar23)) {
-                  uVar18 = uVar23 - *(int *)(lVar20 + 0x20f0e0);
-                  if (0x12 < uVar18) goto LAB_001678d0;
-                  uVar29 = *(undefined8 *)(lVar20 + 0x20f0d4);
-                  goto LAB_00167a18;
-                }
-                lVar20 = lVar20 + 0xf8;
-              } while (lVar20 != 0);
-              iVar13 = *piVar1;
-              uVar18 = 0;
-              uVar29 = 0;
-LAB_00167a18:
-              fVar33 = (float)NEON_fmadd((float)uVar18,0x3f0ccccd,fVar31);
-              fVar31 = fVar33 * 0.72;
-              if (iVar13 != DAT_0022862c) {
-                fVar31 = fVar33;
-              }
-              if (fVar31 < fVar40) {
-                fVar35 = (float)NEON_ucvtf(*(undefined4 *)(lVar22 + uVar24 * 0x40 + 0x3c));
-                fVar35 = fVar35 / 300.0;
-                uVar32 = uVar29;
-                fVar40 = fVar31;
-                iVar12 = iVar13;
-                fVar39 = *(float *)(lVar19 + 0x38);
-                fVar26 = *(float *)(lVar19 + 0x34);
-              }
-            }
-          }
-        }
-LAB_001678d0:
-        uVar24 = uVar24 + 1;
-        lVar22 = lVar16;
-      } while (uVar24 < DAT_0020f6c8);
-    }
-    lVar22 = DAT_00215ab8;
-    uVar6 = _UNK_00112958;
-    uVar29 = _DAT_00112950;
-    lVar16 = DAT_00215ac0;
-    if ((((DAT_00228650 == 0) || (DAT_00228638 != DAT_00215ac0)) ||
-        ((DAT_00228628 != iVar9 ||
-         ((DAT_0022862c != iVar12 ||
-          (lVar16 = DAT_00228638, lVar19 = DAT_00228738, DAT_00228738 != local_850)))))) &&
-       (bVar10 = DAT_00228740 == -1, DAT_00228740 = DAT_00228740 + 1, lVar19 = local_850, bVar10)) {
-      DAT_00228740 = 1;
-    }
-    lVar20 = DAT_00228740;
-    DAT_00228738 = lVar19;
-    param_1[6] = lVar19;
-    param_1[7] = lVar20;
-    *(uint *)(param_1 + 3) = (uint)(iVar12 == 0) << 1;
-    *(undefined4 *)((long)param_1 + 0x1c) = 0;
-    uVar18 = DAT_00215aac;
-    param_1[1] = uVar6;
-    *param_1 = uVar29;
-    uVar6 = _UNK_00112848;
-    uVar29 = _DAT_00112840;
-    *(uint *)(param_1 + 0x17) = uVar23;
-    *(int *)((long)param_1 + 0xbc) = iVar9;
-    *(undefined4 *)(param_1 + 0xb) = 0;
-    *(uint *)((long)param_1 + 0x5c) = uVar18;
-    param_1[9] = uVar6;
-    param_1[8] = uVar29;
-    uVar29 = DAT_0010e680;
-    param_1[0x13] = 0;
-    param_1[0x14] = lVar15;
-    *(undefined4 *)(param_1 + 0x19) = uStack_794;
-    *(float *)((long)param_1 + 0xcc) = local_788[0];
-    param_1[10] = uVar29;
-    uVar6 = _UNK_00112c48;
-    uVar29 = _DAT_00112c40;
-    *(int *)(param_1 + 2) = iVar9;
-    *(int *)((long)param_1 + 0x14) = iVar12;
-    param_1[4] = lVar16;
-    param_1[5] = lVar22;
-    param_1[0xc] = lVar16;
-    param_1[0xd] = lVar22;
-    param_1[0xe] = lVar19;
-    param_1[0x10] = uVar6;
-    param_1[0xf] = uVar29;
-    param_1[0x11] = 0;
-    param_1[0x12] = 0;
-    param_1[0x15] = lVar17;
-    param_1[0x16] = puVar8;
-    *(int *)(param_1 + 0x18) = iVar12;
-    *(undefined4 *)((long)param_1 + 0xc4) = uVar27;
-    *(float *)(param_1 + 0x1a) = local_788[2];
-    *(float *)((long)param_1 + 0xd4) = local_788[5];
-    *(float *)(param_1 + 0x1b) = local_788[8];
-    *(ulong *)((long)param_1 + 0xdc) = CONCAT44(fVar36,fVar34);
-    *(undefined8 *)((long)param_1 + 0xe4) = uVar38;
-    *(float *)((long)param_1 + 0xec) = fVar37 / 300.0;
-    *(float *)(param_1 + 0x1e) = (float)iVar11;
-    *(float *)((long)param_1 + 0xf4) = (float)iVar7;
-    *(float *)(param_1 + 0x1f) = fVar26;
-    *(float *)((long)param_1 + 0xfc) = fVar39;
-    param_1[0x20] = uVar32;
-    *(float *)(param_1 + 0x21) = fVar35;
-    *(undefined4 *)((long)param_1 + 0x10c) = 0;
-    memcpy(&DAT_00228618,param_1,0x110);
-    iVar11 = *(int *)((long)param_1 + 0xc);
-  }
-  else {
-    uRam0000000000228630 = 0;
-    _DAT_00228628 = 0;
-    DAT_00228640 = 0;
-    DAT_00228638 = 0;
-    DAT_00228650 = 0;
-    DAT_00228648 = 0;
-    uRam0000000000228660 = 0;
-    _DAT_00228658 = 0;
-    uRam0000000000228670 = 0;
-    _DAT_00228668 = 0;
-    uRam0000000000228680 = 0;
-    _DAT_00228678 = 0;
-    uRam0000000000228690 = 0;
-    _DAT_00228688 = 0;
-    uRam00000000002286a0 = 0;
-    _DAT_00228698 = 0;
-    uRam00000000002286b0 = 0;
-    _DAT_002286a8 = 0;
-    uRam00000000002286c0 = 0;
-    _DAT_002286b8 = 0;
-    uRam00000000002286d0 = 0;
-    _DAT_002286c8 = 0;
-    uRam00000000002286e0 = 0;
-    _DAT_002286d8 = 0;
-    uRam00000000002286f0 = 0;
-    _DAT_002286e8 = 0;
-    uRam0000000000228700 = 0;
-    _DAT_002286f8 = 0;
-    uRam0000000000228710 = 0;
-    _DAT_00228708 = 0;
-    uRam0000000000228720 = 0;
-    _DAT_00228718 = 0;
-    uRam0000000000228620 = 0;
-    _DAT_00228618 = 0;
-    DAT_00228728 = 0;
-    iVar11 = *(int *)((long)param_1 + 0xc);
-  }
-  if (iVar11 != 0) goto LAB_00168358;
-  param_1[3] = 0;
-  param_1[2] = 0;
-  param_1[5] = 0;
-  param_1[4] = 0;
-  param_1[7] = 0;
-  param_1[6] = 0;
-  param_1[9] = 0;
-  param_1[8] = 0;
-  param_1[0xb] = 0;
-  param_1[10] = 0;
-  param_1[0xd] = 0;
-  param_1[0xc] = 0;
-  param_1[0xf] = 0;
-  param_1[0xe] = 0;
-  param_1[0x11] = 0;
-  param_1[0x10] = 0;
-  param_1[0x13] = 0;
-  param_1[0x12] = 0;
-  param_1[0x15] = 0;
-  param_1[0x14] = 0;
-  param_1[1] = 0;
-  *param_1 = 0;
-  iVar7 = DAT_0020f694;
-  param_1[0x17] = 0;
-  param_1[0x16] = 0;
-  param_1[0x19] = 0;
-  param_1[0x18] = 0;
-  param_1[0x1b] = 0;
-  param_1[0x1a] = 0;
-  param_1[0x1d] = 0;
-  param_1[0x1c] = 0;
-  param_1[0x1f] = 0;
-  param_1[0x1e] = 0;
-  param_1[0x21] = 0;
-  param_1[0x20] = 0;
-  iVar11 = iVar7 + -1000000;
-  if (999999 < iVar7 + 0xfefc99c0U) {
-    iVar11 = iVar7;
-  }
-  if (iVar11 == 0xf42401) {
-    local_850._4_4_ = (undefined4)((ulong)local_850 >> 0x20);
-    local_850 = CONCAT44(local_850._4_4_,0xffffffff);
-    local_800 = "coltModEnabled";
-    if (((((((int)DAT_00214938 != 1) || (DAT_00214930 == (code *)0x0)) ||
-          (iVar11 = (*DAT_00214930)(&local_800,local_7b0,1,&local_820,&local_850), iVar11 != 1)) ||
-         ((local_820 == 0 || ((int)local_850 != 0)))) ||
-        (((local_7b0[2] != 2 || ((local_7b0[1] != 1 || (iVar11 = FUN_001550fc(), iVar11 == 0)))) ||
-         (DAT_00215ac8 != local_820)))) ||
-       ((((DAT_00215ab8 != DAT_0020f650 || (DAT_00215b00 != DAT_0020f690)) ||
-         (DAT_00215ac0 != DAT_0020f6f8)) || (lVar15 = FUN_00154d1c(local_7b0), lVar15 == 0))))
-    goto LAB_00167f74;
-    local_808 = *(undefined4 *)(lVar15 + 0x14);
-    local_854 = *(undefined4 *)(lVar15 + 0x18);
-    FUN_001887c4(&local_800,lVar15,&local_808,&local_854,&local_858);
-    fVar36 = (float)(int)DAT_00215b04 / 300.0;
-    fVar37 = (float)DAT_00215b04._4_4_ / 300.0;
-    fVar34 = local_788[3] - fVar36;
-    fVar39 = local_788[4] - fVar37;
-    local_860 = fVar39;
-    fStack_85c = fVar34;
-    uVar27 = FUN_00187924(&DAT_0020f5c0,DAT_0020f694,DAT_002148b8,0);
-    uVar27 = FUN_00189070(fVar34,fVar39,local_808,local_854,uVar27,0x3d0f5c29,0x3f800000,auStack_864
-                         );
-    uStack_868 = NEON_fmadd(local_808,uVar27,local_788[3]);
-    local_86c = NEON_fmadd(local_854,uVar27,local_788[4]);
-    fVar34 = hypotf(fVar34,fVar39);
-    FUN_0018940c(local_858,fVar34,uVar27,&local_800,&uStack_868,&local_86c);
-    FUN_001894e4(fVar36,fVar37,local_788[3],local_788[4],local_808,local_854,uVar27,&uStack_868,
-                 &local_86c);
-    local_870 = 0;
-    iVar11 = FUN_0019a4f4(fVar36,fVar37,uStack_868,local_86c,&DAT_00214820,
-                          (ulong)local_7d0 & 0xffffffff,fStack_7d4,&fStack_85c,&local_860,&local_870
-                         );
-    if (iVar11 < 0) goto LAB_00167f84;
-    if (iVar11 == 0) {
-      uVar27 = 1;
-    }
-    else {
-      uStack_848 = _UNK_001c57e0;
-      local_850 = _DAT_001c57d8;
-      local_840 = SUB84(PTR_FUN_001c57e8,0);
-      uStack_83c = (undefined4)((ulong)PTR_FUN_001c57e8 >> 0x20);
-      FUN_001ba6c0(fVar36,fVar37,&DAT_00214860,&local_850,DAT_00215aac,&fStack_85c,&local_860);
-      uVar27 = 2;
-    }
-    iVar7 = DAT_00215b00;
-    lVar17 = DAT_00215ac0;
-    *(undefined4 *)(param_1 + 9) = uVar27;
-    lVar15 = DAT_00215ab8;
-    uVar29 = _UNK_00112a28;
-    uVar32 = _DAT_00112a20;
-    *(int *)(param_1 + 2) = iVar7;
-    *(undefined4 *)((long)param_1 + 0x14) = (undefined4)local_7a0;
-    uVar23 = DAT_00215aac;
-    uVar38 = DAT_00214828;
-    param_1[1] = uVar29;
-    *param_1 = uVar32;
-    uVar32 = DAT_0010e6a8;
-    param_1[3] = 0;
-    param_1[4] = lVar17;
-    uVar29 = DAT_0010e720;
-    param_1[7] = uVar38;
-    *(undefined8 *)((long)param_1 + 0x4c) = uVar32;
-    param_1[8] = uVar29;
-    param_1[5] = lVar15;
-    param_1[6] = local_820;
-    *(undefined4 *)((long)param_1 + 0x54) = 2;
-    *(uint *)(param_1 + 0xb) = (uint)(iVar11 == 0);
-    *(uint *)((long)param_1 + 0x5c) = uVar23;
-    *(float *)(param_1 + 0xf) = fStack_85c;
-    *(float *)((long)param_1 + 0x7c) = local_860;
-    param_1[0xc] = lVar17;
-    param_1[0xd] = lVar15;
-    param_1[0xe] = local_820;
-    *(undefined4 *)(param_1 + 0x10) = 0x43250000;
-    *(undefined4 *)((long)param_1 + 0x84) = local_870;
-    param_1[0x21] = 0;
-    param_1[0x20] = 0;
-    param_1[0x1f] = 0;
-    param_1[0x1e] = 0;
-    param_1[0x1d] = 0;
-    param_1[0x1c] = 0;
-    param_1[0x1b] = 0;
-    param_1[0x1a] = 0;
-    param_1[0x19] = 0;
-    param_1[0x18] = 0;
-    param_1[0x17] = 0;
-    param_1[0x16] = 0;
-    param_1[0x15] = 0;
-    param_1[0x14] = 0;
-    param_1[0x13] = 0;
-    param_1[0x12] = 0;
-    param_1[0x11] = 0;
-    iVar11 = *(int *)((long)param_1 + 0xc);
-  }
-  else {
-LAB_00167f74:
-    DAT_00214828 = 0;
-    DAT_00214820 = 0;
-    _DAT_00214838 = 0;
-    DAT_00214830 = 0;
-    DAT_00214848 = 0;
-    _DAT_00214840 = 0;
-    uRam0000000000214858 = 0;
-    _DAT_00214850 = 0;
-LAB_00167f84:
-    iVar11 = *(int *)((long)param_1 + 0xc);
-  }
-  if (iVar11 == 0) {
-    local_850._4_4_ = (undefined4)((ulong)local_850 >> 0x20);
-    local_850 = CONCAT44(local_850._4_4_,0xffffffff);
-    local_800 = "autofarmEnabled";
-    if ((((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-         ((iVar11 = (*DAT_00214930)(&local_800,local_7b0,1,&local_808,&local_850), iVar11 == 1 &&
-          ((CONCAT44(uStack_804,local_808) != 0 && ((int)local_850 == 0)))))) &&
-        ((local_7b0[2] == 2 &&
-         (((local_7b0[1] == 1 && (iVar11 = FUN_001550fc(), iVar11 != 0)) &&
-          (lVar15 = CONCAT44(uStack_804,local_808), lVar15 == DAT_00215ac8)))))) &&
-       (((DAT_00215ab8 == DAT_0020f650 && (DAT_00215ac0 == DAT_0020f6f8)) &&
-        ((DAT_00215b00 == DAT_0020f690 && (DAT_0020d15c != 0)))))) {
-      puStack_7f8 = SUB168(_PTR_s_autofarmFollowTarget_001c57f0,8);
-      local_800 = SUB168(_PTR_s_autofarmFollowTarget_001c57f0,0);
-      if ((((DAT_00214930 != (code *)0x0) &&
-           (iVar11 = (*DAT_00214930)(&local_800,local_7b0,2,&local_850,&local_820), iVar11 == 1)) &&
-          (local_850 == lVar15)) &&
-         ((((int)local_820 == 0 && (-1 < (int)local_7b0[0])) && ((int)local_7b0[0] < 2)))) {
-        lVar15 = CONCAT44(uStack_804,local_808);
-        if (DAT_002287a8 != lVar15) {
-          uRam0000000000228750 = 0;
-          _DAT_00228748 = 0;
-          DAT_00228760 = 0;
-          _DAT_00228758 = 0;
-          uRam0000000000228770 = 0;
-          _DAT_00228768 = 0;
-          uRam0000000000228780 = 0;
-          _DAT_00228778 = 0;
-          uRam0000000000228790 = 0;
-          _DAT_00228788 = 0;
-          uRam00000000002287a0 = 0;
-          _DAT_00228798 = 0;
-          DAT_002287a8 = lVar15;
-        }
-        local_820 = 0;
-        local_818 = 0;
-        local_810 = 0;
-        if (local_7b0[0] == 0) {
-          FUN_00168bac(lVar15,&local_820);
-        }
-        uVar24 = (ulong)DAT_0020f6c8;
-        if (DAT_0020f6c8 == 0) {
-          uVar23 = 0;
-        }
-        else {
-          uVar21 = 0;
-          uVar23 = 0;
-          lVar15 = DAT_0020f6c0;
-          do {
-            plVar2 = (long *)(lVar15 + uVar21 * 0x40);
-            if ((((int)plVar2[5] != 0) && (*(int *)((long)plVar2 + 0x2c) != 0)) &&
-               ((*(int *)(lVar15 + uVar21 * 0x40 + 0x30) != 0 && (*plVar2 != DAT_0020f680)))) {
-              lVar15 = lVar15 + uVar21 * 0x40;
-              uVar3 = *(uint *)(lVar15 + 0x10);
-              uVar14 = FUN_0017fba8(DAT_0020f698,DAT_0020f69c,*(undefined4 *)(lVar15 + 0x18),
-                                    *(undefined4 *)(lVar15 + 0x1c));
-              iVar11 = FUN_00186cf0(DAT_0020f6b4,DAT_0020f6b8,*(undefined4 *)(lVar15 + 0x34),
-                                    *(undefined4 *)(lVar15 + 0x38),DAT_0020f7f0,DAT_0020f7f4,
-                                    FUN_00150fa0,0,0x40);
-              uVar18 = *(uint *)(lVar15 + 0x24);
-              fVar34 = 1.0;
-              if ((uVar18 != 0) && (fVar34 = 1.0, *(uint *)(lVar15 + 0x20) <= uVar18)) {
-                fVar34 = (float)*(uint *)(lVar15 + 0x20) / (float)uVar18;
-              }
-              lVar22 = *plVar2;
-              uVar32 = *(undefined8 *)(lVar15 + 0x34);
-              fVar36 = (float)FUN_00165c60(plVar2);
-              lVar17 = -0x1f00;
-              do {
-                if ((((*plVar2 == *(long *)(lVar17 + 0x20f0c0)) &&
-                     (*(uint *)(lVar17 + 0x20f0c8) == *(uint *)(lVar15 + 0x10))) &&
-                    (*(int *)(lVar17 + 0x20f0e0) - 1U < DAT_00215aac)) &&
-                   (uVar18 = DAT_00215aac - *(int *)(lVar17 + 0x20f0e0), uVar18 < 0x13)) {
-                  fVar37 = (float)NEON_fmadd((float)uVar18,0xbda3d70a,0x3f800000);
-                  if (fVar37 <= 0.15) {
-                    fVar37 = 0.15;
-                  }
-                  uVar29 = *(undefined8 *)(lVar17 + 0x20f0d4);
-                  fVar39 = 1.0;
-                  if (4 < uVar18) {
-                    fVar39 = fVar37;
-                  }
-                  goto LAB_001682bc;
-                }
-                lVar17 = lVar17 + 0xf8;
-              } while (lVar17 != 0);
-              uVar29 = 0;
-              uVar18 = 0;
-              fVar39 = 1.0;
-LAB_001682bc:
-              uVar4 = (ulong)uVar23;
-              uVar23 = uVar23 + 1;
-              uVar24 = (ulong)DAT_0020f6c8;
-              local_7b0[uVar4 * 0xe] = uVar3;
-              local_7b0[uVar4 * 0xe + 1] = uVar14;
-              local_7b0[uVar4 * 0xe + 2] = uVar18;
-              local_7b0[uVar4 * 0xe + 3] = (uint)(iVar11 == 1);
-              (&local_7a0)[uVar4 * 7] = lVar22;
-              *(undefined8 *)(&stack0xfffffffffffff868 + uVar4 * 0x38) = uVar32;
-              (&uStack_790)[uVar4 * 7] = uVar29;
-              local_788[uVar4 * 0xe] = fVar34;
-              local_788[uVar4 * 0xe + 1] = fVar36;
-              local_788[uVar4 * 0xe + 2] = fVar39;
-              lVar15 = DAT_0020f6c0;
-            }
-            uVar21 = uVar21 + 1;
-          } while ((uVar21 < uVar24) && (uVar23 < 0x20));
-        }
-        uVar27 = 1;
-        uVar32 = NEON_scvtf(CONCAT44(DAT_00215b04._4_4_,(int)DAT_00215b04),4);
-        local_7f0 = DAT_00215ad0;
-        local_7e8 = (undefined *)CONCAT44(1,DAT_00215b00);
-        fStack_7dc = (float)uVar32 / 300.0;
-        fStack_7d8 = (float)((ulong)uVar32 >> 0x20) / 300.0;
-        auVar30._8_8_ = DAT_00215ac0;
-        auVar30._0_8_ = DAT_00215ab8;
-        local_7e0 = local_7b0[0];
-        auVar30 = NEON_ext(auVar30,auVar30,8,1);
-        puStack_7f8 = auVar30._8_8_;
-        local_800 = auVar30._0_8_;
-        fStack_7d4 = 1.0;
-        if ((DAT_0020f6a4 != 0) && (DAT_0020f6a0 <= DAT_0020f6a4)) {
-          fStack_7d4 = (float)DAT_0020f6a0 / (float)DAT_0020f6a4;
-        }
-        uVar28 = FUN_00165c60(&DAT_0020f680);
-        local_7c0 = local_7b0;
-        local_7d0 = (undefined *)CONCAT44((float)DAT_0020f7f0,uVar28);
-        local_7c8 = (undefined *)CONCAT44(local_7c8._4_4_,(float)DAT_0020f7f4);
-        local_7b4 = (undefined4)local_818;
-        local_7b8 = uVar23;
-        iVar11 = FUN_0019a950(&DAT_00228748,&local_800,&local_850);
-        uVar29 = _UNK_00112858;
-        uVar32 = _DAT_00112850;
-        param_1[0x21] = 0;
-        uVar38 = DAT_00228760;
-        lVar17 = DAT_00215ac0;
-        lVar15 = DAT_00215ab8;
-        *(int *)(param_1 + 2) = DAT_00215b00;
-        uVar23 = DAT_00215aac;
-        param_1[1] = uVar29;
-        *param_1 = uVar32;
-        *(undefined4 *)((long)param_1 + 0x1c) = local_850._4_4_;
-        if (iVar11 != 0) {
-          uVar27 = 2;
-        }
-        param_1[4] = lVar17;
-        param_1[5] = lVar15;
-        *(undefined8 *)((long)param_1 + 0x14) = uStack_848;
-        uVar32 = DAT_0010e720;
-        param_1[6] = CONCAT44(uStack_804,local_808);
-        param_1[7] = uVar38;
-        *(undefined4 *)(param_1 + 9) = uVar27;
-        param_1[8] = uVar32;
-        uVar32 = DAT_0010e6a8;
-        *(uint *)((long)param_1 + 0x5c) = uVar23;
-        param_1[0xc] = lVar17;
-        param_1[0xd] = lVar15;
-        param_1[0xe] = CONCAT44(uStack_804,local_808);
-        *(undefined8 *)((long)param_1 + 0x4c) = uVar32;
-        *(undefined4 *)((long)param_1 + 0x54) = local_840;
-        *(uint *)(param_1 + 0xb) = (uint)(iVar11 == 0);
-        param_1[0x10] = uStack_834;
-        param_1[0xf] = CONCAT44(uStack_838,uStack_83c);
-        param_1[0x12] = 0;
-        param_1[0x11] = 0;
-        param_1[0x14] = 0;
-        param_1[0x13] = 0;
-        param_1[0x16] = 0;
-        param_1[0x15] = 0;
-        param_1[0x18] = 0;
-        param_1[0x17] = 0;
-        param_1[0x1a] = 0;
-        param_1[0x19] = 0;
-        param_1[0x1c] = 0;
-        param_1[0x1b] = 0;
-        param_1[0x1e] = 0;
-        param_1[0x1d] = 0;
-        param_1[0x20] = 0;
-        param_1[0x1f] = 0;
-        goto LAB_00168358;
-      }
-    }
-    uRam0000000000228750 = 0;
-    _DAT_00228748 = 0;
-    DAT_00228760 = 0;
-    _DAT_00228758 = 0;
-    uRam0000000000228770 = 0;
-    _DAT_00228768 = 0;
-    uRam0000000000228780 = 0;
-    _DAT_00228778 = 0;
-    uRam0000000000228790 = 0;
-    _DAT_00228788 = 0;
-    uRam00000000002287a0 = 0;
-    _DAT_00228798 = 0;
-    DAT_002287a8 = 0;
-    if (*(int *)((long)param_1 + 0xc) == 0) {
-      FUN_0016881c(param_1,"speedExploitEnabled",0x2e,&DAT_002287b0,&DAT_002287b8,&DAT_002287c0);
-    }
-  }
-LAB_00168358:
-  if (*(long *)(lVar5 + 0x28) == local_b0) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    union { float f; uint32_t u; } cx, cy;
+    cx.f = x;
+    cy.f = y;
+    return ((uint64_t)cy.u << 32) | cx.u;
 }
 
+void bolt_movement_tick(void *frame)
+{
+    snapshot_keys_fn_t query;
+    uint32_t marker;
+    uint32_t marker_adj;
+
+    if (frame == NULL)
+        return;
+
+    memset(frame, 0, 0x110);
+    wall_grid_acquire(g_wall_grid);
+    feature_section_begin(frame, "kitNaniModEnabled", 0x79,
+                          g_kitnani_state, g_kitnani_state + 1, g_kitnani_state + 2);
+    if (*(int32_t *)((char *)frame + 0x0c) != 0)
+        return;
+
+    marker = (uint32_t)g_ctx_bolt_marker;
+    marker_adj = marker - 1000000u;
+    if (marker + 0xfefc99c0u > 999999u)
+        marker_adj = marker;
+
+    if (marker_adj == BOLT_MOVE_MARKER && g_snapshot_keys_fn != NULL) {
+        const char *keys[8] = {
+            "boltModEnabled",
+            "boltWallAvoidEnabled",
+            "boltPredictionEnabled",
+            "boltSafeExitEnabled",
+            "boltSmoothPercent",
+            "boltWallLookahead",
+            "boltExitHoldMs",
+            "boltTargetRange",
+        };
+        int32_t triples[24];
+        int64_t epoch = 0;
+        int32_t status = -1;
+
+        query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+        int query_ret = query(keys, triples, 8, &epoch, &status);
+
+        if (query_ret == 1 && epoch != 0 && status == 0
+            && triples[1] == 1
+            && evasion_runtime_gate() != 0
+            && triples[21] != 0
+            && GRID_WORLD == g_ctx_a
+            && (GRID_CTRL == g_ctx_c && (uint64_t)epoch == GRID_EPOCH)
+            && GRID_FRAME == g_ctx_frame_no
+            && (g_evasion_gate & 1) != 0) {
+
+            float own_x = (float)(int32_t)(uint32_t)GRID_POS_RAW / 300.0f;
+            float own_y = (float)(int32_t)(uint32_t)((uint64_t)GRID_POS_RAW >> 32) / 300.0f;
+            uint64_t velocity = 0;
+            float odometer = (float)g_ctx_odometer / 300.0f;
+
+            if (g_bolt_vel_frame == (uint32_t)GRID_FRAME && g_bolt_vel_tick != 0) {
+                uint32_t elapsed = GRID_TICK - g_bolt_vel_tick;
+                if (g_bolt_vel_tick <= GRID_TICK && elapsed != 0 && elapsed < 9) {
+                    float vx = (own_x - g_bolt_vel_last_x) * (30.0f / (float)elapsed);
+                    float vy = (own_y - g_bolt_vel_last_y) * (30.0f / (float)elapsed);
+                    float speed_sq = vy * vy + vx * vx;
+                    if (speed_sq <= 400.0f)
+                        velocity = pack_vec2(vx, vy);
+                }
+            }
+            g_bolt_vel_frame = (uint32_t)GRID_FRAME;
+            g_bolt_vel_tick = GRID_TICK;
+            g_bolt_vel_last_x = own_x;
+            g_bolt_vel_last_y = own_y;
+
+            uint32_t target_id = 0;
+            float target_x = 0.0f;
+            float target_y = 0.0f;
+            float target_radius = 0.0f;
+            uint64_t threat_velocity = 0;
+            float best_score = 1e9f;
+
+            if (g_ctx_enemy_count != 0) {
+                float range = (float)triples[21] / 100.0f;
+                float range_sq = range * range;
+
+                for (uint32_t i = 0; i < g_ctx_enemy_count; i++) {
+                    uint8_t *entry = (uint8_t *)(g_ctx_enemy_list + (uintptr_t)i * 0x40);
+
+                    if (*(int32_t *)(entry + 0x2c) == 0
+                        || *(int32_t *)(entry + 0x28) == 0
+                        || *(int32_t *)(entry + 0x30) == 0
+                        || *(uint64_t *)entry == g_ctx_self)
+                        continue;
+
+                    if (entity_team_block(g_team_world, g_team_ctrl,
+                                          *(uint32_t *)(entry + 0x18),
+                                          *(uint32_t *)(entry + 0x1c)) != 0)
+                        continue;
+
+                    float dy = *(float *)(entry + 0x38) - own_y;
+                    float dx = *(float *)(entry + 0x34) - own_x;
+                    float dist_sq = dx * dx + dy * dy;
+                    if (dist_sq < 0.04f || dist_sq > range_sq)
+                        continue;
+
+                    uint32_t id = *(uint32_t *)(entry + 0x10);
+                    uint32_t age = 0;
+                    uint64_t vel = 0;
+                    int skip_enemy = 0;
+
+                    for (int t = 0; t < 32; t++) {
+                        if (THREAT_ENTITY(t) != *(uint64_t *)entry
+                            || THREAT_ID(t) != id)
+                            continue;
+                        if ((uint32_t)(THREAT_LAST_SEEN(t) - 1) < GRID_TICK) {
+                            age = GRID_TICK - (uint32_t)THREAT_LAST_SEEN(t);
+                            if (age > 0x12) {
+                                skip_enemy = 1;
+                            } else {
+                                vel = THREAT_VELOCITY(t);
+                            }
+                            break;
+                        }
+                    }
+                    if (skip_enemy)
+                        continue;
+
+                    float aged = (float)age * 0.55f + dist_sq;
+                    float score = aged;
+                    if (id == *(uint32_t *)(g_bolt_frame_published + 0x14))
+                        score = aged * 0.72f;
+
+                    if (score < best_score) {
+                        target_radius = (float)*(uint32_t *)(entry + 0x3c) / 300.0f;
+                        threat_velocity = vel;
+                        best_score = score;
+                        target_id = id;
+                        target_y = *(float *)(entry + 0x38);
+                        target_x = *(float *)(entry + 0x34);
+                    }
+                }
+            }
+
+            uint64_t cont_ctrl;
+            uint64_t cont_epoch;
+            int reacquire;
+
+            if (*(uint32_t *)(g_bolt_frame_published + 0x38) == 0
+                || *(uint64_t *)(g_bolt_frame_published + 0x20) != GRID_CTRL
+                || *(uint64_t *)(g_bolt_frame_published + 0x10) != GRID_FRAME
+                || *(uint32_t *)(g_bolt_frame_published + 0x14) != target_id) {
+                cont_ctrl = GRID_CTRL;
+                cont_epoch = (uint64_t)epoch;
+                reacquire = 1;
+            } else {
+                cont_ctrl = *(uint64_t *)(g_bolt_frame_published + 0x20);
+                cont_epoch = g_bolt_track_epoch;
+                reacquire = g_bolt_track_epoch != (uint64_t)epoch;
+                if (reacquire)
+                    cont_epoch = (uint64_t)epoch;
+            }
+            if (reacquire) {
+                if (g_bolt_hold_counter == -1)
+                    g_bolt_hold_counter = 1;
+                else
+                    g_bolt_hold_counter = g_bolt_hold_counter + 1;
+            }
+            g_bolt_track_epoch = cont_epoch;
+
+            *(uint64_t *)((char *)frame + 0x00) = ROD_BOLT_TAG_A;
+            *(uint64_t *)((char *)frame + 0x08) = ROD_BOLT_TAG_B;
+            *(uint32_t *)((char *)frame + 0x10) = (uint32_t)GRID_FRAME;
+            *(uint32_t *)((char *)frame + 0x14) = target_id;
+            *(uint32_t *)((char *)frame + 0x18) = (uint32_t)(target_id == 0) << 1;
+            *(uint32_t *)((char *)frame + 0x1c) = 0;
+            *(uint64_t *)((char *)frame + 0x20) = GRID_CTRL;
+            *(uint64_t *)((char *)frame + 0x28) = GRID_WORLD;
+            *(uint64_t *)((char *)frame + 0x30) = cont_epoch;
+            *(uint64_t *)((char *)frame + 0x38) = (uint64_t)g_bolt_hold_counter;
+            *(uint64_t *)((char *)frame + 0x40) = ROD_BOLT_PARAM_A;
+            *(uint64_t *)((char *)frame + 0x48) = ROD_BOLT_PARAM_B;
+            *(uint64_t *)((char *)frame + 0x50) = ROD_BOLT_PLAN_ID;
+            *(uint32_t *)((char *)frame + 0x58) = 0;
+            *(uint32_t *)((char *)frame + 0x5c) = GRID_TICK;
+            *(uint64_t *)((char *)frame + 0x60) = cont_ctrl;
+            *(uint64_t *)((char *)frame + 0x68) = GRID_WORLD;
+            *(uint64_t *)((char *)frame + 0x70) = cont_epoch;
+            *(uint64_t *)((char *)frame + 0x78) = ROD_BOLT_AUX_A;
+            *(uint64_t *)((char *)frame + 0x80) = ROD_BOLT_AUX_B;
+            *(uint64_t *)((char *)frame + 0x88) = 0;
+            *(uint64_t *)((char *)frame + 0x90) = 0;
+            *(uint64_t *)((char *)frame + 0x98) = 0;
+            *(uint64_t *)((char *)frame + 0xa0) = GRID_CTRL;
+            *(uint64_t *)((char *)frame + 0xa8) = (uint64_t)epoch;
+            *(uint64_t *)((char *)frame + 0xb0) = GRID_AUX;
+            *(uint32_t *)((char *)frame + 0xb8) = GRID_TICK;
+            *(uint32_t *)((char *)frame + 0xbc) = (uint32_t)GRID_FRAME;
+            *(uint32_t *)((char *)frame + 0xc0) = target_id;
+            *(uint32_t *)((char *)frame + 0xc4) = (uint32_t)triples[4];
+            *(uint32_t *)((char *)frame + 0xc8) = (uint32_t)triples[5];
+            *(uint32_t *)((char *)frame + 0xcc) = (uint32_t)triples[10];
+            *(uint32_t *)((char *)frame + 0xd0) = (uint32_t)triples[12];
+            *(uint32_t *)((char *)frame + 0xd4) = (uint32_t)triples[15];
+            *(uint32_t *)((char *)frame + 0xd8) = (uint32_t)triples[18];
+            *(uint64_t *)((char *)frame + 0xdc) = pack_vec2(own_x, own_y);
+            *(uint64_t *)((char *)frame + 0xe4) = velocity;
+            *(float *)((char *)frame + 0xec) = odometer;
+            *(float *)((char *)frame + 0xf0) = (float)g_ctx_aim_a;
+            *(float *)((char *)frame + 0xf4) = (float)g_ctx_aim_b;
+            *(float *)((char *)frame + 0xf8) = target_x;
+            *(float *)((char *)frame + 0xfc) = target_y;
+            *(uint64_t *)((char *)frame + 0x100) = threat_velocity;
+            *(float *)((char *)frame + 0x108) = target_radius;
+            *(uint32_t *)((char *)frame + 0x10c) = 0;
+
+            memcpy(g_bolt_frame_published, frame, 0x110);
+        } else {
+            memset(g_bolt_frame_published, 0, 0x110);
+            g_bolt_vel_tick = 0;
+        }
+    } else {
+        memset(g_bolt_frame_published, 0, 0x110);
+        g_bolt_vel_tick = 0;
+    }
+
+    if (*(int32_t *)((char *)frame + 0x0c) != 0)
+        return;
+
+    memset(frame, 0, 0x110);
+
+    marker = (uint32_t)g_ctx_bolt_marker;
+    marker_adj = marker - 1000000u;
+    if (marker + 0xfefc99c0u > 999999u)
+        marker_adj = marker;
+
+    int colt_active = 0;
+
+    if (marker_adj == COLT_MOVE_MARKER) {
+        const char *ckey[1] = { "coltModEnabled" };
+        int32_t ct[3];
+        int64_t c_epoch = 0;
+        int32_t c_status = -1;
+
+        query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+
+        if (g_snapshot_keys_ready == 1 && query != NULL
+            && query(ckey, ct, 1, &c_epoch, &c_status) == 1
+            && c_epoch != 0 && c_status == 0
+            && ct[2] == 2 && ct[1] == 1
+            && evasion_runtime_gate() != 0
+            && (uint64_t)c_epoch == GRID_EPOCH
+            && GRID_WORLD == g_ctx_a
+            && GRID_FRAME == g_ctx_frame_no
+            && GRID_CTRL == g_ctx_c) {
+
+            uintptr_t plan = plan_for_triple(ct);
+
+            if (plan != 0) {
+                colt_active = 1;
+
+                uint8_t sol[0xa8];
+                int32_t aim_dx = *(int32_t *)(plan + 0x14);
+                int32_t aim_dy = *(int32_t *)(plan + 0x18);
+                void *aux = NULL;
+
+                aim_solution_resolve(sol, plan, &aim_dx, &aim_dy, &aux);
+
+                float own_x = (float)(int32_t)(uint32_t)GRID_POS_RAW / 300.0f;
+                float own_y = (float)(int32_t)(uint32_t)((uint64_t)GRID_POS_RAW >> 32) / 300.0f;
+                float aim_tx = *(float *)(sol + 0x6c);
+                float aim_ty = *(float *)(sol + 0x70);
+                float dx = aim_tx - own_x;
+                float dy = aim_ty - own_y;
+
+                float travel = aim_travel_time(g_aim_ctx, g_ctx_bolt_marker,
+                                               g_colt_aim_state, 0);
+                float lead;
+                float aim_vx;
+                float aim_vy;
+                float pred_x;
+                float pred_y;
+                float dist;
+                float move_dx = dx;
+                float move_dy = dy;
+                uint32_t avoid_flags = 0;
+                int wall_status;
+
+                aim_vx = *(float *)&aim_dx;
+                aim_vy = *(float *)&aim_dy;
+                lead = aim_lead_solve(dx, dy, aim_vx, aim_vy, travel,
+                                      0.035f, 1.0f, NULL);
+                pred_x = aim_vx * lead + aim_tx;
+                pred_y = aim_vy * lead + aim_ty;
+                dist = hypotf(dx, dy);
+
+                aim_path_walk(aux, dist, lead, sol, &pred_x, &pred_y);
+                aim_path_refine(own_x, own_y, aim_tx, aim_ty, aim_vx, aim_vy, lead,
+                                &pred_x, &pred_y);
+
+                wall_status = wall_avoid_step(own_x, own_y, pred_x, pred_y,
+                                              g_colt_state,
+                                              *(uint32_t *)(sol + 0x30),
+                                              *(float *)(sol + 0x2c),
+                                              &move_dx, &move_dy, &avoid_flags);
+
+                if (wall_status >= 0) {
+                    uint32_t mode;
+
+                    if (wall_status == 0) {
+                        mode = 1;
+                    } else {
+                        wall_avoid_adjust(own_x, own_y, &g_colt_avoid_state,
+                                          (const void *)(uintptr_t)0x1c57d8,
+                                          GRID_TICK, &move_dx, &move_dy);
+                        mode = 2;
+                    }
+
+                    *(uint64_t *)((char *)frame + 0x00) = ROD_COLT_TAG_A;
+                    *(uint64_t *)((char *)frame + 0x08) = ROD_COLT_TAG_B;
+                    *(uint32_t *)((char *)frame + 0x10) = (uint32_t)GRID_FRAME;
+                    *(uint32_t *)((char *)frame + 0x14) = *(uint32_t *)(sol + 0x60);
+                    *(uint64_t *)((char *)frame + 0x18) = 0;
+                    *(uint64_t *)((char *)frame + 0x20) = GRID_CTRL;
+                    *(uint64_t *)((char *)frame + 0x28) = GRID_WORLD;
+                    *(uint64_t *)((char *)frame + 0x30) = (uint64_t)c_epoch;
+                    *(uint64_t *)((char *)frame + 0x38) = g_colt_state[1];
+                    *(uint64_t *)((char *)frame + 0x40) = ROD_COLT_ROUTE;
+                    *(uint32_t *)((char *)frame + 0x48) = mode;
+                    *(uint64_t *)((char *)frame + 0x4c) = ROD_COLT_PLAN;
+                    *(uint32_t *)((char *)frame + 0x54) = 2;
+                    *(uint32_t *)((char *)frame + 0x58) = (uint32_t)(wall_status == 0);
+                    *(uint32_t *)((char *)frame + 0x5c) = GRID_TICK;
+                    *(uint64_t *)((char *)frame + 0x60) = GRID_CTRL;
+                    *(uint64_t *)((char *)frame + 0x68) = GRID_WORLD;
+                    *(uint64_t *)((char *)frame + 0x70) = (uint64_t)c_epoch;
+                    *(float *)((char *)frame + 0x78) = move_dx;
+                    *(float *)((char *)frame + 0x7c) = move_dy;
+                    *(float *)((char *)frame + 0x80) = 165.0f;
+                    *(uint32_t *)((char *)frame + 0x84) = avoid_flags;
+                    memset((char *)frame + 0x88, 0, 0x88);
+                }
+            }
+        }
+    }
+
+    if (!colt_active)
+        memset(g_colt_state, 0, sizeof g_colt_state);
+
+    if (*(int32_t *)((char *)frame + 0x0c) == 0) {
+        const char *akey[1] = { "autofarmEnabled" };
+        int32_t at[3];
+        int64_t a_epoch = 0;
+        int32_t a_status = -1;
+        int farm_ok = 0;
+
+        query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+
+        if (g_snapshot_keys_ready == 1 && query != NULL
+            && query(akey, at, 1, &a_epoch, &a_status) == 1
+            && a_epoch != 0 && a_status == 0
+            && at[2] == 2 && at[1] == 1
+            && evasion_runtime_gate() != 0
+            && (uint64_t)a_epoch == GRID_EPOCH
+            && GRID_WORLD == g_ctx_a
+            && GRID_CTRL == g_ctx_c
+            && GRID_FRAME == g_ctx_frame_no
+            && g_evasion_gate != 0) {
+
+            const char *fkeys[2] = { "autofarmFollowTarget", "autofarmAttackEnemies" };
+            int32_t ft[6];
+            int64_t f_epoch = 0;
+            int32_t f_status = -1;
+
+            if (query(fkeys, ft, 2, &f_epoch, &f_status) == 1
+                && (uint64_t)f_epoch == (uint64_t)a_epoch
+                && f_status == 0
+                && ft[0] >= 0 && ft[0] < 2) {
+                farm_ok = 1;
+
+                if (g_autofarm_state[12] != (uint64_t)a_epoch) {
+                    memset(g_autofarm_state, 0, sizeof g_autofarm_state);
+                    g_autofarm_state[12] = (uint64_t)a_epoch;
+                }
+
+                uint64_t seed[3] = { 0, 0, 0 };
+                if (ft[0] == 0)
+                    autofarm_plan_seed((uint64_t)a_epoch, seed);
+
+                farm_record_t records[32];
+                uint32_t record_count = 0;
+
+                for (uint32_t i = 0;
+                     i < g_ctx_enemy_count && record_count < 32;
+                     i++) {
+                    uint8_t *entry = (uint8_t *)(g_ctx_enemy_list + (uintptr_t)i * 0x40);
+
+                    if (*(int32_t *)(entry + 0x28) == 0
+                        || *(int32_t *)(entry + 0x2c) == 0
+                        || *(int32_t *)(entry + 0x30) == 0
+                        || *(uint64_t *)entry == g_ctx_self)
+                        continue;
+
+                    farm_record_t *rec = &records[record_count];
+
+                    rec->id = *(uint32_t *)(entry + 0x10);
+                    rec->team_block = (uint32_t)entity_team_block(
+                        g_team_world, g_team_ctrl,
+                        *(uint32_t *)(entry + 0x18),
+                        *(uint32_t *)(entry + 0x1c));
+                    rec->los = (uint32_t)(entity_los_check(
+                        g_los_world, g_los_ctrl,
+                        *(float *)(entry + 0x34), *(float *)(entry + 0x38),
+                        g_ctx_aim_a, g_ctx_aim_b, los_read_stub, 0, 0x40) == 1);
+
+                    uint32_t hp_max = *(uint32_t *)(entry + 0x24);
+                    float hp_ratio = 1.0f;
+                    if (hp_max != 0 && *(uint32_t *)(entry + 0x20) <= hp_max)
+                        hp_ratio = (float)*(uint32_t *)(entry + 0x20) / (float)hp_max;
+
+                    rec->entity = *(uint64_t *)entry;
+                    rec->pos_pair = *(uint64_t *)(entry + 0x34);
+                    rec->threat = entity_threat_score(*(uint64_t *)entry);
+                    rec->age = 0;
+                    rec->velocity = 0;
+                    rec->confidence = 1.0f;
+
+                    for (int t = 0; t < 32; t++) {
+                        if (THREAT_ENTITY(t) != rec->entity
+                            || THREAT_ID(t) != rec->id)
+                            continue;
+                        if ((uint32_t)(THREAT_LAST_SEEN(t) - 1) < GRID_TICK
+                            && GRID_TICK - (uint32_t)THREAT_LAST_SEEN(t) < 0x13) {
+                            uint32_t age = GRID_TICK - (uint32_t)THREAT_LAST_SEEN(t);
+                            float decay = 1.0f - 0.08f * (float)age;
+                            if (decay <= 0.15f)
+                                decay = 0.15f;
+                            rec->age = age;
+                            rec->velocity = THREAT_VELOCITY(t);
+                            rec->confidence = (4 < age) ? decay : 1.0f;
+                            break;
+                        }
+                    }
+
+                    rec->hp_ratio = hp_ratio;
+                    record_count++;
+                }
+
+                float own_x = (float)(int32_t)(uint32_t)GRID_POS_RAW / 300.0f;
+                float own_y = (float)(int32_t)(uint32_t)((uint64_t)GRID_POS_RAW >> 32) / 300.0f;
+                float hp_ratio_own = 1.0f;
+                if (g_ctx_hp_max != 0 && g_ctx_hp_cur <= g_ctx_hp_max)
+                    hp_ratio_own = (float)g_ctx_hp_cur / (float)g_ctx_hp_max;
+
+                uint8_t fq[0x50];
+                memset(fq, 0, sizeof fq);
+                *(uint64_t *)(fq + 0x00) = GRID_CTRL;
+                *(uint64_t *)(fq + 0x08) = GRID_WORLD;
+                *(uint64_t *)(fq + 0x10) = GRID_AUX;
+                *(uint64_t *)(fq + 0x18) = (1ull << 32) | (uint32_t)GRID_FRAME;
+                *(uint32_t *)(fq + 0x20) = (uint32_t)ft[0];
+                *(float *)(fq + 0x24) = own_x;
+                *(float *)(fq + 0x28) = own_y;
+                *(float *)(fq + 0x2c) = hp_ratio_own;
+                *(float *)(fq + 0x30) = entity_threat_score((uintptr_t)g_ctx_self);
+                *(float *)(fq + 0x34) = (float)g_ctx_aim_a;
+                *(float *)(fq + 0x38) = (float)g_ctx_aim_b;
+                *(farm_record_t **)(fq + 0x40) = records;
+                *(uint32_t *)(fq + 0x44) = (uint32_t)seed[1];
+                *(uint32_t *)(fq + 0x48) = record_count;
+
+                int pick = autofarm_target_pick(g_autofarm_state, fq, (uint64_t *)&f_epoch);
+                uint32_t mode = (pick != 0) ? 2u : 1u;
+
+                *(uint64_t *)((char *)frame + 0x00) = ROD_AF_TAG_A;
+                *(uint64_t *)((char *)frame + 0x08) = ROD_AF_TAG_B;
+                *(uint32_t *)((char *)frame + 0x10) = (uint32_t)GRID_FRAME;
+                *(uint32_t *)((char *)frame + 0x14) = (uint32_t)ROD_ADJUST_HI;
+                *(uint32_t *)((char *)frame + 0x1c) = (uint32_t)((uint64_t)f_epoch >> 32);
+                *(uint64_t *)((char *)frame + 0x20) = GRID_CTRL;
+                *(uint64_t *)((char *)frame + 0x28) = GRID_WORLD;
+                *(uint64_t *)((char *)frame + 0x30) = (uint64_t)a_epoch;
+                *(uint64_t *)((char *)frame + 0x38) = g_autofarm_state[3];
+                *(uint64_t *)((char *)frame + 0x40) = ROD_COLT_ROUTE;
+                *(uint32_t *)((char *)frame + 0x48) = mode;
+                *(uint64_t *)((char *)frame + 0x4c) = ROD_COLT_PLAN;
+                *(uint32_t *)((char *)frame + 0x54) = (uint32_t)ROD_ADJUST_FN;
+                *(uint32_t *)((char *)frame + 0x58) = (uint32_t)(pick == 0);
+                *(uint32_t *)((char *)frame + 0x5c) = GRID_TICK;
+                *(uint64_t *)((char *)frame + 0x60) = GRID_CTRL;
+                *(uint64_t *)((char *)frame + 0x68) = GRID_WORLD;
+                *(uint64_t *)((char *)frame + 0x70) = (uint64_t)a_epoch;
+                *(uint64_t *)((char *)frame + 0x78) =
+                    ((ROD_AF_KEYS_LO & 0xffffffffu) << 32) | (ROD_ADJUST_FN >> 32);
+                *(uint64_t *)((char *)frame + 0x80) =
+                    (ROD_AF_KEYS_LO >> 32) | ((ROD_AF_KEYS_HI & 0xffffffffu) << 32);
+                memset((char *)frame + 0x90, 0, 0x78);
+                return;
+            }
+        }
+
+        if (!farm_ok)
+            memset(g_autofarm_state, 0, sizeof g_autofarm_state);
+
+        if (*(int32_t *)((char *)frame + 0x0c) == 0)
+            feature_section_begin(frame, "speedExploitEnabled", 0x2e,
+                                  g_speedexp_state, g_speedexp_state + 1,
+                                  g_speedexp_state + 2);
+    }
+}
