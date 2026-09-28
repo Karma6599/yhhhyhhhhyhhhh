@@ -1,1146 +1,1053 @@
-/*
- * Autofarm / automation (pin, spray, play-again) — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so, libNexusUI69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: Auto play-again + autofarm click/attack automation with delay tuning.
- */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+#include <time.h>
+#include <stdlib.h>
+#include <pthread.h>
 
-/* ===== nexus_evasion_handler_status_v1 @ 00111f3c [libNexusEvasion69252.so] ===== */
+extern void log_event(const char *category, const char *event, const char *json);
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+extern void *g_snapshot_keys_fn;
+extern int g_snapshot_keys_ready;
 
-void nexus_evasion_handler_status_v1(char *param_1,int *param_2)
+typedef int (*snapshot_keys_fn_t)(const char *const *keys, int32_t *triples,
+                                  int count, int64_t *epoch, int32_t *status);
 
+extern uint64_t g_ctx_bolt_marker;
+extern uint64_t g_ctx_a;
+extern uint64_t g_ctx_c;
+extern uint64_t g_ctx_frame_no;
+extern uint64_t g_ctx_self;
+extern uint64_t g_team_world;
+extern uint64_t g_team_ctrl;
+extern uint64_t g_los_world;
+extern uint64_t g_los_ctrl;
+extern uint32_t g_ctx_hp_cur;
+extern uint32_t g_ctx_hp_max;
+extern uintptr_t g_engine_base;
+extern uint64_t g_colt_ctx;
+extern uint64_t g_farm_world;
+
+extern int evasion_key_adapter_family(const char *name);
+extern int brawler_mod_key_family(const char *name);
+extern int bolt_mod_armed(void);
+extern int evasion_runtime_gate(void);
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern int remote_guarded_apply(void *record, uintptr_t target,
+                                const void *in, void *out);
+extern void colt_write_apply(void *payload);
+extern int dyna_state_read(uintptr_t ctx, void *read_fn, int flags, void *out);
+extern int dyna_jump_armed(void);
+extern int autofarm_plan_seed(uint64_t epoch, void *out);
+extern int game_object_resolve(uintptr_t engine, uintptr_t obj, void *read_fn,
+                               int flags, void *out);
+extern int entity_team_block(uintptr_t world, uintptr_t ctrl,
+                             uint32_t team_a, uint32_t team_b);
+extern float entity_threat_score(uintptr_t entity);
+extern int self_resolve(void *self_ctx, void *out);
+extern int page_perm_check(uintptr_t addr, int64_t *out);
+extern int movement_ctx_valid(uint64_t ctx, uint64_t obj);
+extern int dyna_engine_gate(void);
+extern int autofarm_decide(float hp_own, float hp_target, float threat_own,
+                           float threat_target, float dist, void *state);
+extern uintptr_t farm_wall_probe(float x, float y, int mode);
+
+extern int nexus_plus_key(const char *key);
+extern int32_t port_id_lookup(const char *key);
+extern int32_t port_bit_index(const char *key);
+extern uint64_t port_bitmap(void);
+extern uint32_t port_gate_version(void);
+extern int prediction_gate(uint64_t bitmap, int32_t value);
+extern int port_gate_check(int32_t port_id, uint32_t gate, int flags);
+extern int evasion_key_force_flag(const char *key);
+extern const void *prop_entry_lookup(const char *key);
+extern int triple_gate_resolve(uint64_t bitmap, uint32_t mask, void *out,
+                               int32_t *out_status);
+extern int port_bitmap_gate(uint64_t bitmap);
+extern int holdfire_gate_a(void);
+extern int holdfire_gate_b(int flags);
+extern void spin_status_fill(int32_t *out);
+extern void port_status_fill(const char *key, int32_t *out);
+extern void handler_state_refresh(void);
+extern void family_once_init(void);
+
+extern char g_handler_lock;
+extern uint64_t g_state_epoch;
+extern int32_t g_state_status;
+extern uint64_t g_state_aux;
+extern uint64_t g_state_epoch2;
+extern pthread_once_t g_family_once;
+extern void *g_family_once_fn;
+
+extern uint64_t g_pin_family_epoch;
+extern uint64_t g_pin_family_aux;
+extern void *g_pin_family_check;
+extern uint64_t g_nexusplus_family_epoch;
+extern uint64_t g_nexusplus_family_aux;
+extern void *g_nexusplus_family_check;
+extern uint64_t g_brawler_family_epoch;
+extern uint64_t g_brawler_family_aux;
+extern void *g_brawler_family_check;
+extern void *g_adapter_ctx;
+extern void *g_adapter_mask_fn;
+extern uint64_t g_pin_aux_epoch;
+extern uint64_t g_holdfire_epoch;
+extern uint64_t g_holdfire_aux;
+extern uint64_t g_holdfire_aux2;
+extern uint32_t g_triple_gate_a;
+extern uint32_t g_triple_gate_b;
+extern uint32_t g_triple_gate_c;
+
+extern uint64_t g_dyna_guard_a;
+extern uint64_t g_dyna_guard_b;
+extern uint64_t g_dyna_guard_c;
+extern uint64_t g_dyna_world_last;
+extern uint64_t g_dyna_guard_d;
+extern uint64_t g_dyna_own_obj;
+extern uint64_t g_autofarm_state[13];
+extern uint64_t g_farm_last_frame;
+extern uint64_t g_farm_last_fire_ms;
+
+extern int32_t g_ui_query_ready;
+extern void *g_ui_query_fn;
+extern pthread_once_t g_pin_once;
+extern void *g_pin_once_fn;
+extern long (*g_ui_key_lookup)(const char *key);
+
+#define ROD_STATUS_TAG  (*(const uint64_t *)(uintptr_t)0x1047a0)
+#define ROD_PIN_KEYS    ((const char *const *)(uintptr_t)0x1c4320)
+
+#define STATUS_OUT_VERSION 1
+#define STATUS_OUT_SIZE    0x48
+
+#define ENGINE_PLAY_ALLOC_OFF   0x11a2840u
+#define ENGINE_PLAY_INIT_OFF    0x0f41ba0u
+#define ENGINE_PLAY_SEND_OFF    0x0ac319cu
+#define ENGINE_PLAY_STATIC_OFF  0x13053c0u
+#define ENGINE_PLAY_VTABLE_OFF  0x11ebcd0u
+#define ENGINE_AIM_CHECK_OFF    0xecfb74u
+#define ENGINE_ATTACK_OFF       0xb2e994u
+
+typedef struct {
+    const char *name;
+    int32_t state_index;
+    int32_t kind;
+    int32_t vmin;
+    int32_t vmax;
+    int32_t f24;
+    int32_t f28;
+    int32_t f32;
+    int32_t f36;
+} evasion_prop_entry_t;
+
+extern evasion_prop_entry_t g_prop_table[142];
+extern int32_t g_prop_state[144];
+
+static void handler_lock_acquire(void)
 {
-  char *pcVar1;
-  uint uVar2;
-  uint uVar3;
-  char cVar4;
-  long lVar5;
-  undefined8 uVar6;
-  undefined8 uVar7;
-  char cVar8;
-  bool bVar9;
-  int iVar10;
-  int iVar11;
-  uint uVar12;
-  int iVar13;
-  int iVar14;
-  uint uVar15;
-  ulong uVar16;
-  ulong uVar17;
-  long lVar18;
-  code *pcVar19;
-  undefined8 uVar20;
-  uint uVar21;
-  undefined8 uVar22;
-  undefined **ppuVar23;
-  uint uVar24;
-  undefined8 local_a0;
-  undefined8 uStack_98;
-  undefined8 uStack_90;
-  undefined8 uStack_88;
-  undefined8 local_80;
-  int local_6c;
-  long local_68;
-  
-  lVar5 = tpidr_el0;
-  local_68 = *(long *)(lVar5 + 0x28);
-  iVar10 = FUN_00112940();
-  if (iVar10 == 0) {
-    if (param_1 != (char *)0x0) {
-      iVar10 = strcmp(param_1,"pinEnabled");
-      if ((iVar10 == 0) || (iVar10 = strcmp(param_1,"sprayEnabled"), iVar10 == 0)) {
-        if ((param_2 == (int *)0x0) || ((*param_2 != 1 || (param_2[1] != 0x48)))) goto LAB_0011268c;
-        do {
-          cVar8 = DAT_00129ce8;
-          cVar4 = '\x01';
-          bVar9 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-          if (bVar9) {
-            _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-            cVar4 = ExclusiveMonitorsStatus();
-          }
-        } while (cVar4 != '\0' || cVar8 != '\0');
-        FUN_0010f580();
-        if (*param_1 != '\0') {
-          lVar18 = 1;
-          do {
-            pcVar1 = param_1 + lVar18;
-            lVar18 = lVar18 + 1;
-          } while (*pcVar1 != '\0');
-        }
-        iVar10 = strcmp(param_1,"isSpinEnabled");
-        lVar18 = 0;
-        if (iVar10 != 0) {
-          ppuVar23 = &PTR_s_cameraEnabled_001216c0;
-          do {
-            lVar18 = lVar18 + 1;
-            iVar10 = strcmp(param_1,*ppuVar23);
-            ppuVar23 = ppuVar23 + 5;
-          } while (iVar10 != 0);
-        }
-        uVar24 = 0;
-        iVar10 = (&DAT_00129130)[(int)(&DAT_001216a0)[lVar18 * 10]];
-        if ((DAT_00129450 != 0) && (DAT_00129468 != (code *)0x0)) {
-          iVar11 = (*DAT_00129468)();
-          if ((iVar11 == 1) &&
-             (((DAT_001293d0 == DAT_00129450 && (DAT_001293a8 == DAT_00129458)) &&
-              (iVar11 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480),
-              DAT_00129ce0 != (code *)0x0)))) {
-            iVar11 = (*DAT_00129ce0)(iVar11);
-            uVar24 = (uint)(iVar11 == 1);
-          }
-          else {
-            uVar24 = 0;
-          }
-        }
-        if (DAT_00129418 == (code *)0x0) {
-          uVar15 = 0;
-          lVar18 = DAT_00129450;
-        }
-        else {
-          uVar15 = (*DAT_00129418)(DAT_00129410);
-          lVar18 = DAT_00129450;
-        }
-LAB_0011271c:
-        uVar22 = DAT_001298e8;
-        uVar20 = DAT_00129348;
-        iVar11 = 5;
-        if (iVar10 == 0) {
-          iVar11 = 1;
-        }
-        uVar12 = 0;
-        if (uVar24 == 0) {
-          iVar11 = 3;
-        }
-        else {
-          uVar12 = (uint)(iVar10 != 0);
-        }
-        uVar2 = 0;
-        if (DAT_001293c4 == 0) {
-          uVar2 = uVar12;
-        }
-        uVar21 = 0;
-        if (((uVar15 ^ 0xffffffff) & 0x7f) == 0) {
-          uVar21 = uVar2;
-        }
-        iVar14 = 2;
-        if (lVar18 != 0) {
-          iVar14 = iVar11;
-        }
-        *(undefined8 *)param_2 = DAT_001047a0;
-        param_2[2] = iVar10;
-        param_2[3] = (uint)(lVar18 != 0);
-        param_2[4] = uVar24;
-        goto LAB_00112854;
-      }
-      iVar10 = FUN_00112b5c(param_1);
-      if (iVar10 != 0) goto LAB_0011228c;
-      iVar10 = strcmp(param_1,"holdToShootEnabled");
-      if (iVar10 == 0) {
-LAB_00112588:
-        bVar9 = true;
-      }
-      else {
-        iVar10 = strcmp(param_1,"holdToShootAim");
-        if ((iVar10 != 0) && (iVar10 = strcmp(param_1,"holdToShootRangeCheck"), iVar10 != 0)) {
-          uVar24 = strcmp(param_1,"isSpinEnabled");
-          uVar17 = (ulong)uVar24;
-          if (uVar24 == 0) {
-            if (*(long *)(lVar5 + 0x28) == local_68) {
-              FUN_00112be8(param_2);
-              return;
-            }
-            goto LAB_0011293c;
-          }
-          goto LAB_001123c0;
-        }
-        iVar10 = strcmp(param_1,"holdToShootAim");
-        if (iVar10 == 0) goto LAB_00112588;
-        iVar10 = strcmp(param_1,"holdToShootRangeCheck");
-        bVar9 = iVar10 == 0;
-      }
-      uVar17 = 0;
-      if ((param_2 == (int *)0x0) || (!bVar9)) goto LAB_00112690;
-      if ((*param_2 != 1) || (param_2[1] != 0x48)) goto LAB_0011268c;
-      do {
-        cVar8 = DAT_00129ce8;
-        cVar4 = '\x01';
-        bVar9 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-        if (bVar9) {
-          _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-          cVar4 = ExclusiveMonitorsStatus();
-        }
-      } while (cVar4 != '\0' || cVar8 != '\0');
-      FUN_0010f580(0);
-      if (*param_1 != '\0') {
-        lVar18 = 1;
-        do {
-          pcVar1 = param_1 + lVar18;
-          lVar18 = lVar18 + 1;
-        } while (*pcVar1 != '\0');
-      }
-      iVar10 = strcmp(param_1,"isSpinEnabled");
-      lVar18 = 0;
-      if (iVar10 != 0) {
-        ppuVar23 = &PTR_s_cameraEnabled_001216c0;
-        do {
-          lVar18 = lVar18 + 1;
-          iVar10 = strcmp(param_1,*ppuVar23);
-          ppuVar23 = ppuVar23 + 5;
-        } while (iVar10 != 0);
-      }
-      iVar10 = (&DAT_00129130)[(int)(&DAT_001216a0)[lVar18 * 10]];
-      iVar11 = FUN_00116854();
-      iVar14 = FUN_00117314(0);
-      uVar20 = DAT_00129bb8;
-      lVar18 = DAT_00129b48;
-      bVar9 = DAT_00129b48 != 0;
-      if (DAT_00129b48 == 0) {
-        iVar13 = 2;
-      }
-      else if (iVar11 == 0) {
-        iVar13 = 3;
-      }
-      else {
-        iVar13 = 4;
-        if (iVar14 != 0) {
-          iVar13 = 5;
-        }
-        if (iVar10 == 0) {
-          iVar13 = 1;
-        }
-      }
-      param_2[2] = iVar10;
-      param_2[3] = (uint)bVar9;
-      uVar22 = DAT_001047a0;
-      param_2[4] = iVar11;
-      param_2[5] = (uint)(iVar10 != 0 && iVar14 != 0);
-      uVar6 = DAT_00129348;
-      param_2[6] = 0;
-      param_2[7] = iVar13;
-      uVar7 = DAT_00129c28;
-      *(undefined8 *)(param_2 + 0x10) = uVar20;
-      *(undefined8 *)param_2 = uVar22;
-      param_2[8] = 0;
-      param_2[9] = 0;
-      *(undefined8 *)(param_2 + 10) = uVar6;
-      *(undefined8 *)(param_2 + 0xc) = uVar7;
-      *(long *)(param_2 + 0xe) = lVar18;
-      goto LAB_0011286c;
-    }
-    iVar10 = FUN_00112b5c(0);
-    if (iVar10 == 0) {
-LAB_001123c0:
-      uVar17 = FUN_00112d44(param_1);
-      if (-1 < (int)uVar17) {
-        if (*(long *)(lVar5 + 0x28) == local_68) {
-          FUN_00112e84(param_1,param_2);
-          return;
-        }
-        goto LAB_0011293c;
-      }
-      if (((param_2 == (int *)0x0) || (*param_2 != 1)) || (param_2[1] != 0x48)) goto LAB_0011268c;
-      uVar17 = FUN_0010f504(param_1);
-      if (uVar17 != 0) {
-        if (*(int *)(uVar17 + 0xc) != 0) goto LAB_0011268c;
-        do {
-          cVar8 = DAT_00129ce8;
-          cVar4 = '\x01';
-          bVar9 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-          if (bVar9) {
-            _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-            cVar4 = ExclusiveMonitorsStatus();
-          }
-        } while (cVar4 != '\0' || cVar8 != '\0');
-        FUN_0010f580();
-        uVar15 = FUN_001130c0(param_1);
-        uVar12 = FUN_00113200();
-        uVar24 = (uint)(DAT_001293e8 != 0) | (uint)(DAT_001293f0 != 0) << 1 |
-                 (uint)(DAT_001293f8 != 0) << 2;
-        pcVar19 = DAT_00129418;
-        if (DAT_00129418 != (code *)0x0) {
-          uVar16 = (*DAT_00129418)(DAT_00129410);
-          pcVar19 = (code *)(uVar16 & 0xffffffff);
-        }
-        local_6c = 0;
-        local_80 = 0;
-        uStack_98 = 0;
-        local_a0 = 0;
-        uStack_88 = 0;
-        uStack_90 = 0;
-        iVar11 = FUN_001133d4(uVar12,(ulong)pcVar19 & 0xffffffff,&local_a0,&local_6c);
-        uVar3 = 1 << (ulong)(uVar15 & 0x1f);
-        iVar10 = (&DAT_00129130)[*(int *)(uVar17 + 8)];
-        uVar2 = uVar12 & uVar3;
-        uVar21 = 0;
-        if (uVar2 != 0) {
-          uVar21 = (uint)(-1 < (int)uVar15);
-        }
-        iVar13 = FUN_0011359c(uVar12);
-        uVar6 = DAT_001298e8;
-        lVar18 = DAT_001293d0;
-        uVar22 = DAT_00129348;
-        uVar20 = DAT_001047a0;
-        uVar15 = (uint)(-1 < (int)uVar15 && (uVar24 & uVar3) != 0);
-        iVar14 = 2;
-        if (uVar15 != 0) {
-          iVar14 = 3;
-        }
-        if ((uVar15 == 1) && (uVar2 != 0)) {
-          if (iVar10 == 0) {
-            iVar14 = 1;
-          }
-          else {
-            iVar14 = 4;
-            if (iVar13 != 0) {
-              iVar14 = local_6c;
-            }
-          }
-        }
-        uVar12 = 0;
-        if (iVar10 != 0) {
-          uVar12 = uVar21;
-        }
-        uVar2 = 0;
-        if (iVar13 != 0) {
-          uVar2 = uVar12;
-        }
-        uVar3 = 0;
-        if (iVar11 != 0) {
-          uVar3 = uVar12;
-        }
-        uVar17 = 1;
-        param_2[8] = (int)pcVar19;
-        param_2[9] = uVar24;
-        uVar7 = DAT_00129900;
-        *(undefined8 *)param_2 = uVar20;
-        param_2[2] = iVar10;
-        param_2[3] = uVar15;
-        param_2[4] = uVar21;
-        param_2[5] = uVar2;
-        param_2[6] = uVar3;
-        param_2[7] = iVar14;
-        *(undefined8 *)(param_2 + 10) = uVar22;
-        *(undefined8 *)(param_2 + 0xc) = uVar6;
-        *(long *)(param_2 + 0xe) = lVar18;
-        *(undefined8 *)(param_2 + 0x10) = uVar7;
-        _DAT_00129ce8 = 0;
-      }
-    }
-    else {
-LAB_0011228c:
-      if (((param_2 != (int *)0x0) && (*param_2 == 1)) && (param_2[1] == 0x48)) {
-        do {
-          cVar8 = DAT_00129ce8;
-          cVar4 = '\x01';
-          bVar9 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-          if (bVar9) {
-            _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-            cVar4 = ExclusiveMonitorsStatus();
-          }
-        } while (cVar4 != '\0' || cVar8 != '\0');
-        FUN_0010f580();
-        if (*param_1 != '\0') {
-          lVar18 = 1;
-          do {
-            pcVar1 = param_1 + lVar18;
-            lVar18 = lVar18 + 1;
-          } while (*pcVar1 != '\0');
-        }
-        iVar10 = strcmp(param_1,"isSpinEnabled");
-        lVar18 = 0;
-        if (iVar10 != 0) {
-          ppuVar23 = &PTR_s_cameraEnabled_001216c0;
-          do {
-            lVar18 = lVar18 + 1;
-            iVar10 = strcmp(param_1,*ppuVar23);
-            ppuVar23 = ppuVar23 + 5;
-          } while (iVar10 != 0);
-        }
-        uVar24 = 0;
-        iVar10 = (&DAT_00129130)[(int)(&DAT_001216a0)[lVar18 * 10]];
-        if ((DAT_00129428 != 0) && (DAT_00129440 != (code *)0x0)) {
-          iVar11 = (*DAT_00129440)();
-          if (((iVar11 == 1) && ((DAT_001293d0 == DAT_00129428 && (DAT_001293a8 == DAT_00129430))))
-             && (iVar11 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480),
-                DAT_00129ce0 != (code *)0x0)) {
-            iVar11 = (*DAT_00129ce0)(iVar11);
-            uVar24 = (uint)(iVar11 == 1);
-          }
-          else {
-            uVar24 = 0;
-          }
-        }
-        if (DAT_00129418 == (code *)0x0) {
-          uVar15 = 0;
-          lVar18 = DAT_00129428;
-        }
-        else {
-          uVar15 = (*DAT_00129418)(DAT_00129410);
-          lVar18 = DAT_00129428;
-        }
-        goto LAB_0011271c;
-      }
-LAB_0011268c:
-      uVar17 = 0;
-    }
-  }
-  else {
-    if (((param_2 == (int *)0x0) || (*param_2 != 1)) || (param_2[1] != 0x48)) goto LAB_0011268c;
-    do {
-      cVar8 = DAT_00129ce8;
-      cVar4 = '\x01';
-      bVar9 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-      if (bVar9) {
-        _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-        cVar4 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar4 != '\0' || cVar8 != '\0');
-    FUN_0010f580();
-    if (*param_1 != '\0') {
-      lVar18 = 1;
-      do {
-        pcVar1 = param_1 + lVar18;
-        lVar18 = lVar18 + 1;
-      } while (*pcVar1 != '\0');
-    }
-    iVar10 = strcmp(param_1,"isSpinEnabled");
-    lVar18 = 0;
-    if (iVar10 != 0) {
-      ppuVar23 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        lVar18 = lVar18 + 1;
-        iVar10 = strcmp(param_1,*ppuVar23);
-        ppuVar23 = ppuVar23 + 5;
-      } while (iVar10 != 0);
-    }
-    uVar24 = 0;
-    iVar10 = (&DAT_00129130)[(int)(&DAT_001216a0)[lVar18 * 10]];
-    if ((DAT_00129478 != 0) && (DAT_00129490 != (code *)0x0)) {
-      iVar11 = (*DAT_00129490)();
-      if ((iVar11 == 1) && ((DAT_001293d0 == DAT_00129478 && (DAT_001293a8 == DAT_00129480)))) {
-        iVar11 = FUN_0011b320(param_1);
-        if (iVar11 == 0) {
-          iVar11 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480);
-          if (DAT_00129ce0 == (code *)0x0) goto LAB_001127bc;
-          iVar11 = (*DAT_00129ce0)(iVar11);
-          uVar24 = (uint)(iVar11 == 1);
-        }
-        else {
-          uVar24 = 1;
-        }
-      }
-      else {
-LAB_001127bc:
-        uVar24 = 0;
-      }
-    }
-    if (DAT_00129418 == (code *)0x0) {
-      uVar15 = 0;
-    }
-    else {
-      uVar15 = (*DAT_00129418)(DAT_00129410);
-    }
-    uVar22 = DAT_001298e8;
-    lVar18 = DAT_00129478;
-    uVar20 = DAT_00129348;
-    iVar11 = 5;
-    if (iVar10 == 0) {
-      iVar11 = 1;
-    }
-    uVar12 = 0;
-    if (uVar24 == 0) {
-      iVar11 = 3;
-    }
-    else {
-      uVar12 = (uint)(iVar10 != 0);
-    }
-    uVar2 = 0;
-    if (DAT_001293c4 == 0) {
-      uVar2 = uVar12;
-    }
-    uVar21 = 0;
-    if (((uVar15 ^ 0xffffffff) & 0x7f) == 0) {
-      uVar21 = uVar2;
-    }
-    bVar9 = DAT_00129478 != 0;
-    iVar14 = 2;
-    if (bVar9) {
-      iVar14 = iVar11;
-    }
-    *(undefined8 *)param_2 = DAT_001047a0;
-    param_2[2] = iVar10;
-    param_2[3] = (uint)bVar9;
-    param_2[4] = uVar24;
-LAB_00112854:
-    param_2[5] = uVar12;
-    param_2[6] = uVar21;
-    param_2[7] = iVar14;
-    param_2[8] = uVar15;
-    param_2[9] = 0;
-    *(undefined8 *)(param_2 + 10) = uVar20;
-    *(undefined8 *)(param_2 + 0xc) = uVar22;
-    *(long *)(param_2 + 0xe) = lVar18;
-    param_2[0x10] = 0;
-    param_2[0x11] = 0;
-LAB_0011286c:
-    uVar17 = 1;
-    _DAT_00129ce8 = 0;
-  }
-LAB_00112690:
-  if (*(long *)(lVar5 + 0x28) == local_68) {
-    return;
-  }
-LAB_0011293c:
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar17);
+    while (__atomic_test_and_set(&g_handler_lock, __ATOMIC_ACQUIRE))
+        ;
 }
 
-/* ===== nexus_evasion_snapshot_keys_v1 @ 0011ae20 [libNexusEvasion69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void nexus_evasion_snapshot_keys_v1
-               (undefined8 *param_1,long param_2,long param_3,undefined8 *param_4,
-               undefined4 *param_5)
-
+static void handler_lock_release(void)
 {
-  uint uVar1;
-  uint uVar2;
-  char cVar3;
-  bool bVar4;
-  long lVar5;
-  char cVar6;
-  int iVar7;
-  uint uVar8;
-  undefined4 uVar9;
-  uint uVar10;
-  uint uVar11;
-  int iVar12;
-  undefined8 uVar13;
-  long lVar14;
-  long *plVar15;
-  long lVar16;
-  undefined **ppuVar17;
-  undefined8 *puVar18;
-  undefined4 *puVar19;
-  char *pcVar20;
-  uint *puVar21;
-  undefined **ppuVar22;
-  long local_4e0 [142];
-  long local_70;
-  
-  lVar5 = tpidr_el0;
-  uVar13 = 0;
-  local_70 = *(long *)(lVar5 + 0x28);
-  if ((((param_3 - 1U < 0x8e) && (param_1 != (undefined8 *)0x0)) && (param_2 != 0)) &&
-     ((param_4 != (undefined8 *)0x0 && (param_5 != (undefined4 *)0x0)))) {
-    lVar16 = 0;
-    do {
-      pcVar20 = (char *)param_1[lVar16];
-      if (pcVar20 == (char *)0x0) {
-LAB_0011af8c:
-        uVar13 = 0;
-        goto LAB_0011af90;
-      }
-      lVar14 = 0;
-      while (pcVar20[lVar14] != '\0') {
-        lVar14 = lVar14 + 1;
-        if (lVar14 == 0x60) goto LAB_0011af8c;
-      }
-      lVar14 = 0x8e;
-      ppuVar22 = &PTR_s_isSpinEnabled_00121698;
-      while (iVar7 = strcmp(pcVar20,*ppuVar22), iVar7 != 0) {
-        lVar14 = lVar14 + -1;
-        ppuVar22 = ppuVar22 + 5;
-        if (lVar14 == 0) goto LAB_0011af8c;
-      }
-      local_4e0[lVar16] = (long)ppuVar22;
-      lVar16 = lVar16 + 1;
-    } while (lVar16 != param_3);
-    do {
-      cVar6 = DAT_00129ce8;
-      cVar3 = '\x01';
-      bVar4 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-      if (bVar4) {
-        _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-        cVar3 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar3 != '\0' || cVar6 != '\0');
-    FUN_0010f580();
-    uVar8 = FUN_00113200();
-    uVar9 = FUN_001187d8();
-    ppuVar22 = &PTR_s_cameraEnabled_001216c0;
-    do {
-      ppuVar17 = ppuVar22;
-      iVar7 = strcmp("aopPredictEnabled",*ppuVar17);
-      ppuVar22 = ppuVar17 + 5;
-    } while (iVar7 != 0);
-    iVar7 = FUN_0011b604(uVar8,(&DAT_00129130)[*(int *)(ppuVar17 + 1)]);
-    plVar15 = local_4e0;
-    lVar16 = param_3;
-    puVar18 = param_1;
-    puVar21 = (uint *)(param_2 + 8);
-    do {
-      pcVar20 = (char *)*puVar18;
-      lVar14 = *plVar15;
-      uVar10 = FUN_001130c0(pcVar20);
-      uVar11 = 0;
-      if ((-1 < (int)uVar10) && (iVar7 != 0)) {
-        uVar11 = uVar8 >> (ulong)(uVar10 & 0x1f) & 1;
-      }
-      uVar2 = (&DAT_00129130)[*(int *)(lVar14 + 8)];
-      uVar13 = FUN_00112d44(pcVar20);
-      if ((int)uVar13 < 0) {
-        uVar10 = ~uVar10 >> 0x1f;
-      }
-      else {
-        uVar11 = FUN_001189fc(uVar13,uVar9,0);
-        pcVar20 = (char *)*puVar18;
-        uVar10 = 1;
-      }
-      iVar12 = FUN_00112b5c(pcVar20);
-      if (iVar12 != 0) {
-        uVar11 = 0;
-        if ((DAT_00129428 != 0) && (DAT_00129440 != (code *)0x0)) {
-          iVar12 = (*DAT_00129440)();
-          if ((iVar12 == 1) &&
-             (((DAT_001293d0 == DAT_00129428 && (DAT_001293a8 == DAT_00129430)) &&
-              (iVar12 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480),
-              DAT_00129ce0 != (code *)0x0)))) {
-            iVar12 = (*DAT_00129ce0)(iVar12);
-            uVar11 = (uint)(iVar12 == 1);
-          }
-          else {
-            uVar11 = 0;
-          }
-        }
-        pcVar20 = (char *)*puVar18;
-        uVar10 = 1;
-      }
-      if ((pcVar20 != (char *)0x0) &&
-         ((iVar12 = strcmp(pcVar20,"pinEnabled"), iVar12 == 0 ||
-          (iVar12 = strcmp(pcVar20,"sprayEnabled"), iVar12 == 0)))) {
-        uVar11 = 0;
-        uVar10 = 1;
-        if ((DAT_00129450 != 0) && (DAT_00129468 != (code *)0x0)) {
-          iVar12 = (*DAT_00129468)();
-          if (((iVar12 == 1) && (DAT_001293d0 == DAT_00129450)) &&
-             ((DAT_001293a8 == DAT_00129458 &&
-              (iVar12 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480),
-              DAT_00129ce0 != (code *)0x0)))) {
-            iVar12 = (*DAT_00129ce0)(iVar12);
-            uVar11 = (uint)(iVar12 == 1);
-          }
-          else {
-            uVar11 = 0;
-          }
-        }
-      }
-      uVar13 = *puVar18;
-      iVar12 = FUN_00112940(uVar13);
-      if (iVar12 != 0) {
-        uVar10 = 1;
-        uVar11 = 0;
-        if ((DAT_00129478 != 0) && (uVar11 = 0, DAT_00129490 != (code *)0x0)) {
-          iVar12 = (*DAT_00129490)();
-          if ((iVar12 == 1) && ((DAT_001293d0 == DAT_00129478 && (DAT_001293a8 == DAT_00129480)))) {
-            iVar12 = FUN_0011b320(uVar13);
-            if (iVar12 == 0) {
-              iVar12 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480);
-              if (DAT_00129ce0 == (code *)0x0) goto LAB_0011afc0;
-              iVar12 = (*DAT_00129ce0)(iVar12);
-              uVar11 = (uint)(iVar12 == 1);
+    g_handler_lock = 0;
+}
+
+static const evasion_prop_entry_t *prop_find(const char *name)
+{
+    if (name == NULL)
+        return NULL;
+    for (int i = 0; i < 142; i++) {
+        if (strcmp(name, g_prop_table[i].name) == 0)
+            return &g_prop_table[i];
+    }
+    return NULL;
+}
+
+static uint32_t family_gate(uint64_t family_epoch, uint64_t family_aux,
+                            void *family_check)
+{
+    int (*check)(void);
+    int (*once_fn)(int);
+
+    if (family_epoch == 0 || family_check == NULL)
+        return 0;
+
+    check = (int (*)(void))family_check;
+    if (check() != 1 || g_state_epoch2 != family_epoch || g_state_aux != family_aux)
+        return 0;
+
+    pthread_once(&g_family_once, family_once_init);
+    if (g_family_once_fn == NULL)
+        return 0;
+
+    once_fn = (int (*)(int))g_family_once_fn;
+    return (uint32_t)(once_fn(1) == 1);
+}
+
+static uint32_t brawler_family_gate(const char *key, uint64_t family_epoch,
+                                    uint64_t family_aux, void *family_check)
+{
+    int (*check)(void);
+    int (*once_fn)(int);
+
+    if (family_epoch == 0 || family_check == NULL)
+        return 0;
+
+    check = (int (*)(void))family_check;
+    if (check() != 1 || g_state_epoch2 != family_epoch || g_state_aux != family_aux)
+        return 0;
+
+    if (brawler_mod_key_family(key) == 0) {
+        pthread_once(&g_family_once, family_once_init);
+        if (g_family_once_fn == NULL)
+            return 0;
+        once_fn = (int (*)(int))g_family_once_fn;
+        return (uint32_t)(once_fn(1) == 1);
+    }
+    return 1;
+}
+
+static uint32_t adapter_mask(void)
+{
+    uint32_t (*mask_fn)(void *);
+
+    if (g_adapter_mask_fn == NULL)
+        return 0;
+
+    mask_fn = (uint32_t (*)(void *))g_adapter_mask_fn;
+    return mask_fn(g_adapter_ctx);
+}
+
+void nexus_evasion_handler_status_v1(const char *name, int32_t *out)
+{
+    const evasion_prop_entry_t *entry;
+    int32_t requested;
+    uint32_t gate;
+    uint32_t mask;
+    uint32_t effective;
+    uint32_t masked;
+    uint32_t full;
+    int code;
+    int registered;
+
+    if (evasion_key_adapter_family(name) == 0) {
+        if (name == NULL)
+            return;
+
+        if (strcmp(name, "pinEnabled") == 0 || strcmp(name, "sprayEnabled") == 0) {
+            if (out == NULL || out[0] != STATUS_OUT_VERSION
+                || out[1] != STATUS_OUT_SIZE)
+                return;
+
+            handler_lock_acquire();
+            handler_state_refresh();
+
+            entry = prop_find(name);
+            if (entry == NULL) {
+                handler_lock_release();
+                return;
             }
+            requested = g_prop_state[entry->state_index];
+
+            gate = family_gate(g_pin_family_epoch, g_pin_family_aux,
+                               g_pin_family_check);
+            mask = adapter_mask();
+            effective = 0;
+            code = 5;
+            if (requested == 0)
+                code = 1;
+            if (gate == 0) {
+                code = 3;
+            } else {
+                effective = (uint32_t)(requested != 0);
+            }
+            masked = 0;
+            if (g_state_status == 0)
+                masked = effective;
+            full = 0;
+            if ((mask ^ 0xffffffffu) & 0x7fu)
+                full = 0;
+            else
+                full = masked;
+            registered = g_pin_family_epoch != 0;
+
+            *(uint64_t *)out = ROD_STATUS_TAG;
+            out[2] = requested;
+            out[3] = registered;
+            out[4] = (int32_t)gate;
+            out[5] = (int32_t)effective;
+            out[6] = (int32_t)full;
+            out[7] = registered ? code : 2;
+            out[8] = (int32_t)mask;
+            out[9] = 0;
+            *(uint64_t *)(out + 10) = g_state_epoch;
+            *(uint64_t *)(out + 12) = g_pin_aux_epoch;
+            *(uint64_t *)(out + 14) = g_pin_family_epoch;
+            *(uint64_t *)(out + 16) = 0;
+
+            handler_lock_release();
+            return;
+        }
+
+        if (nexus_plus_key(name) != 0) {
+            if (out == NULL || out[0] != STATUS_OUT_VERSION
+                || out[1] != STATUS_OUT_SIZE)
+                return;
+
+            handler_lock_acquire();
+            handler_state_refresh();
+
+            entry = prop_find(name);
+            if (entry == NULL) {
+                handler_lock_release();
+                return;
+            }
+            requested = g_prop_state[entry->state_index];
+
+            gate = family_gate(g_nexusplus_family_epoch, g_nexusplus_family_aux,
+                               g_nexusplus_family_check);
+            mask = adapter_mask();
+            effective = 0;
+            code = 5;
+            if (requested == 0)
+                code = 1;
+            if (gate == 0) {
+                code = 3;
+            } else {
+                effective = (uint32_t)(requested != 0);
+            }
+            masked = 0;
+            if (g_state_status == 0)
+                masked = effective;
+            full = 0;
+            if ((mask ^ 0xffffffffu) & 0x7fu)
+                full = 0;
+            else
+                full = masked;
+            registered = g_nexusplus_family_epoch != 0;
+
+            *(uint64_t *)out = ROD_STATUS_TAG;
+            out[2] = requested;
+            out[3] = registered;
+            out[4] = (int32_t)gate;
+            out[5] = (int32_t)effective;
+            out[6] = (int32_t)full;
+            out[7] = registered ? code : 2;
+            out[8] = (int32_t)mask;
+            out[9] = 0;
+            *(uint64_t *)(out + 10) = g_state_epoch;
+            *(uint64_t *)(out + 12) = g_pin_aux_epoch;
+            *(uint64_t *)(out + 14) = g_nexusplus_family_epoch;
+            *(uint64_t *)(out + 16) = 0;
+
+            handler_lock_release();
+            return;
+        }
+
+        if (strcmp(name, "holdToShootEnabled") == 0
+            || strcmp(name, "holdToShootAim") == 0
+            || strcmp(name, "holdToShootRangeCheck") == 0) {
+            int gate_a;
+            int gate_b;
+
+            if (out == NULL)
+                return;
+            if (out[0] != STATUS_OUT_VERSION || out[1] != STATUS_OUT_SIZE)
+                return;
+
+            handler_lock_acquire();
+            handler_state_refresh();
+
+            entry = prop_find(name);
+            if (entry == NULL) {
+                handler_lock_release();
+                return;
+            }
+            requested = g_prop_state[entry->state_index];
+
+            gate_a = holdfire_gate_a();
+            gate_b = holdfire_gate_b(0);
+            registered = g_holdfire_epoch != 0;
+
+            if (!registered)
+                code = 2;
+            else if (gate_a == 0)
+                code = 3;
             else {
-              uVar11 = 1;
+                code = 4;
+                if (gate_b != 0)
+                    code = 5;
+                if (requested == 0)
+                    code = 1;
             }
-          }
-          else {
-LAB_0011afc0:
-            uVar11 = 0;
-          }
-        }
-      }
-      uVar1 = uVar2;
-      if (uVar11 == 0 || uVar10 == 0) {
-        uVar1 = 0;
-      }
-      if (*(int *)(lVar14 + 0xc) != 0) {
-        uVar1 = uVar2;
-      }
-      if (uVar10 == 0) {
-        if (*(int *)(lVar14 + 0x20) == 0) {
-          uVar11 = (uint)(*(int *)(lVar14 + 0xc) != 0);
-        }
-        else {
-          uVar11 = 3;
-        }
-      }
-      else {
-        uVar11 = (uint)(uVar11 != 0) << 1;
-      }
-      puVar18 = puVar18 + 1;
-      puVar21[-2] = uVar2;
-      puVar21[-1] = uVar1;
-      *puVar21 = uVar11;
-      lVar16 = lVar16 + -1;
-      plVar15 = plVar15 + 1;
-      puVar21 = puVar21 + 3;
-    } while (lVar16 != 0);
-    puVar19 = (undefined4 *)(param_2 + 8);
-    do {
-      iVar7 = FUN_0010f880(*param_1);
-      if (iVar7 != 0) {
-        puVar19[-1] = puVar19[-2];
-        *puVar19 = 1;
-      }
-      uVar9 = DAT_001293c4;
-      param_3 = param_3 + -1;
-      puVar19 = puVar19 + 3;
-      param_1 = param_1 + 1;
-    } while (param_3 != 0);
-    uVar13 = 1;
-    *param_4 = DAT_00129348;
-    *param_5 = uVar9;
-    _DAT_00129ce8 = 0;
-  }
-LAB_0011af90:
-  if (*(long *)(lVar5 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar13);
-}
 
-/* ===== FUN_0015f874 @ 0015f874 [libNexusEvasionRuntime69252.so] ===== */
+            *(uint64_t *)out = ROD_STATUS_TAG;
+            out[2] = requested;
+            out[3] = registered;
+            out[4] = gate_a;
+            out[5] = (int32_t)(requested != 0 && gate_b != 0);
+            out[6] = 0;
+            out[7] = code;
+            out[8] = 0;
+            out[9] = 0;
+            *(uint64_t *)(out + 10) = g_state_epoch;
+            *(uint64_t *)(out + 12) = g_holdfire_aux2;
+            *(uint64_t *)(out + 14) = g_holdfire_epoch;
+            *(uint64_t *)(out + 16) = g_holdfire_aux;
 
-void FUN_0015f874(long param_1)
+            handler_lock_release();
+            return;
+        }
 
-{
-  uint uVar1;
-  long lVar2;
-  long *plVar3;
-  int iVar4;
-  undefined8 uVar5;
-  ulong uVar6;
-  undefined4 uVar7;
-  undefined4 uVar8;
-  float fVar9;
-  float fVar10;
-  float fVar11;
-  long *local_248;
-  code *pcStack_240;
-  code *local_238;
-  code *pcStack_230;
-  long local_228;
-  long lStack_220;
-  long *local_218;
-  uint local_210;
-  int local_20c;
-  undefined8 local_208;
-  long local_200;
-  undefined8 local_1f8;
-  int local_1f0;
-  undefined4 uStack_1ec;
-  uint local_1e8;
-  float local_1e4;
-  float fStack_1e0;
-  char local_1d8;
-  char local_1d7;
-  long *local_1c8;
-  timespec local_1c0 [15];
-  ulong local_d0;
-  undefined1 auStack_c8 [8];
-  char *local_c0;
-  undefined *puStack_b8;
-  uint local_b0;
-  undefined4 local_a8;
-  undefined4 uStack_a4;
-  uint local_a0;
-  uint local_9c;
-  int local_94;
-  float local_8c;
-  float fStack_88;
-  long local_78;
-  
-  lVar2 = tpidr_el0;
-  local_78 = *(long *)(lVar2 + 0x28);
-  if (param_1 != 0) {
-    local_248 = (long *)CONCAT44(local_248._4_4_,0xffffffff);
-    local_c0 = "autofarmEnabled";
-    if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-        (iVar4 = (*DAT_00214930)(&local_c0,local_1c0,1,&local_1c8,&local_248), iVar4 == 1)) &&
-       ((((local_1c8 != (long *)0x0 && ((int)local_248 == 0)) &&
-         (((int)local_1c0[0].tv_nsec == 2 &&
-          ((local_1c0[0].tv_sec._4_4_ == 1 && (iVar4 = FUN_0016944c(), iVar4 == 0)))))) &&
-        (iVar4 = FUN_001695cc(), plVar3 = local_1c8, iVar4 != 0)))) {
-      puStack_b8 = PTR_s_combatFireInterval_001c57f8;
-      local_c0 = PTR_s_autofarmFollowTarget_001c57f0;
-      if (((((DAT_00214930 != (code *)0x0) &&
-            (iVar4 = (*DAT_00214930)(&local_c0,local_1c0,2,&local_248,&local_1f0), iVar4 == 1)) &&
-           (local_248 == plVar3)) && ((local_1f0 == 0 && (-1 < (int)local_1c0[0].tv_sec)))) &&
-         ((int)local_1c0[0].tv_sec < 2)) {
-        uVar1 = local_1c0[0].tv_nsec._4_4_;
-        if ((int)local_1c0[0].tv_nsec._4_4_ < 0x79) {
-          uVar1 = 0x78;
+        if (strcmp(name, "isSpinEnabled") == 0) {
+            spin_status_fill(out);
+            return;
         }
-        if (0x1a3 < uVar1) {
-          uVar1 = 0x1a4;
+
+        if (port_id_lookup(name) >= 0) {
+            port_status_fill(name, out);
+            return;
         }
-        if (DAT_00228c40 != DAT_0020f690) {
-          DAT_00228c48 = 0;
-          DAT_00228c40 = (ulong)DAT_0020f690;
-        }
-        iVar4 = clock_gettime(1,local_1c0);
-        if (iVar4 == 0) {
-          uVar6 = CONCAT44(local_1c0[0].tv_sec._4_4_,(int)local_1c0[0].tv_sec) * 1000 +
-                  CONCAT44(local_1c0[0].tv_nsec._4_4_,(int)local_1c0[0].tv_nsec) / 1000000;
-        }
-        else {
-          uVar6 = 0;
-        }
-        if (((((uVar6 <= DAT_00228c48 - 1) || ((ulong)uVar1 <= uVar6 - DAT_00228c48)) &&
-             ((DAT_00214cf8 == 0 &&
-              (((DAT_00214c10 == 0 && DAT_00214c14 == 0 && (DAT_00214cf0 != DAT_0020f650)) &&
-               (iVar4 = FUN_00168fe8(), iVar4 != 0)))))) &&
-            ((((iVar4 = FUN_001bc828(DAT_0020f670,FUN_001428fc,0,&local_1d8), iVar4 != 0 &&
-               (local_1d8 == '\0')) && (local_1d7 == '\0')) &&
-             ((iVar4 = FUN_00155ad0(), iVar4 == 0 &&
-              (iVar4 = FUN_00168bac(local_1c8,&local_1f0), iVar4 != 0)))))) &&
-           ((iVar4 = FUN_00189c88(DAT_001e0978,CONCAT44(uStack_1ec,local_1f0),FUN_001428fc,0,
-                                  &local_c0), iVar4 != 0 &&
-            (((local_94 != 0 && (local_b0 == local_1e8)) &&
-             (iVar4 = FUN_0017fba8(DAT_0020f698,DAT_0020f69c,local_a8,uStack_a4), iVar4 == 0)))))) {
-          fVar11 = 1.0;
-          if ((DAT_0020f6a4 != 0) && (fVar11 = 1.0, DAT_0020f6a0 <= DAT_0020f6a4)) {
-            fVar11 = (float)DAT_0020f6a0 / (float)DAT_0020f6a4;
-          }
-          fVar10 = 1.0;
-          if ((local_9c != 0) && (fVar10 = 1.0, local_a0 <= local_9c)) {
-            fVar10 = (float)local_a0 / (float)local_9c;
-          }
-          uVar7 = FUN_00165c60(&DAT_0020f680);
-          uVar8 = FUN_00165c60(&local_c0);
-          fVar9 = hypotf(local_8c - DAT_0020f6b4,fStack_88 - DAT_0020f6b8);
-          iVar4 = FUN_0019a848(fVar11,fVar10,uVar7,uVar8,fVar9,&DAT_00228748);
-          if ((((((iVar4 != 0) && (DAT_0020f718 == DAT_0020f680)) &&
-                (iVar4 = FUN_00165d8c(&DAT_0020f680,&local_1f8), iVar4 != 0)) &&
-               ((uVar5 = FUN_0013a78c(DAT_0020f678,&local_200), (int)uVar5 != 0 &&
-                (uVar5 = FUN_001428fc(uVar5,DAT_0020f678 + 0xc,&local_20c,4), (int)uVar5 != 0)))) &&
-              (iVar4 = FUN_001428fc(uVar5,DAT_0020f678 + 0xe0,&local_210,4), iVar4 != 0)) &&
-             ((0 < local_20c && (local_20c < 0x41)))) {
-            if ((-1 < (int)local_210) &&
-               ((((int)local_210 < local_20c &&
-                 (iVar4 = FUN_0013a78c(local_200 + (ulong)local_210 * 8,&local_208), iVar4 != 0)) &&
-                (iVar4 = (*(code *)(DAT_001e0978 + 0xecfb74))(local_1f8,local_208,DAT_0020f680),
-                iVar4 != 0)))) {
-              local_d0 = CONCAT44((int)(fStack_1e0 * 300.0),(int)(local_1e4 * 300.0));
-              iVar4 = FUN_00169714(local_8c,fStack_88,1);
-              if (((iVar4 != 0) && (uVar5 = FUN_00169714(local_1e4,fStack_1e0,1), (int)uVar5 != 0))
-                 && (iVar4 = FUN_001428fc(uVar5,DAT_0020f670 + 0xfac,auStack_c8,8), iVar4 != 0)) {
-                local_248 = &local_228;
-                local_218 = local_1c8;
-                pcStack_240 = FUN_001428fc;
-                local_228 = DAT_0020f670;
-                lStack_220 = DAT_0020f680;
-                local_238 = FUN_00154ec4;
-                pcStack_230 = FUN_00169a50;
-                iVar4 = FUN_0018a084(&local_248,DAT_0020f670,auStack_c8,&local_d0);
-                if (iVar4 == 1) {
-                  iVar4 = FUN_00169a50(&local_228);
-                  uVar7 = DAT_0020d158;
-                  if (iVar4 != 0) {
-                    DAT_00214cf8 = 4;
-                    DAT_0020d158 = 1;
-                    DAT_00214c10 = 1;
-                    DAT_00228c48 = uVar6;
-                    uVar6 = (*(code *)(DAT_001e0978 + 0xb2e994))(local_228,lStack_220);
-                    DAT_00214cf8 = 0;
-                    DAT_00214c10 = 0;
-                    DAT_00214cf0 = DAT_0020f650;
-                    DAT_0020d158 = uVar7;
-                    snprintf((char *)local_1c0,0xf0,
-                             ",\"target_gid\":%u,\"result\":%d,\"raw_x\":%d,\"raw_y\":%d",
-                             (ulong)local_b0,uVar6 & 0xffffffff,local_d0 & 0xffffffff,
-                             local_d0 >> 0x20);
-                    FUN_001417c8("autofarm_fire","original_wrapper",local_1c0);
-                  }
+
+        if (out == NULL || out[0] != STATUS_OUT_VERSION
+            || out[1] != STATUS_OUT_SIZE)
+            return;
+
+        {
+            const void *prop = prop_entry_lookup(name);
+            const evasion_prop_entry_t *prop_entry;
+            uint64_t bitmap;
+            uint32_t gate_flags;
+            uint32_t port_bit;
+            uint32_t bit_set;
+            uint32_t port_ok;
+            int32_t port_idx;
+            int bitmap_gate;
+            int triple_ok;
+            int32_t triple_status = 0;
+            uint8_t triple_out[48];
+            uint32_t port_valid;
+
+            if (prop == NULL)
+                return;
+            prop_entry = (const evasion_prop_entry_t *)prop;
+            if (prop_entry->kind != 0)
+                return;
+
+            handler_lock_acquire();
+            handler_state_refresh();
+
+            port_idx = port_bit_index(name);
+            bitmap = port_bitmap();
+            gate_flags = (uint32_t)(g_triple_gate_a != 0)
+                       | (uint32_t)(g_triple_gate_b != 0) << 1
+                       | (uint32_t)(g_triple_gate_c != 0) << 2;
+            mask = adapter_mask();
+            memset(triple_out, 0, sizeof triple_out);
+            triple_ok = triple_gate_resolve(bitmap, mask, triple_out, &triple_status);
+
+            port_bit = 1u << (port_idx & 0x1f);
+            requested = g_prop_state[prop_entry->state_index];
+            bit_set = (uint32_t)(bitmap & port_bit);
+            port_ok = 0;
+            if (bit_set != 0)
+                port_ok = (uint32_t)(port_idx >= 0);
+            bitmap_gate = port_bitmap_gate(bitmap);
+
+            port_valid = (uint32_t)(port_idx >= 0 && (gate_flags & port_bit) != 0);
+            code = 2;
+            if (port_valid != 0)
+                code = 3;
+            if (port_valid == 1 && bit_set != 0) {
+                if (requested == 0) {
+                    code = 1;
+                } else {
+                    code = 4;
+                    if (bitmap_gate != 0)
+                        code = triple_status;
                 }
-                else if (iVar4 == -1) {
-                  FUN_001417c8("fatal","farm_xy_restore_unverified",0);
-                    /* WARNING: Subroutine does not return */
-                  abort();
-                }
-              }
             }
-          }
+
+            effective = 0;
+            if (requested != 0)
+                effective = port_ok;
+            masked = 0;
+            if (bitmap_gate != 0)
+                masked = effective;
+            full = 0;
+            if (triple_ok != 0)
+                full = effective;
+
+            *(uint64_t *)out = ROD_STATUS_TAG;
+            out[2] = requested;
+            out[3] = (int32_t)port_valid;
+            out[4] = (int32_t)port_ok;
+            out[5] = (int32_t)masked;
+            out[6] = (int32_t)full;
+            out[7] = code;
+            out[8] = (int32_t)mask;
+            out[9] = (int32_t)gate_flags;
+            *(uint64_t *)(out + 10) = g_state_epoch;
+            *(uint64_t *)(out + 12) = g_pin_aux_epoch;
+            *(uint64_t *)(out + 14) = g_state_epoch2;
+            *(uint64_t *)(out + 16) = 0;
+
+            handler_lock_release();
+            return;
         }
-      }
     }
-  }
-  if (*(long *)(lVar2 + 0x28) == local_78) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+
+    if (out == NULL || out[0] != STATUS_OUT_VERSION || out[1] != STATUS_OUT_SIZE)
+        return;
+
+    handler_lock_acquire();
+    handler_state_refresh();
+
+    entry = prop_find(name);
+    if (entry == NULL) {
+        handler_lock_release();
+        return;
+    }
+    requested = g_prop_state[entry->state_index];
+
+    gate = brawler_family_gate(name, g_brawler_family_epoch,
+                               g_brawler_family_aux, g_brawler_family_check);
+    mask = adapter_mask();
+    effective = 0;
+    code = 5;
+    if (requested == 0)
+        code = 1;
+    if (gate == 0) {
+        code = 3;
+    } else {
+        effective = (uint32_t)(requested != 0);
+    }
+    masked = 0;
+    if (g_state_status == 0)
+        masked = effective;
+    full = 0;
+    if ((mask ^ 0xffffffffu) & 0x7fu)
+        full = 0;
+    else
+        full = masked;
+    registered = g_brawler_family_epoch != 0;
+
+    *(uint64_t *)out = ROD_STATUS_TAG;
+    out[2] = requested;
+    out[3] = registered;
+    out[4] = (int32_t)gate;
+    out[5] = (int32_t)effective;
+    out[6] = (int32_t)full;
+    out[7] = registered ? code : 2;
+    out[8] = (int32_t)mask;
+    out[9] = 0;
+    *(uint64_t *)(out + 10) = g_state_epoch;
+    *(uint64_t *)(out + 12) = g_pin_aux_epoch;
+    *(uint64_t *)(out + 14) = g_brawler_family_epoch;
+    *(uint64_t *)(out + 16) = 0;
+
+    handler_lock_release();
 }
 
-/* ===== FUN_001661a0 @ 001661a0 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_001661a0(long param_1)
-
+void nexus_evasion_snapshot_keys_v1(const char *const *keys, int32_t *triples,
+                                    long count, uint64_t *epoch_out,
+                                    int32_t *status_out)
 {
-  long lVar1;
-  int iVar2;
-  undefined8 uVar3;
-  int local_64;
-  long local_60;
-  undefined1 auStack_58 [4];
-  uint local_54;
-  int local_50;
-  uint local_48;
-  int local_44;
-  int local_3c;
-  int local_30;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  local_60 = 0;
-  local_64 = -1;
-  if ((int)_DAT_002208a0 == 1) {
-    iVar2 = pthread_once((pthread_once_t *)&DAT_0021ca04,FUN_00164598);
-    if (DAT_0021ca08 != (code *)0x0) {
-      iVar2 = (*DAT_0021ca08)(iVar2);
-      uVar3 = 0;
-      if ((iVar2 != 1) || (DAT_002208a8 == (code *)0x0)) goto LAB_001662c0;
-      iVar2 = (*DAT_002208a8)(&PTR_s_pinEnabled_001c4320,auStack_58,4,&local_60,&local_64);
-      uVar3 = 0;
-      if ((iVar2 != 1) || (((local_60 == 0 || (local_64 != 0)) || (local_50 != 2))))
-      goto LAB_001662c0;
-      if (local_54 < 2) {
-        uVar3 = 0;
-        if ((0x1324 < local_3c - 100U) || (local_44 != 2)) goto LAB_001662c0;
-        if ((local_48 < 2) && (0xffffecda < local_30 - 0x1389U)) {
-          *(long *)(param_1 + 0x10) = local_60;
-          uVar3 = 1;
-          *(uint *)(param_1 + 0x4c) = local_54;
-          *(uint *)(param_1 + 0x50) = local_48;
-          *(int *)(param_1 + 0x54) = local_3c;
-          *(int *)(param_1 + 0x58) = local_30;
-          goto LAB_001662c0;
+    const evasion_prop_entry_t *entries[142];
+    uint64_t bitmap;
+    uint32_t gate_version;
+    int predict_block;
+    const evasion_prop_entry_t *predict_entry;
+    int i;
+
+    if (count - 1U >= 0x8e || keys == NULL || triples == NULL
+        || epoch_out == NULL || status_out == NULL)
+        return;
+
+    for (i = 0; i < count; i++) {
+        const char *key = keys[i];
+        size_t len;
+
+        if (key == NULL)
+            return;
+        for (len = 0; key[len] != '\0'; len++) {
+            if (len == 0x60)
+                return;
         }
-      }
+        entries[i] = prop_find(key);
+        if (entries[i] == NULL)
+            return;
     }
-  }
-  uVar3 = 0;
-LAB_001662c0:
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar3);
+
+    handler_lock_acquire();
+    handler_state_refresh();
+
+    bitmap = port_bitmap();
+    gate_version = port_gate_version();
+    predict_entry = prop_find("aopPredictEnabled");
+    predict_block = prediction_gate(bitmap,
+                                     g_prop_state[predict_entry->state_index]);
+
+    for (i = 0; i < count; i++) {
+        const char *key = keys[i];
+        const evasion_prop_entry_t *entry = entries[i];
+        uint32_t port_bit;
+        uint32_t port_ok;
+        uint32_t gate;
+        uint32_t effective;
+        uint32_t flags;
+        int32_t port_idx;
+        int32_t pid;
+
+        port_idx = port_bit_index(key);
+        port_ok = 0;
+        if (port_idx >= 0 && predict_block != 0)
+            port_ok = (uint32_t)(bitmap >> (port_idx & 0x1f) & 1);
+
+        port_bit = (uint32_t)g_prop_state[entry->state_index];
+        pid = port_id_lookup(key);
+
+        if (pid < 0) {
+            gate = (uint32_t)(port_idx < 0);
+        } else {
+            port_ok = (uint32_t)port_gate_check(pid, gate_version, 0);
+            gate = 1;
+        }
+
+        if (nexus_plus_key(key) != 0) {
+            port_ok = 0;
+            gate = (uint32_t)family_gate(g_nexusplus_family_epoch,
+                                         g_nexusplus_family_aux,
+                                         g_nexusplus_family_check);
+        }
+
+        if (strcmp(key, "pinEnabled") == 0 || strcmp(key, "sprayEnabled") == 0) {
+            port_ok = 0;
+            gate = (uint32_t)family_gate(g_pin_family_epoch, g_pin_family_aux,
+                                         g_pin_family_check);
+        }
+
+        if (evasion_key_adapter_family(key) != 0) {
+            gate = 1;
+            port_ok = brawler_family_gate(key, g_brawler_family_epoch,
+                                          g_brawler_family_aux,
+                                          g_brawler_family_check);
+        }
+
+        effective = port_bit;
+        if (port_ok == 0 || gate == 0)
+            effective = 0;
+        if (entry->kind != 0)
+            effective = port_bit;
+
+        if (gate == 0) {
+            if (entry->f32 == 0)
+                flags = (uint32_t)(entry->kind != 0);
+            else
+                flags = 3;
+        } else {
+            flags = (uint32_t)(port_ok != 0) << 1;
+        }
+
+        triples[i * 3 + 0] = (int32_t)port_bit;
+        triples[i * 3 + 1] = (int32_t)effective;
+        triples[i * 3 + 2] = (int32_t)flags;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (evasion_key_force_flag(keys[i]) != 0) {
+            triples[i * 3 + 1] = triples[i * 3 + 0];
+            triples[i * 3 + 2] = 1;
+        }
+    }
+
+    *epoch_out = g_state_epoch;
+    *status_out = g_state_status;
+
+    handler_lock_release();
 }
 
-/* ===== FUN_001695cc @ 001695cc [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_001695cc(void)
-
+int autofarm_armed(void)
 {
-  long lVar1;
-  bool bVar2;
-  int iVar3;
-  long local_60;
-  int local_54;
-  undefined1 auStack_50 [4];
-  int local_4c;
-  int local_48;
-  char *local_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  local_40 = "autofarmEnabled";
-  local_54 = -1;
-  if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-      (iVar3 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar3 == 1)) &&
-     (((local_60 != 0 && (local_54 == 0)) && ((local_48 == 2 && (local_4c == 1)))))) {
-    local_54 = -1;
-    local_40 = "autofarmAttackEnemies";
-    if (((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-        ((iVar3 = (*DAT_00214930)(&local_40,auStack_50,1,&local_60,&local_54), iVar3 == 1 &&
-         (((local_60 != 0 && (local_54 == 0)) && (local_48 == 2)))))) && (local_4c == 1)) {
-      iVar3 = FUN_001550fc();
-      bVar2 = iVar3 != 0;
-      goto LAB_001696ec;
-    }
-  }
-  bVar2 = false;
-LAB_001696ec:
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(bVar2);
+    const char *keys[1] = { "autofarmEnabled" };
+    int32_t triples[3];
+    int64_t epoch = 0;
+    int32_t status = -1;
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+
+    if (g_snapshot_keys_ready != 1 || query == NULL)
+        return 0;
+    if (query(keys, triples, 1, &epoch, &status) != 1)
+        return 0;
+    if (epoch == 0 || status != 0 || triples[2] != 2 || triples[1] != 1)
+        return 0;
+
+    keys[0] = "autofarmAttackEnemies";
+    if (query(keys, triples, 1, &epoch, &status) != 1)
+        return 0;
+    if (epoch == 0 || status != 0 || triples[2] != 2 || triples[1] != 1)
+        return 0;
+
+    return evasion_runtime_gate() != 0;
 }
 
-/* ===== FUN_00169a50 @ 00169a50 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00169a50(undefined8 *param_1)
-
+int autofarm_write_verify(void *payload)
 {
-  long lVar1;
-  int iVar2;
-  ulong uVar3;
-  long local_50;
-  int local_44;
-  undefined1 auStack_40 [4];
-  int local_3c;
-  int local_38;
-  char *local_30;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  uVar3 = FUN_001695cc();
-  if ((int)uVar3 != 0) {
-    local_44 = -1;
-    local_30 = "autofarmEnabled";
-    if ((((((int)DAT_00214938 == 1) && (DAT_00214930 != (code *)0x0)) &&
-         (iVar2 = (*DAT_00214930)(&local_30,auStack_40,1,&local_50,&local_44), iVar2 == 1)) &&
-        ((local_50 != 0 && (local_44 == 0)))) &&
-       ((local_38 == 2 && ((local_3c == 1 && (local_50 == param_1[2])))))) {
-      iVar2 = FUN_00150bf0(*param_1,param_1[1]);
-      uVar3 = (ulong)(iVar2 != 0);
-    }
-    else {
-      uVar3 = 0;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar3);
+    uint64_t *rec = payload;
+    const char *keys[1] = { "autofarmEnabled" };
+    int32_t triples[3];
+    int64_t epoch = 0;
+    int32_t status = -1;
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+
+    if (autofarm_armed() == 0)
+        return 0;
+    if (g_snapshot_keys_ready != 1 || query == NULL)
+        return 0;
+    if (query(keys, triples, 1, &epoch, &status) != 1)
+        return 0;
+    if (epoch == 0 || status != 0 || triples[2] != 2 || triples[1] != 1)
+        return 0;
+    if ((uint64_t)epoch != rec[2])
+        return 0;
+
+    return movement_ctx_valid(rec[0], rec[1]) != 0;
 }
 
-/* ===== FUN_00172f00 @ 00172f00 [libNexusEvasionRuntime69252.so] ===== */
-
-undefined4 FUN_00172f00(uint param_1)
-
+void pin_status_query(void *out)
 {
-  code *pcVar1;
-  code *pcVar2;
-  code *pcVar3;
-  long lVar4;
-  int iVar5;
-  undefined8 uVar6;
-  long lVar7;
-  char *pcVar8;
-  undefined4 uVar9;
-  char *pcVar10;
-  code *local_b8;
-  long local_b0;
-  ulong local_a8 [12];
-  long local_48;
-  
-  lVar4 = tpidr_el0;
-  local_48 = *(long *)(lVar4 + 0x28);
-  if ((2 < param_1 - 1) && (DAT_0020ad98 != (code *)0x0)) {
-    uVar6 = (*DAT_0020ad98)("autofarmEnabled");
-    lVar7 = DAT_001e0978;
-    if ((int)uVar6 == 1) {
-      local_b0 = 0;
-      local_a8[0] = 0;
-      local_b8 = (code *)0x0;
-      pcVar3 = (code *)(DAT_001e0978 + 0x11a2840);
-      if ((((((pcVar3 == (code *)0x0) ||
-             (pcVar1 = (code *)(DAT_001e0978 + 0xf41ba0), pcVar1 == (code *)0x0)) ||
-            (pcVar2 = (code *)(DAT_001e0978 + 0xac319c), pcVar2 == (code *)0x0)) ||
-           ((uVar6 = FUN_001428fc(uVar6,DAT_001e0978 + 0x13053c0,local_a8,8), (int)uVar6 == 0 ||
-            (local_a8[0] < 0x1000)))) ||
-          (((local_a8[0] & 7) != 0 ||
-           ((uVar6 = FUN_001428fc(uVar6,local_a8[0],&local_b0,8), (int)uVar6 == 0 ||
-            (local_b0 != lVar7 + 0x11ebcd0)))))) ||
-         ((iVar5 = FUN_001428fc(uVar6,local_b0 + 0x18,&local_b8,8), iVar5 == 0 ||
-          ((local_b8 != pcVar2 || (lVar7 = (*pcVar3)(0x98), lVar7 == 0)))))) {
-        uVar9 = 0;
-        pcVar10 = "native_send_failed";
-        pcVar8 = "false";
-      }
-      else {
-        uVar9 = 1;
-        (*pcVar1)(lVar7,1,0);
-        (*pcVar2)(local_a8[0],lVar7);
-        pcVar10 = "play_again_status";
-        pcVar8 = "true";
-      }
-      snprintf((char *)local_a8,0x60,",\"status\":%d,\"sent\":%s",(ulong)param_1,pcVar8);
-      FUN_001417c8("autofarm_play_again",pcVar10,local_a8);
-      goto LAB_00173048;
-    }
-  }
-  uVar9 = 0;
-LAB_00173048:
-  if (*(long *)(lVar4 + 0x28) == local_48) {
-    return uVar9;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    const char *const *keys = ROD_PIN_KEYS;
+    int32_t t[12];
+    int64_t epoch = 0;
+    int32_t status = -1;
+    snapshot_keys_fn_t query;
+
+    if (g_ui_query_ready != 1)
+        return;
+
+    pthread_once(&g_pin_once, family_once_init);
+    if (g_pin_once_fn == NULL)
+        return;
+
+    query = (snapshot_keys_fn_t)g_ui_query_fn;
+    if (query == NULL)
+        return;
+    if (query(keys, t, 4, &epoch, &status) != 1)
+        return;
+    if (epoch == 0 || status != 0 || t[2] != 2)
+        return;
+    if (t[1] >= 2)
+        return;
+    if ((uint32_t)(t[7] - 100u) > 0x1324u || t[5] != 2)
+        return;
+    if (t[4] >= 2)
+        return;
+    if ((uint32_t)(t[10] - 5001u) <= 0xffffecdau)
+        return;
+
+    *(uint64_t *)((char *)out + 0x10) = (uint64_t)epoch;
+    *(uint32_t *)((char *)out + 0x4c) = (uint32_t)t[1];
+    *(uint32_t *)((char *)out + 0x50) = (uint32_t)t[4];
+    *(int32_t *)((char *)out + 0x54) = t[7];
+    *(int32_t *)((char *)out + 0x58) = t[10];
 }
 
-/* ===== FUN_0018ded4 @ 0018ded4 [libNexusUI69252.so] ===== */
-
-bool FUN_0018ded4(char *param_1)
-
+void autofarm_attack_tick(void *frame)
 {
-  bool bVar1;
-  int iVar2;
-  
-  iVar2 = strncmp(param_1,"nexus_quick_menu_",0x11);
-  if ((((iVar2 == 0) || (iVar2 = strcmp(param_1,"nexus_autofarm_post_delay_ms"), iVar2 == 0)) ||
-      (iVar2 = strcmp(param_1,"nexus_autofarm_click_gap_ms"), iVar2 == 0)) ||
-     ((iVar2 = strcmp(param_1,"nexus_auto_play_again_enabled"), iVar2 == 0 ||
-      (iVar2 = strcmp(param_1,"nexus_autofarm_show_stats"), iVar2 == 0)))) {
-    bVar1 = true;
-  }
-  else {
-    iVar2 = strcmp(param_1,"nexus_sx_outline_color_preset");
-    bVar1 = iVar2 == 0;
-  }
-  return bVar1;
+    const char *keys[1] = { "autofarmEnabled" };
+    const char *fkeys[2] = { "autofarmFollowTarget", "combatFireInterval" };
+    int32_t triples[3];
+    int32_t ft[6];
+    int64_t epoch = 0;
+    int64_t f_epoch = 0;
+    int32_t status = -1;
+    int32_t f_status = -1;
+    snapshot_keys_fn_t query = (snapshot_keys_fn_t)g_snapshot_keys_fn;
+    uint8_t farm_state[2];
+    uint64_t seed[6];
+    int32_t resolve[32];
+    struct timespec ts;
+    uint64_t now_ms;
+    uint32_t interval;
+    int decide;
+
+    if (frame == NULL)
+        return;
+    if (g_snapshot_keys_ready != 1 || query == NULL)
+        return;
+    if (query(keys, triples, 1, &epoch, &status) != 1)
+        return;
+    if (epoch == 0 || status != 0 || triples[2] != 2 || triples[1] != 1)
+        return;
+    if (bolt_mod_armed() != 0)
+        return;
+    if (autofarm_armed() == 0)
+        return;
+
+    if (query(fkeys, ft, 2, &f_epoch, &f_status) != 1)
+        return;
+    if ((uint64_t)f_epoch != (uint64_t)epoch || f_status != 0)
+        return;
+    if (ft[0] < 0 || ft[0] >= 2)
+        return;
+
+    interval = (uint32_t)ft[3];
+    if ((int32_t)interval < 0x79)
+        interval = 0x78;
+    if (interval > 0x1a3)
+        interval = 0x1a4;
+
+    if (g_farm_last_frame != g_ctx_frame_no) {
+        g_farm_last_fire_ms = 0;
+        g_farm_last_frame = g_ctx_frame_no;
+    }
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return;
+    now_ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+
+    if (!(now_ms <= g_farm_last_fire_ms - 1
+          || (uint64_t)interval <= now_ms - g_farm_last_fire_ms))
+        return;
+
+    if (g_dyna_guard_a != 0 || g_dyna_guard_b != 0 || g_dyna_guard_c != 0
+        || g_dyna_world_last == g_ctx_a)
+        return;
+    if (dyna_engine_gate() == 0)
+        return;
+
+    memset(farm_state, 0, sizeof farm_state);
+    if (dyna_state_read(g_farm_world, (void *)game_read, 0, farm_state) == 0)
+        return;
+    if (farm_state[0] != 0 || farm_state[1] != 0)
+        return;
+    if (dyna_jump_armed() != 0)
+        return;
+
+    memset(seed, 0, sizeof seed);
+    if (autofarm_plan_seed((uint64_t)epoch, seed) == 0)
+        return;
+
+    memset(resolve, 0, sizeof resolve);
+    if (game_object_resolve(g_engine_base, seed[0], (void *)game_read, 0,
+                            resolve) == 0)
+        return;
+    if (resolve[5] == 0)
+        return;
+    if ((uint32_t)resolve[9] != (uint32_t)seed[3])
+        return;
+    if (entity_team_block(g_team_world, g_team_ctrl,
+                          (uint32_t)resolve[4], (uint32_t)resolve[6]) != 0)
+        return;
+
+    {
+        float hp_own = 1.0f;
+        float hp_target = 1.0f;
+        float threat_own;
+        float threat_target;
+        float dist;
+        uint64_t self_out[2] = { 0, 0 };
+        int64_t ctrl_list = 0;
+        int64_t ctrl_entry = 0;
+        uint32_t ctrl_count = 0;
+        uint32_t ctrl_index = 0;
+        uintptr_t h;
+        float target_x = *(float *)((char *)resolve + 0x34);
+        float target_y = *(float *)((char *)resolve + 0x38);
+        int aim_ok;
+        uintptr_t wall_h;
+        uint8_t pair[8];
+        uint64_t new_pos;
+        struct {
+            uint64_t *payload;
+            void *read;
+            void (*apply)(void *);
+            int (*verify)(void *);
+            uint64_t slots[8];
+        } record;
+        uint64_t payload[3];
+        int result;
+
+        if (g_ctx_hp_max != 0 && g_ctx_hp_cur <= g_ctx_hp_max)
+            hp_own = (float)g_ctx_hp_cur / (float)g_ctx_hp_max;
+        if (resolve[7] != 0 && (uint32_t)resolve[8] <= (uint32_t)resolve[7])
+            hp_target = (float)(uint32_t)resolve[8] / (float)(uint32_t)resolve[7];
+
+        threat_own = entity_threat_score((uintptr_t)g_ctx_self);
+        threat_target = entity_threat_score((uintptr_t)resolve);
+        dist = hypotf(target_x - (float)(int32_t)(uint32_t)g_los_world,
+                      target_y - (float)(int32_t)(uint32_t)g_los_ctrl);
+
+        decide = autofarm_decide(hp_own, hp_target, threat_own, threat_target,
+                                 dist, g_autofarm_state);
+        if (decide == 0)
+            return;
+        if (g_dyna_own_obj != g_ctx_self)
+            return;
+        if (self_resolve((void *)(uintptr_t)g_ctx_self, self_out) == 0)
+            return;
+
+        h = (uintptr_t)page_perm_check(g_colt_ctx, &ctrl_list);
+        if (h == 0)
+            return;
+        h = game_read(h, g_colt_ctx + 0xc, &ctrl_count, 4);
+        if (h == 0)
+            return;
+        h = game_read(h, g_colt_ctx + 0xe0, &ctrl_index, 4);
+        if (h == 0)
+            return;
+        if (ctrl_count == 0 || ctrl_count >= 0x41)
+            return;
+        if ((int32_t)ctrl_index < 0 || ctrl_index >= ctrl_count)
+            return;
+        if (page_perm_check((uintptr_t)ctrl_list + (uintptr_t)ctrl_index * 8,
+                            &ctrl_entry) == 0)
+            return;
+
+        aim_ok = ((int (*)(uint64_t, int64_t, uint64_t))
+            (g_engine_base + ENGINE_AIM_CHECK_OFF))(
+                *(uint64_t *)self_out, ctrl_entry, g_ctx_self);
+        if (aim_ok == 0)
+            return;
+
+        {
+            union { int32_t i; float f; } cx, cy;
+            cx.f = target_y * 300.0f;
+            cy.f = target_x * 300.0f;
+            new_pos = ((uint64_t)(uint32_t)cx.i << 32) | (uint32_t)cy.i;
+        }
+
+        wall_h = farm_wall_probe(target_x, target_y, 1);
+        if (wall_h == 0)
+            return;
+        wall_h = farm_wall_probe(*(float *)((char *)resolve + 0x38),
+                                 *(float *)((char *)resolve + 0x34), 1);
+        if (wall_h == 0)
+            return;
+        if (game_read(wall_h, g_farm_world + 0xfac, pair, 8) == 0)
+            return;
+
+        payload[0] = g_farm_world;
+        payload[1] = g_ctx_self;
+        payload[2] = (uint64_t)epoch;
+
+        record.payload = payload;
+        record.read = (void *)game_read;
+        record.apply = colt_write_apply;
+        record.verify = autofarm_write_verify;
+        memset(record.slots, 0, sizeof record.slots);
+
+        result = remote_guarded_apply(&record, g_farm_world, pair, &new_pos);
+        if (result == 1) {
+            if (autofarm_write_verify(payload) != 0) {
+                uint64_t guard_saved = g_dyna_guard_d;
+                uint64_t attack_result;
+
+                g_dyna_guard_a = 4;
+                g_dyna_guard_d = 1;
+                g_dyna_guard_b = 1;
+                g_farm_last_fire_ms = now_ms;
+
+                attack_result = ((uint64_t (*)(uint64_t, uint64_t))
+                    (g_engine_base + ENGINE_ATTACK_OFF))(payload[0], payload[1]);
+
+                g_dyna_guard_a = 0;
+                g_dyna_guard_b = 0;
+                g_dyna_world_last = g_ctx_a;
+                g_dyna_guard_d = guard_saved;
+
+                char json[0xf0];
+                snprintf(json, sizeof json,
+                         ",\"target_gid\":%u,\"result\":%d,\"raw_x\":%d,\"raw_y\":%d",
+                         (uint32_t)resolve[9], (uint32_t)attack_result,
+                         (uint32_t)new_pos, (uint32_t)(new_pos >> 32));
+                log_event("autofarm_fire", "original_wrapper", json);
+            }
+        } else if (result == -1) {
+            log_event("fatal", "farm_xy_restore_unverified", NULL);
+            abort();
+        }
+    }
 }
 
+uint32_t autofarm_play_again(uint32_t state)
+{
+    if (state - 1u > 2u || g_ui_key_lookup == NULL)
+        return 0;
+
+    if (g_ui_key_lookup("autofarmEnabled") != 1)
+        return 0;
+
+    {
+        void (*alloc_fn)(void);
+        void (*init_fn)(void);
+        void (*send_fn)(void);
+        uint64_t slot = 0;
+        uint64_t vtable = 0;
+        uint64_t fn = 0;
+        int64_t obj = 0;
+        const char *event;
+        const char *sent;
+        uint32_t ok;
+        char json[0x60];
+
+        alloc_fn = (void (*)(void))(g_engine_base + ENGINE_PLAY_ALLOC_OFF);
+        init_fn = (void (*)(void))(g_engine_base + ENGINE_PLAY_INIT_OFF);
+        send_fn = (void (*)(void))(g_engine_base + ENGINE_PLAY_SEND_OFF);
+
+        if (alloc_fn == NULL || init_fn == NULL || send_fn == NULL)
+            goto fail;
+        if (game_read(1, g_engine_base + ENGINE_PLAY_STATIC_OFF, &slot, 8) == 0)
+            goto fail;
+        if (slot < 0x1000 || (slot & 7) != 0)
+            goto fail;
+        if (game_read(1, slot, &vtable, 8) == 0)
+            goto fail;
+        if (vtable != g_engine_base + ENGINE_PLAY_VTABLE_OFF)
+            goto fail;
+        if (game_read(1, vtable + 0x18, &fn, 8) == 0)
+            goto fail;
+        if (fn != g_engine_base + ENGINE_PLAY_SEND_OFF)
+            goto fail;
+
+        obj = ((int64_t (*)(uint64_t))alloc_fn)(0x98);
+        if (obj == 0)
+            goto fail;
+
+        ((void (*)(int64_t, int, int))init_fn)(obj, 1, 0);
+        ((void (*)(uint64_t, int64_t))send_fn)(slot, obj);
+
+        ok = 1;
+        event = "play_again_status";
+        sent = "true";
+        goto done;
+
+fail:
+        ok = 0;
+        event = "native_send_failed";
+        sent = "false";
+
+done:
+        snprintf(json, sizeof json, ",\"status\":%d,\"sent\":%s",
+                 state, sent);
+        log_event("autofarm_play_again", event, json);
+        return ok;
+    }
+}
+
+bool ui_persist_key(const char *key)
+{
+    if (strncmp(key, "nexus_quick_menu_", 0x11) == 0
+        || strcmp(key, "nexus_autofarm_post_delay_ms") == 0
+        || strcmp(key, "nexus_autofarm_click_gap_ms") == 0
+        || strcmp(key, "nexus_auto_play_again_enabled") == 0
+        || strcmp(key, "nexus_autofarm_show_stats") == 0)
+        return true;
+
+    return strcmp(key, "nexus_sx_outline_color_preset") == 0;
+}

@@ -372,7 +372,7 @@ extern int wall_avoid_step(float ox, float oy, float px, float py, void *state,
                            float *out_dx, float *out_dy, uint32_t *out_flags);
 extern void wall_avoid_adjust(float ox, float oy, void *state, const void *params,
                               uint32_t tick, float *out_dx, float *out_dy);
-extern void autofarm_plan_seed(uint64_t epoch, void *out);
+extern int autofarm_plan_seed(uint64_t epoch, void *out);
 extern int entity_los_check(uintptr_t world, uintptr_t ctrl, float x, float y,
                             int32_t aim_a, int32_t aim_b, void *read_fn,
                             int flags, int range);
@@ -826,7 +826,7 @@ void bolt_movement_tick(void *frame)
             && GRID_FRAME == g_ctx_frame_no
             && g_evasion_gate != 0) {
 
-            const char *fkeys[2] = { "autofarmFollowTarget", "autofarmAttackEnemies" };
+            const char *fkeys[2] = { "autofarmFollowTarget", "combatFireInterval" };
             int32_t ft[6];
             int64_t f_epoch = 0;
             int32_t f_status = -1;
