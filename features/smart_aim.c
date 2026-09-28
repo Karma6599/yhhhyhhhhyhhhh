@@ -1,1427 +1,978 @@
-/*
- * Smart Aim (AOP) — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: Input injection path (smartaim_input), target mode, ultimate/gadget aim sub-modes; separate "natural_smartaim_only" profile when paid scope off.
- */
+#define _GNU_SOURCE 1
 
-/* ===== FUN_001512f8 @ 001512f8 [libNexusEvasionRuntime69252.so] ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+#include <time.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+extern int __android_log_write(int prio, const char *tag, const char *text);
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
+extern void log_event(const char *category, const char *event, const char *json);
 
-void FUN_001512f8(undefined8 param_1,int *param_2)
+extern int colt_movement_apply(uint64_t ctx, uint64_t target_obj);
+extern int movement_ctx_valid(uint64_t ctx, uint64_t obj);
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out, uint32_t len);
+extern int game_object_resolve(uintptr_t engine, uintptr_t obj, void *read_fn,
+                               int flags, void *out);
+extern int remote_guarded_apply(void *record, uintptr_t target,
+                                const void *in, void *out);
+extern int page_perm_check(uintptr_t addr, int64_t *out);
+extern int skill_context_resolve(uintptr_t engine, uintptr_t obj, uint64_t member,
+                                 void *read_fn, int flags, void *out);
+extern int ability_input_check(uint64_t ctx, uint64_t obj, void *context_out,
+                               int32_t *ability_out);
+extern int event_precheck(int zero, int32_t *event);
+extern int skill_precheck(int32_t *event, uint64_t *out);
+extern void input_event_refresh(int32_t *event);
+extern void input_event_passthrough(int32_t *event);
+extern int aim_proposal_solve(void *engine_state, void *request, void *inputs,
+                              void **lease_slot, void *proposal);
+extern uint64_t engine_frame_time(int kind);
+extern int actor_refresh(uint64_t ctrl, uint64_t obj);
+extern int smartaim_xy_apply(void *payload);
+extern int smartaim_xy_verify(void *payload);
+extern int skill_xy_apply(void *payload);
+extern int skill_xy_verify(void *payload);
+extern void map_publish(void *map_state, uint32_t generation, uint64_t region,
+                        int64_t ctrl, int ok, void *out);
+extern void map_clear(void);
+extern int route_install_check(void);
+extern int route_install(void *ctx, void *world, void *params, int flags);
+extern int counters_snapshot(void *counters_ctx, void *out);
+extern void aim_feed_route_install(uint64_t ctrl, uint64_t list,
+                                   uint32_t kind, uint32_t flags);
+extern void fetch_read_cb(void);
+extern void smartaim_skill_log(int32_t *event, void *proposal, void *lease,
+                            void *config, const char *reason, int mode);
 
+extern char g_smartaim_armed;
+extern char g_smartaim_active;
+extern uint64_t g_smartaim_event_count;
+extern uint64_t g_smartaim_xy_writes;
+extern uint64_t g_smartaim_last_log_ms;
+extern uint64_t g_fire_state;
+extern uint64_t g_skill_event_count;
+extern uint64_t g_skill_commits;
+extern uint64_t g_skill_last_log_ms;
+extern void *g_config_query_fn;
+extern void *g_input_lease_acquire;
+extern void *g_input_lease_commit;
+extern void *g_proposal_engine_state;
+extern void *g_counters_ctx;
+extern char g_input_lock;
+extern uint32_t g_ctx_ready;
+extern uint32_t g_evasion_gate;
+extern uint32_t g_map_epoch;
+extern uint64_t g_map_generation;
+extern uint64_t g_map_active;
+extern uint64_t g_map_fail_a;
+extern uint64_t g_map_fail_b;
+extern uint64_t g_map_last_log_ms;
+extern uint64_t g_route_active;
+extern uint64_t g_route_gen;
+extern char g_route_armed;
+extern long g_main_tid;
+extern uint64_t g_engine_epoch;
+extern uint64_t g_colt_epoch;
+extern uintptr_t g_engine_base;
+extern uint64_t g_colt_ctx;
+extern uint64_t g_proposal_state;
+
+extern uint8_t g_ctx_block[0x1d0];
+
+#define CTX64(a)  (*(uint64_t *)(g_ctx_block + ((a) - 0x20f628u)))
+#define CTX32(a)  (*(uint32_t *)(g_ctx_block + ((a) - 0x20f628u)))
+#define CTXFLT(a) (*(float *)(g_ctx_block + ((a) - 0x20f628u)))
+
+extern uint8_t g_skill_blob[0x2c0];
+#define SKB(a) (*(uint64_t *)(g_skill_blob + ((a) - 0x215680u)))
+
+#define ROD_PROPOSAL_VT   (*(const uint64_t *)(uintptr_t)0x10e7f8)
+#define ROD_CONFIG_VT     (*(const uint64_t *)(uintptr_t)0x10e7d0)
+#define ROD_LEASE_VT      (*(const uint64_t *)(uintptr_t)0x10e700)
+#define ROD_SKILL_REQ_VT  (*(const uint64_t *)(uintptr_t)0x10e6e0)
+#define ROD_REQUEST_VT    (*(const uint64_t *)(uintptr_t)0x10e588)
+#define ROD_SKILL_OUT_A   (*(const uint64_t *)(uintptr_t)0x112940)
+#define ROD_SKILL_OUT_B   (*(const uint64_t *)(uintptr_t)0x112948)
+#define ROD_SKILL_REQ2_A  (*(const uint64_t *)(uintptr_t)0x112910)
+#define ROD_SKILL_REQ2_B  (*(const uint64_t *)(uintptr_t)0x112918)
+#define ROD_MAP_VT        (*(const uint64_t *)(uintptr_t)0x10e550)
+#define ROD_ROUTE_VT      (*(const uint64_t *)(uintptr_t)0x10e760)
+#define ROD_COUNTERS_VT   (*(const uint64_t *)(uintptr_t)0x10e668)
+#define ROD_XY_SENTINEL   ((const uint64_t *)(uintptr_t)0x112be0)
+
+#define ENGINE_STATIC_CHAIN_OFF 0x1307e20u
+#define ENGINE_ATTACK_OFF       0xb2e994u
+#define ENGINE_CALLER_A_OFF     0xb2d5c8u
+#define ENGINE_CALLER_B_OFF     0xb2d3d4u
+#define ENGINE_CALLER_C_OFF     0xb380e0u
+
+static void input_lock_acquire(void)
 {
-  char *pcVar1;
-  undefined4 uVar2;
-  int iVar3;
-  char cVar4;
-  bool bVar5;
-  long lVar6;
-  undefined4 uVar7;
-  char cVar8;
-  int iVar9;
-  int iVar10;
-  undefined8 uVar11;
-  long lVar12;
-  char *pcVar13;
-  uint uVar14;
-  ushort uVar15;
-  undefined1 auVar16 [16];
-  undefined1 auVar17 [16];
-  undefined8 **local_a88;
-  code *pcStack_a80;
-  code *local_a78;
-  code *local_a70;
-  undefined8 *puStack_a68;
-  undefined8 local_a60;
-  undefined8 uStack_a58;
-  undefined **local_a50;
-  code *pcStack_a48;
-  code *local_a40;
-  undefined8 uStack_a38;
-  code *local_a30;
-  undefined *local_a28;
-  undefined8 *puStack_a20;
-  code *local_a18;
-  undefined8 uStack_a10;
-  undefined8 *local_a08;
-  long lStack_a00;
-  undefined4 local_9f8;
-  undefined4 local_9f4;
-  undefined8 local_9f0;
-  undefined4 local_9e8;
-  undefined8 local_9e4;
-  undefined8 local_9dc;
-  undefined4 local_9d4;
-  undefined8 local_9d0;
-  int local_9c8;
-  undefined4 local_9c4;
-  undefined8 local_9c0;
-  undefined8 uStack_9b8;
-  undefined8 local_9b0;
-  undefined8 uStack_9a8;
-  undefined8 local_9a0;
-  undefined4 local_998;
-  undefined8 local_994;
-  undefined8 local_988;
-  undefined8 local_980;
-  undefined4 local_978;
-  undefined4 local_974;
-  undefined8 local_970;
-  undefined4 local_968;
-  undefined8 local_964;
-  undefined8 local_958;
-  undefined8 local_950;
-  long lStack_948;
-  undefined8 local_940;
-  undefined8 uStack_938;
-  undefined8 uStack_930;
-  undefined8 uStack_928;
-  undefined8 local_920;
-  undefined8 uStack_918;
-  undefined8 uStack_910;
-  undefined8 uStack_908;
-  undefined8 local_900;
-  undefined8 local_8f8;
-  undefined8 uStack_8f0;
-  undefined8 local_8e8;
-  undefined8 uStack_8e0;
-  undefined8 local_8d8;
-  undefined8 uStack_8d0;
-  undefined8 local_8c8;
-  undefined8 local_8c0;
-  undefined8 uStack_8b8;
-  undefined8 local_8b0;
-  long lStack_8a8;
-  undefined8 uStack_8a0;
-  long local_898;
-  undefined8 local_890;
-  undefined8 uStack_888;
-  undefined8 uStack_880;
-  undefined8 uStack_878;
-  undefined4 local_870;
-  undefined4 uStack_86c;
-  undefined4 uStack_868;
-  undefined4 uStack_864;
-  undefined8 uStack_860;
-  long local_858;
-  undefined8 local_850;
-  undefined8 uStack_848;
-  undefined8 uStack_840;
-  undefined8 uStack_838;
-  undefined8 local_830;
-  undefined8 uStack_828;
-  undefined8 uStack_820;
-  undefined8 uStack_818;
-  undefined8 local_810;
-  undefined8 uStack_808;
-  undefined8 uStack_800;
-  undefined8 uStack_7f8;
-  int local_7ec [425];
-  undefined8 local_148;
-  undefined8 local_140;
-  long local_138;
-  undefined8 uStack_130;
-  undefined8 local_128;
-  undefined8 uStack_120;
-  ulong local_118;
-  undefined8 uStack_110;
-  undefined8 local_108;
-  undefined8 uStack_100;
-  undefined8 local_f8;
-  undefined8 uStack_f0;
-  undefined8 local_e8;
-  undefined8 uStack_e0;
-  undefined8 local_d8;
-  undefined8 uStack_d0;
-  undefined8 local_c8;
-  undefined8 uStack_c0;
-  undefined8 local_b8;
-  undefined8 uStack_b0;
-  undefined8 local_a8;
-  undefined8 uStack_a0;
-  undefined8 local_98;
-  undefined8 uStack_90;
-  undefined8 local_88;
-  undefined8 local_80;
-  long local_78;
-  
-  iVar10 = DAT_00209cd8;
-  lVar6 = tpidr_el0;
-  local_78 = *(long *)(lVar6 + 0x28);
-  if (((((param_2 != (int *)0x0) && (DAT_002147dc != '\0')) && (DAT_00209cd8 != 0)) &&
-      ((iVar9 = gettid(), iVar10 == iVar9 && (DAT_0020d158 < 4)))) && (DAT_0020d158 != 2)) {
-    if ((((*param_2 == 2) && (param_2[1] == 0x98)) &&
-        ((param_2[2] == 2 &&
-         (((*(long *)(param_2 + 4) == DAT_00209d00 && (*(long *)(param_2 + 8) == DAT_001e0978)) &&
-          (*(long *)(param_2 + 10) == *(long *)(param_2 + 8) + 0xb2e994)))))) &&
-       ((*(long *)(param_2 + 0x14) == *(long *)(param_2 + 0xc) &&
-        (*(long *)(param_2 + 0x16) == *(long *)(param_2 + 0xe))))) {
-      iVar10 = FUN_0015494c();
+    while (__atomic_test_and_set(&g_input_lock, __ATOMIC_ACQUIRE))
+        ;
+}
+
+static void input_lock_release(void)
+{
+    g_input_lock = 0;
+}
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static int xy_matches_sentinel(uint32_t lo, uint32_t hi)
+{
+    uint64_t pair[2];
+
+    pair[0] = ((uint64_t)hi << 32) | lo;
+    pair[1] = ((uint64_t)hi << 32) | lo;
+    return memcmp(pair, ROD_XY_SENTINEL, 16) == 0;
+}
+
+void smartaim_input_hook(void *ctx, int32_t *event)
+{
+    (void)ctx;
+
+    const char *reason = "configuration_or_generation";
+    uint64_t untouched = 0;
+    int untouched_known = 0;
+    uint32_t proposed_lo = 0;
+    uint32_t proposed_hi = 0;
+    int commit_status = 0;
+    int committed = 0;
+    uint64_t config[32];
+    uint64_t lease[14];
+    uint64_t request[24];
+    uint64_t proposal[20];
+    int32_t ability[2];
+    int applied;
+    uint64_t now;
+
+    if (event == NULL || g_smartaim_armed == 0 || g_main_tid == 0)
+        return;
+    if (gettid() != g_main_tid)
+        return;
+    if (g_fire_state >= 4 || g_fire_state == 2)
+        return;
+
+    if (event[0] == 2 && event[1] == 0x98 && event[2] == 2
+        && *(uint64_t *)(event + 4) == g_engine_epoch
+        && *(uint64_t *)(event + 8) == g_engine_base
+        && *(uint64_t *)(event + 10) == g_engine_base + ENGINE_ATTACK_OFF
+        && *(uint64_t *)(event + 0x14) == *(uint64_t *)(event + 0xc)
+        && *(uint64_t *)(event + 0x16) == *(uint64_t *)(event + 0xe))
+        applied = colt_movement_apply(*(uint64_t *)(event + 0xc),
+                                      *(uint64_t *)(event + 0xe));
+    else
+        applied = 0;
+
+    if (g_fire_state != 0) {
+        if (applied != 0)
+            input_event_passthrough(event);
+        return;
     }
-    else {
-      iVar10 = 0;
-    }
-    if (DAT_0020d158 == 0) {
-      if (iVar10 != 0) {
-        if (*(long *)(lVar6 + 0x28) == local_78) {
-          FUN_00153edc(param_2);
-          return;
-        }
-        goto LAB_00151b7c;
-      }
-      do {
-        cVar8 = DAT_001cfe94;
-        cVar4 = '\x01';
-        bVar5 = (bool)ExclusiveMonitorPass(0x1cfe94,0x10);
-        if (bVar5) {
-          _DAT_001cfe94 = CONCAT31(DAT_001cfe94_1,1);
-          cVar4 = ExclusiveMonitorsStatus();
-        }
-      } while (cVar4 != '\0');
-      if (cVar8 != '\0') goto LAB_001513fc;
-      DAT_002147e0 = DAT_002147e0 + 1;
-      FUN_00153ff8(param_2);
-      local_8c8 = 0;
-      local_88 = 0;
-      local_80 = 0;
-      lStack_8a8 = 0;
-      local_8b0 = 0;
-      local_898 = 0;
-      uStack_8a0 = 0;
-      local_900 = DAT_0010e7f8;
-      uStack_888 = 0;
-      local_890 = 0;
-      uStack_878 = 0;
-      uStack_880 = 0;
-      uStack_868 = 0;
-      uStack_864 = 0;
-      local_870 = 0;
-      uStack_86c = 0;
-      local_858 = 0;
-      uStack_860 = 0;
-      uStack_848 = 0;
-      local_850 = 0;
-      uStack_838 = 0;
-      uStack_840 = 0;
-      uStack_828 = 0;
-      local_830 = 0;
-      uStack_818 = 0;
-      uStack_820 = 0;
-      uStack_808 = 0;
-      local_810 = 0;
-      uStack_7f8 = 0;
-      uStack_800 = 0;
-      uStack_8b8 = 0;
-      local_8c0 = 0;
-      uStack_8d0 = 0;
-      local_8d8 = 0;
-      uStack_8e0 = 0;
-      local_8e8 = 0;
-      uStack_8f0 = 0;
-      local_8f8 = 0;
-      uStack_90 = 0;
-      local_98 = 0;
-      uStack_a0 = 0;
-      local_a8 = 0;
-      uStack_b0 = 0;
-      local_b8 = 0;
-      uStack_c0 = 0;
-      local_c8 = 0;
-      uStack_d0 = 0;
-      local_d8 = 0;
-      uStack_e0 = 0;
-      local_e8 = 0;
-      uStack_f0 = 0;
-      local_f8 = 0;
-      uStack_100 = 0;
-      local_108 = 0;
-      uStack_110 = 0;
-      local_118 = 0;
-      uStack_120 = 0;
-      local_128 = 0;
-      uStack_130 = 0;
-      local_138 = 0;
-      local_140 = DAT_0010e7d0;
-      if (((DAT_002147d8 == '\x01') && (*(long *)(param_2 + 4) == DAT_00209d00)) &&
-         ((*(long *)(param_2 + 8) == DAT_001e0978 &&
-          (uVar11 = FUN_00150bf0(*(undefined8 *)(param_2 + 0xc),*(undefined8 *)(param_2 + 0xe)),
-          (int)uVar11 != 0)))) {
-        iVar10 = FUN_001428fc(uVar11,*(long *)(param_2 + 0xc) + 0xfac,&local_88,8);
-        if (iVar10 != 0) {
-          local_80 = local_88;
-        }
-        uVar14 = (uint)(iVar10 != 0);
-        iVar9 = FUN_00154184(param_2);
-        if (iVar9 == 0) {
-          iVar9 = (*DAT_0020d160)(&local_140);
-          pcVar13 = "configuration_or_generation";
-          if ((iVar9 == 1) && ((int)uStack_110 != 0)) {
-            if ((local_118 & 1) == 0) {
-              iVar10 = 0;
-              iVar9 = 0;
-              pcVar13 = "configuration_or_generation";
-            }
-            else if (local_138 == DAT_0020f5e8) {
-              if ((uStack_f0._4_4_ == 0) || ((int)local_e8 == 0)) {
-                local_7ec[0] = 0;
-                iVar9 = FUN_001541f8(*(undefined8 *)(param_2 + 0xc),*(undefined8 *)(param_2 + 0xe),0
-                                     ,local_7ec);
-                if (iVar9 == 0) {
-                  pcVar13 = "ability_input_unknown";
+
+    input_lock_acquire();
+    g_smartaim_event_count = g_smartaim_event_count + 1;
+    input_event_refresh(event);
+
+    memset(proposal, 0, sizeof proposal);
+    proposal[0] = ROD_PROPOSAL_VT;
+
+    if (g_smartaim_active == 1
+        && *(uint64_t *)(event + 4) == g_engine_epoch
+        && *(uint64_t *)(event + 8) == g_engine_base
+        && movement_ctx_valid(*(uint64_t *)(event + 0xc),
+                              *(uint64_t *)(event + 0xe))) {
+        uintptr_t h = movement_ctx_valid(*(uint64_t *)(event + 0xc),
+                                         *(uint64_t *)(event + 0xe));
+
+        if (game_read(h, *(uint64_t *)(event + 0xc) + 0xfac, &untouched, 8) != 0)
+            untouched_known = 1;
+
+        if (event_precheck(0, event) == 0) {
+            memset(config, 0, sizeof config);
+            config[0] = ROD_CONFIG_VT;
+
+            if (((int (*)(void *))g_config_query_fn)(config) == 1
+                && (uint32_t)config[7] != 0
+                && (config[6] & 1) != 0
+                && config[5] == g_colt_epoch) {
+                int ultimate_ok = (uint32_t)(config[3] >> 32) != 0;
+                int gadget_ok = (int32_t)config[2] != 0;
+                int proceed;
+
+                if (ultimate_ok || gadget_ok) {
+                    proceed = 1;
+                } else {
+                    ability[0] = 0;
+                    if (ability_input_check(*(uint64_t *)(event + 0xc),
+                                            *(uint64_t *)(event + 0xe),
+                                            NULL, ability) == 0) {
+                        reason = "ability_input_unknown";
+                        proceed = 0;
+                    } else {
+                        const char *sub;
+
+                        sub = "gadget_smartaim_disabled";
+                        if (ability[0] != 3)
+                            sub = "ability_allowed";
+                        reason = "ultimate_smartaim_disabled";
+                        if (ability[0] != 2)
+                            reason = sub;
+
+                        if (ability[0] == 3)
+                            proceed = (int32_t)config[2] != 0;
+                        else if (ability[0] == 2)
+                            proceed = (uint32_t)(config[3] >> 32) != 0;
+                        else
+                            proceed = 1;
+                    }
                 }
-                else {
-                  pcVar1 = "gadget_smartaim_disabled";
-                  if (local_7ec[0] != 3) {
-                    pcVar1 = "ability_allowed";
-                  }
-                  pcVar13 = "ultimate_smartaim_disabled";
-                  if (local_7ec[0] != 2) {
-                    pcVar13 = pcVar1;
-                  }
-                  if (local_7ec[0] == 3) {
-                    iVar9 = (int)local_e8;
-                  }
-                  else {
-                    if (local_7ec[0] != 2) goto LAB_00151814;
-                    iVar9 = uStack_f0._4_4_;
-                  }
-                  if (iVar9 != 0) goto LAB_00151814;
-                }
-                iVar10 = 0;
-                iVar9 = 0;
-              }
-              else {
-LAB_00151814:
-                iVar9 = FUN_00189c88(DAT_001e0978,*(undefined8 *)(param_2 + 0xe),FUN_001428fc,0,
-                                     &DAT_0020f680);
-                if ((iVar9 == 0) ||
-                   (iVar9 = FUN_001543f8(DAT_0020f678,*(undefined8 *)(param_2 + 0xe)), iVar9 == 0))
-                {
-                  iVar10 = 0;
-                  iVar9 = 0;
-                  pcVar13 = "current_actor_refresh";
-                }
-                else {
-                  uStack_938 = 0;
-                  local_940 = 0;
-                  uStack_928 = 0;
-                  uStack_930 = 0;
-                  uStack_918 = 0;
-                  local_920 = 0;
-                  uStack_908 = 0;
-                  uStack_910 = 0;
-                  lStack_948 = 0;
-                  local_950 = 0;
-                  local_958 = DAT_0010e700;
-                  iVar9 = (*DAT_00213040)(0x17,1,&local_958);
-                  if (iVar9 == 0) {
-                    iVar10 = 0;
-                    iVar9 = 0;
-                    pcVar13 = "input_lease_unavailable";
-                  }
-                  else if (iVar10 == 0) {
-                    iVar10 = 0;
-                    iVar9 = 0;
-                    pcVar13 = "untouched_xy_unknown";
-                  }
-                  else {
-                    local_9c0 = *(undefined8 *)(param_2 + 0xc);
-                    local_9b0 = *(undefined8 *)(param_2 + 0xe);
-                    local_9c4 = 1;
-                    local_9d0 = DAT_0010e6e0;
-                    local_994 = CONCAT44(DAT_0020f638._4_4_,(undefined4)DAT_0020f638);
-                    uStack_9b8 = DAT_0020f678;
-                    local_9a0 = *(undefined8 *)(param_2 + 6);
-                    local_9c8 = param_2[2];
-                    uStack_9a8 = DAT_0020f6f8;
-                    local_998 = DAT_0020f690;
-                    local_988 = FUN_001391f0(1);
-                    local_964 = local_88;
-                    local_974 = DAT_0020f694;
-                    local_9e8 = local_108._4_4_;
-                    local_9f4 = uStack_110._4_4_;
-                    local_978 = 1;
-                    local_a28 = &DAT_0020d168;
-                    puStack_a20 = &DAT_0020f628;
-                    local_a08 = &local_900;
-                    local_a18 = FUN_00150f7c;
-                    uStack_a10 = 0;
-                    local_a50 = &local_a28;
-                    local_970 = 0;
-                    lStack_a00 = local_138;
-                    local_968 = 1;
-                    local_980 = DAT_0010e588;
-                    local_9f8 = 1;
-                    pcStack_a48 = thunk_FUN_00186cc8;
-                    local_9f0 = 0;
-                    local_9dc = 0;
-                    local_9e4 = 0;
-                    local_a40 = FUN_001546d4;
-                    uStack_a38 = 0;
-                    local_9d4 = 0;
-                    local_a30 = FUN_00154808;
-                    iVar10 = FUN_00184ce0(&DAT_00213098,&lStack_a00,&local_9d0,&local_a50,&local_8c0
-                                         );
-                    pcVar1 = "proposal_valid";
-                    pcVar13 = "proposal_refused";
-                    if ((((iVar10 == 1) && (pcVar13 = pcVar1, uStack_8b8._4_4_ == 1)) &&
-                        (lStack_8a8 == *(long *)(param_2 + 0xc))) &&
-                       (local_898 == *(long *)(param_2 + 0xe))) {
-                      auVar16._8_8_ = CONCAT44(uStack_868,uStack_86c);
-                      auVar16._0_8_ = CONCAT44(uStack_868,uStack_86c);
-                      auVar17 = NEON_cmgt(auVar16,_DAT_00112be0,4);
-                      auVar16 = NEON_cmgt(_DAT_00112be0,auVar16,4);
-                      uVar15 = NEON_umaxv(CONCAT26(auVar16._12_2_,
-                                                   CONCAT24(auVar16._8_2_,
-                                                            CONCAT22(auVar17._4_2_,auVar17._0_2_))),
-                                          2);
-                      if ((((uVar15 & 1) == 0) && (local_858 == lStack_948)) &&
-                         (iVar10 = FUN_00150bf0(), iVar10 != 0)) {
-                        iVar10 = (*DAT_00213048)(&local_958);
-                        if (iVar10 != 0) {
-                          uStack_a58 = *(undefined8 *)(param_2 + 0xe);
-                          local_a60 = *(undefined8 *)(param_2 + 0xc);
-                          local_148 = CONCAT44(uStack_868,uStack_86c);
-                          local_a88 = &puStack_a68;
-                          pcStack_a80 = FUN_001428fc;
-                          local_a78 = FUN_001548cc;
-                          local_a70 = FUN_00154908;
-                          puStack_a68 = &local_958;
-                          iVar9 = FUN_0018a084(&local_a88,local_a60,&local_80,&local_148);
-                          if (iVar9 == 1) {
-                            iVar10 = 1;
-                            DAT_002147e8 = DAT_002147e8 + 1;
-                            pcVar13 = "natural_event_xy_committed";
-                          }
-                          else {
-                            if (iVar9 == -1) {
-                              FUN_001417c8("fatal","input_xy_restore_unverified",0);
-                              __android_log_write(6,"NexusLab69252","input_xy_restore_unverified");
-                    /* WARNING: Subroutine does not return */
-                              abort();
+
+                if (proceed) {
+                    if (game_object_resolve(g_engine_base,
+                                            *(uint64_t *)(event + 0xe),
+                                            (void *)game_read, 0,
+                                            &CTX64(0x20f680)) == 0
+                        || actor_refresh(g_colt_ctx,
+                                         *(uint64_t *)(event + 0xe)) == 0) {
+                        reason = "current_actor_refresh";
+                    } else {
+                        memset(lease, 0, sizeof lease);
+                        lease[0] = ROD_LEASE_VT;
+
+                        if (((int (*)(uint32_t, uint32_t, void *))g_input_lease_acquire)(0x17, 1, lease) == 0) {
+                            reason = "input_lease_unavailable";
+                        } else if (!untouched_known) {
+                            reason = "untouched_xy_unknown";
+                        } else {
+                            void *lease_slot[5];
+
+                            memset(request, 0, sizeof request);
+                            request[0] = *(uint64_t *)(event + 0xc);
+                            request[1] = *(uint64_t *)(event + 0xe);
+                            *(uint32_t *)(request + 2) = 1;
+                            request[3] = ROD_SKILL_REQ_VT;
+                            request[4] = *(uint64_t *)(event + 6);
+                            request[5] = g_colt_ctx;
+                            *(uint32_t *)(request + 6) = (uint32_t)event[2];
+                            request[7] = CTX64(0x20f6f8);
+                            *(uint32_t *)(request + 8) = CTX32(0x20f690);
+                            request[9] = engine_frame_time(1);
+                            request[10] = 0;
+                            request[11] = untouched;
+                            request[13] = CTX64(0x20f694);
+                            *(uint32_t *)(request + 14) = (uint32_t)(config[7] >> 32);
+                            *(uint32_t *)(request + 15) = 1;
+                            request[16] = 0;
+                            request[17] = ROD_REQUEST_VT;
+                            request[18] = 0;
+                            request[19] = 1;
+                            request[12] = 1;
+                            request[20] = config[5];
+
+                            lease_slot[0] = (void *)(uintptr_t)0x20d168;
+                            lease_slot[1] = (void *)(uintptr_t)0x20f628;
+                            lease_slot[2] = proposal;
+                            lease_slot[3] = (void *)fetch_read_cb;
+                            lease_slot[4] = NULL;
+
+                            committed = aim_proposal_solve(g_proposal_engine_state,
+                                                           &config[5],
+                                                           request,
+                                                           lease_slot,
+                                                           proposal + 2);
+
+                            reason = "proposal_refused";
+                            if (committed == 1
+                                && *(uint32_t *)((char *)proposal + 0x0c + 0x10) == 1
+                                && ((uint64_t *)proposal)[3] == *(uint64_t *)(event + 0xc)
+                                && ((uint64_t *)proposal)[5] == *(uint64_t *)(event + 0xe)) {
+
+                                proposed_lo = *(uint32_t *)((char *)proposal + 0x5c);
+                                proposed_hi = *(uint32_t *)((char *)proposal + 0x58);
+
+                                if (xy_matches_sentinel(proposed_lo, proposed_hi)
+                                    && ((uint64_t *)proposal)[13] == lease[2]
+                                    && movement_ctx_valid(*(uint64_t *)(event + 0xc),
+                                                          *(uint64_t *)(event + 0xe))
+                                           != 0
+                                    && ((int (*)(void *))g_input_lease_commit)(lease) != 0) {
+                                    struct {
+                                        uint64_t *payload;
+                                        void *read;
+                                        int (*apply)(void *);
+                                        int (*verify)(void *);
+                                        uint64_t slots[8];
+                                    } record;
+                                    uint64_t payload[4];
+                                    int result;
+
+                                    payload[0] = *(uint64_t *)(event + 0xc);
+                                    payload[1] = *(uint64_t *)(event + 0xe);
+                                    payload[2] = (uint64_t)proposed_lo
+                                               | ((uint64_t)proposed_hi << 32);
+
+                                    record.payload = payload;
+                                    record.read = (void *)game_read;
+                                    record.apply = smartaim_xy_apply;
+                                    record.verify = smartaim_xy_verify;
+                                    memset(record.slots, 0, sizeof record.slots);
+
+                                    result = remote_guarded_apply(&record,
+                                                                  payload[0],
+                                                                  &untouched,
+                                                                  &payload[2]);
+                                    if (result == 1) {
+                                        committed = 1;
+                                        commit_status = 1;
+                                        g_smartaim_xy_writes = g_smartaim_xy_writes + 1;
+                                        reason = "natural_event_xy_committed";
+                                    } else if (result == -1) {
+                                        log_event("fatal",
+                                                  "input_xy_restore_unverified",
+                                                  NULL);
+                                        __android_log_write(6, "NexusLab69252",
+                                                            "input_xy_restore_unverified");
+                                        abort();
+                                    } else {
+                                        committed = 0;
+                                        commit_status = result;
+                                        if (result == 3)
+                                            reason = "untouched_xy_changed";
+                                        else if (result == 2)
+                                            reason = "xy_restored_after_failed_write";
+                                        else
+                                            reason = "xy_write_refused";
+                                    }
+                                }
                             }
-                            pcVar1 = "untouched_xy_changed";
-                            if (iVar9 != 3) {
-                              pcVar1 = "xy_write_refused";
-                            }
-                            iVar10 = 0;
-                            pcVar13 = "xy_restored_after_failed_write";
-                            if (iVar9 != 2) {
-                              pcVar13 = pcVar1;
-                            }
-                          }
-                          goto LAB_0015159c;
                         }
-                      }
                     }
-                    iVar10 = 0;
-                    iVar9 = 0;
-                  }
                 }
-              }
             }
-            else {
-              iVar10 = 0;
-              iVar9 = 0;
-            }
-          }
-          else {
-            iVar10 = 0;
-            iVar9 = 0;
-          }
-          goto LAB_0015159c;
         }
-      }
-      else {
-        iVar10 = 0;
-        uVar14 = 0;
-        iVar9 = 0;
-        pcVar13 = "identity_or_active";
-LAB_0015159c:
-        lVar12 = FUN_001391f0(1);
-        if (0x20 < DAT_002147e0) {
-          iVar3 = 0;
-          if (DAT_002147e8 < 9) {
-            iVar3 = iVar10;
-          }
-          if (((iVar3 == 0) && (DAT_002147f0 != 0)) && ((ulong)(lVar12 - DAT_002147f0) < 1000))
-          goto LAB_00151700;
-        }
-        auVar17._0_8_ = (double)DAT_0020f6b4;
-        auVar17._8_8_ = 0;
-        uVar2 = uStack_868;
-        uVar7 = uStack_86c;
-        if (iVar10 == 0) {
-          uVar2 = local_80._4_4_;
-          uVar7 = (undefined4)local_80;
-        }
-        snprintf((char *)local_7ec,0x6a4,
-                 ",\"action\":23,\"kind\":%u,\"delivery\":%llu,\"event_count\":%llu,\"publication\":%llu,\"source_tick\":%u,\"clock_known\":%u,\"map_ready\":%u,\"config_supported\":%u,\"active\":%u,\"evidence\":%u,\"generation\":%llu,\"plan_reason\":%u,\"selection_reason\":%u,\"target_gid\":%u,\"untouched_xy_known\":%d,\"untouched_raw_x\":%d,\"untouched_raw_y\":%d,\"proposed_raw_x\":%d,\"proposed_raw_y\":%d,\"committed_xy_known\":%d,\"committed_raw_x\":%d,\"committed_raw_y\":%d,\"commit_status\":%d,\"xy_written\":%d,\"xy_writes\":%llu,\"own_gid\":%u,\"own_x\":%.6f,\"own_y\":%.6f,\"ended\":%u,\"extra_fire_calls\":0"
-                 ,auVar17,SUB82((double)DAT_0020f6b8,0),(ulong)(uint)param_2[2],
-                 *(undefined8 *)(param_2 + 6),DAT_002147e0,DAT_0020f650,(ulong)DAT_0020f638._4_4_,
-                 (undefined4)DAT_0020f638,(uint)DAT_0020d15c,(uint)local_118 & 1,DAT_0020f7c4,
-                 DAT_00214800,local_138,(undefined4)uStack_8b8,(undefined4)local_8f8,local_870,
-                 uVar14,(undefined4)local_80,local_80._4_4_,uStack_86c,uStack_868,
-                 (uint)(iVar9 - 1U < 2),uVar7,uVar2,iVar9,iVar10,DAT_002147e8,DAT_0020f690,
-                 DAT_0020f7e8);
-        FUN_001417c8("smartaim_input",pcVar13,local_7ec);
-        DAT_002147f0 = lVar12;
-      }
-LAB_00151700:
-      _DAT_001cfe94 = 0;
-      FUN_00153edc(param_2);
+    } else {
+        reason = "identity_or_active";
     }
-  }
-LAB_001513fc:
-  if (*(long *)(lVar6 + 0x28) == local_78) {
-    return;
-  }
-LAB_00151b7c:
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+
+    now = monotonic_ms();
+    if (g_smartaim_event_count <= 0x20
+        || (g_smartaim_xy_writes < 9 && committed != 0)
+        || g_smartaim_last_log_ms == 0
+        || now - g_smartaim_last_log_ms >= 1000) {
+        char json[0x6a4];
+        uint32_t committed_lo = proposed_lo;
+        uint32_t committed_hi = proposed_hi;
+
+        if (committed == 0) {
+            committed_lo = (uint32_t)untouched;
+            committed_hi = (uint32_t)(untouched >> 32);
+        }
+
+        snprintf(json, sizeof json,
+                 ",\"action\":23,\"kind\":%u,\"delivery\":%llu,\"event_count\":%llu,"
+                 "\"publication\":%llu,\"source_tick\":%u,\"clock_known\":%u,"
+                 "\"map_ready\":%u,\"config_supported\":%u,\"active\":%u,"
+                 "\"evidence\":%u,\"generation\":%llu,\"plan_reason\":%u,"
+                 "\"selection_reason\":%u,\"target_gid\":%u,"
+                 "\"untouched_xy_known\":%d,\"untouched_raw_x\":%d,"
+                 "\"untouched_raw_y\":%d,\"proposed_raw_x\":%d,\"proposed_raw_y\":%d,"
+                 "\"committed_xy_known\":%d,\"committed_raw_x\":%d,"
+                 "\"committed_raw_y\":%d,\"commit_status\":%d,\"xy_written\":%d,"
+                 "\"xy_writes\":%llu,\"own_gid\":%u,\"own_x\":%.6f,\"own_y\":%.6f,"
+                 "\"ended\":%u,\"extra_fire_calls\":0",
+                 (unsigned)event[2],
+                 (unsigned long long)*(uint64_t *)(event + 6),
+                 (unsigned long long)g_smartaim_event_count,
+                 (unsigned long long)engine_frame_time(1),
+                 (unsigned)CTX32(0x20f650),
+                 (unsigned)CTX32(0x20f63c),
+                 (unsigned)CTX32(0x20f638),
+                 (unsigned)g_evasion_gate,
+                 (unsigned)((uint32_t)g_proposal_state & 1u),
+                 (unsigned)CTX32(0x20f7c4),
+                 (unsigned long long)g_map_epoch,
+                 (unsigned)(uint32_t)g_proposal_state,
+                 (unsigned)CTX32(0x20f7c0),
+                 (unsigned)(uint32_t)proposal[1],
+                 (unsigned)untouched_known,
+                 (int)(uint32_t)untouched,
+                 (int)(uint32_t)(untouched >> 32),
+                 (int)proposed_hi,
+                 (int)proposed_lo,
+                 (unsigned)(commit_status - 1U < 2),
+                 (int)committed_hi,
+                 (int)committed_lo,
+                 commit_status,
+                 committed,
+                 (unsigned long long)g_smartaim_xy_writes,
+                 (unsigned)CTX32(0x20f690),
+                 CTXFLT(0x20f6b4),
+                 CTXFLT(0x20f6b8),
+                 (unsigned)CTX32(0x20f7e8));
+        log_event("smartaim_input", reason, json);
+        g_smartaim_last_log_ms = now;
+    }
+
+    input_lock_release();
+    input_event_passthrough(event);
 }
 
-/* ===== FUN_00151ec4 @ 00151ec4 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_00151ec4(undefined8 param_1,int *param_2,undefined8 *param_3)
-
+int smartaim_skill_hook(void *ctx, int32_t *event, uint64_t *out)
 {
-  char *pcVar1;
-  char cVar2;
-  long lVar3;
-  undefined8 uVar4;
-  undefined8 uVar5;
-  char cVar6;
-  bool bVar7;
-  bool bVar8;
-  int iVar9;
-  undefined8 uVar10;
-  char *pcVar11;
-  long lVar12;
-  ushort uVar13;
-  undefined1 auVar14 [16];
-  undefined8 uVar15;
-  undefined1 auVar16 [16];
-  undefined **local_3d0;
-  code *pcStack_3c8;
-  code *local_3c0;
-  undefined8 uStack_3b8;
-  code *local_3b0;
-  undefined *local_3a8;
-  undefined8 *puStack_3a0;
-  code *local_398;
-  undefined8 uStack_390;
-  undefined8 *local_388;
-  long lStack_380;
-  undefined4 local_378;
-  undefined4 uStack_374;
-  undefined8 local_370;
-  undefined4 local_368;
-  undefined8 local_364;
-  undefined8 local_35c;
-  undefined4 local_354;
-  undefined8 local_350;
-  undefined8 uStack_348;
-  undefined8 local_340;
-  undefined8 uStack_338;
-  undefined8 local_330;
-  undefined8 uStack_328;
-  undefined8 local_320;
-  undefined4 local_318;
-  undefined8 local_314;
-  undefined8 local_308;
-  undefined8 local_300;
-  undefined4 local_2f8;
-  undefined4 uStack_2f4;
-  undefined8 local_2f0;
-  undefined4 local_2e8;
-  undefined8 local_2e4;
-  int local_2cc;
-  undefined8 local_2c8;
-  undefined8 uStack_2c0;
-  long lStack_2b8;
-  undefined8 uStack_2b0;
-  undefined8 uStack_2a8;
-  undefined8 uStack_2a0;
-  undefined8 uStack_298;
-  undefined8 local_290;
-  undefined8 uStack_288;
-  undefined8 uStack_280;
-  undefined8 local_278;
-  undefined8 local_270;
-  undefined8 uStack_268;
-  undefined8 local_260;
-  undefined8 uStack_258;
-  undefined8 uStack_250;
-  undefined8 uStack_248;
-  undefined8 local_240;
-  undefined8 uStack_238;
-  undefined8 uStack_230;
-  undefined8 local_228;
-  undefined8 uStack_220;
-  undefined8 local_218;
-  undefined8 uStack_210;
-  undefined8 local_208;
-  undefined8 local_200;
-  undefined8 uStack_1f8;
-  undefined8 local_1f0;
-  long lStack_1e8;
-  undefined8 local_1e0;
-  long lStack_1d8;
-  undefined8 local_1d0;
-  undefined8 uStack_1c8;
-  undefined8 local_1c0;
-  undefined8 uStack_1b8;
-  undefined4 local_1b0;
-  undefined4 uStack_1ac;
-  undefined4 uStack_1a8;
-  undefined4 uStack_1a4;
-  undefined8 local_1a0;
-  long lStack_198;
-  undefined8 local_190;
-  undefined8 uStack_188;
-  undefined8 local_180;
-  undefined8 uStack_178;
-  undefined8 local_170;
-  undefined8 uStack_168;
-  undefined8 uStack_160;
-  undefined8 uStack_158;
-  undefined8 local_150;
-  undefined8 uStack_148;
-  undefined8 uStack_140;
-  undefined8 uStack_138;
-  undefined8 local_130;
-  long local_128;
-  undefined8 uStack_120;
-  undefined8 local_118;
-  undefined8 uStack_110;
-  ulong local_108;
-  undefined8 uStack_100;
-  undefined8 local_f8;
-  undefined8 uStack_f0;
-  undefined8 local_e8;
-  undefined8 uStack_e0;
-  undefined8 local_d8;
-  undefined8 uStack_d0;
-  undefined8 local_c8;
-  undefined8 uStack_c0;
-  undefined8 local_b8;
-  undefined8 uStack_b0;
-  undefined8 local_a8;
-  undefined8 uStack_a0;
-  undefined8 local_98;
-  undefined8 uStack_90;
-  undefined8 local_88;
-  undefined8 uStack_80;
-  long local_78;
-  
-  lVar3 = tpidr_el0;
-  local_78 = *(long *)(lVar3 + 0x28);
-  if (param_3 != (undefined8 *)0x0) {
-    param_3[1] = 0;
-    *param_3 = 0;
-    param_3[3] = 0;
-    param_3[2] = 0;
-    param_3[5] = 0;
-    param_3[4] = 0;
-    param_3[7] = 0;
-    param_3[6] = 0;
-    if (((param_2 != (int *)0x0) && (*param_2 == 2)) && (param_2[1] == 0x98)) {
-      uVar10 = 0;
-      if ((param_2[2] != 4) || (DAT_002147d8 == '\0')) goto LAB_0015203c;
-      if ((*(long *)(param_2 + 4) == DAT_00209d00) &&
-         ((*(long *)(param_2 + 8) == DAT_001e0978 && (iVar9 = FUN_00151bb4(0,param_2), iVar9 == 1)))
-         ) {
-        lVar12 = *(long *)(param_2 + 0x12);
-        if ((lVar12 == DAT_001e0978 + 0xb2d5c8) && (*(long *)(param_2 + 0x1e) == 0)) {
-          bVar8 = *(long *)(param_2 + 0x20) == 0;
+    (void)ctx;
+    const char *reason;
+    uint64_t config[32];
+    uint64_t lease[14];
+    uint64_t request[24];
+    uint64_t proposal[20];
+    uint64_t skill_ctx[8];
+    int32_t ability;
+    uintptr_t caller;
+
+    if (out == NULL)
+        return 0;
+    memset(out, 0, 8 * sizeof(uint64_t));
+
+    if (event == NULL || event[0] != 2 || event[1] != 0x98)
+        return 0;
+    if (event[2] != 4 || g_smartaim_active == 0)
+        return 0;
+    if (*(uint64_t *)(event + 4) != g_engine_epoch
+        || *(uint64_t *)(event + 8) != g_engine_base
+        || skill_precheck(event, out) != 1)
+        return 0;
+
+    caller = *(uint64_t *)(event + 0x12);
+
+    {
+        int route_a = 0;
+        int route_b = 0;
+
+        if (caller == g_engine_base + ENGINE_CALLER_A_OFF
+            && *(uint64_t *)(event + 0x1e) == 0
+            && *(uint64_t *)(event + 0x20) == 0)
+            route_a = 1;
+
+        if (caller != g_engine_base + ENGINE_CALLER_B_OFF
+            && caller != g_engine_base + ENGINE_CALLER_C_OFF
+            && *(uint64_t *)(event + 0x1e) == 1
+            && event[0x21] == 0)
+            route_b = 1;
+
+        if (route_a || route_b) {
+            if (skill_precheck(event, out) != 0)
+                return 1;
+        } else {
+            return 0;
         }
-        else {
-          bVar8 = false;
-        }
-        bVar7 = false;
-        if ((lVar12 != DAT_001e0978 + 0xb2d3d4) && (lVar12 != DAT_001e0978 + 0xb380e0)) {
-          if (*(long *)(param_2 + 0x1e) == 1) {
-            bVar7 = param_2[0x21] == 0;
-          }
-          else {
-            bVar7 = false;
-          }
-        }
-        if ((bool)(bVar8 | bVar7)) {
-          iVar9 = FUN_001574e0(param_2,param_3);
-          if (iVar9 != 0) {
-            uVar10 = 1;
-            goto LAB_0015203c;
-          }
-          do {
-            cVar6 = DAT_001cfe94;
-            cVar2 = '\x01';
-            bVar8 = (bool)ExclusiveMonitorPass(0x1cfe94,0x10);
-            if (bVar8) {
-              _DAT_001cfe94 = CONCAT31(DAT_001cfe94_1,1);
-              cVar2 = ExclusiveMonitorsStatus();
-            }
-          } while (cVar2 != '\0');
-          if (cVar6 != '\0') goto LAB_00152038;
-          FUN_00153ff8(param_2);
-          DAT_00215670 = DAT_00215670 + 1;
-          memset(&DAT_00215678,0,0x280);
-          local_208 = 0;
-          local_240 = DAT_0010e7f8;
-          uStack_258 = 0;
-          local_260 = 0;
-          uStack_248 = 0;
-          uStack_250 = 0;
-          lStack_1e8 = 0;
-          local_1f0 = 0;
-          lStack_1d8 = 0;
-          local_1e0 = 0;
-          local_130 = DAT_0010e7d0;
-          uStack_1c8 = 0;
-          local_1d0 = 0;
-          uStack_1b8 = 0;
-          local_1c0 = 0;
-          uStack_1a8 = 0;
-          uStack_1a4 = 0;
-          local_1b0 = 0;
-          uStack_1ac = 0;
-          lStack_198 = 0;
-          local_1a0 = 0;
-          uStack_188 = 0;
-          local_190 = 0;
-          uStack_178 = 0;
-          local_180 = 0;
-          uStack_168 = 0;
-          local_170 = 0;
-          uStack_158 = 0;
-          uStack_160 = 0;
-          uStack_148 = 0;
-          local_150 = 0;
-          uStack_138 = 0;
-          uStack_140 = 0;
-          uStack_1f8 = 0;
-          local_200 = 0;
-          uStack_210 = 0;
-          local_218 = 0;
-          uStack_220 = 0;
-          local_228 = 0;
-          uStack_230 = 0;
-          uStack_238 = 0;
-          uStack_80 = 0;
-          local_88 = 0;
-          uStack_90 = 0;
-          local_98 = 0;
-          uStack_a0 = 0;
-          local_a8 = 0;
-          uStack_b0 = 0;
-          local_b8 = 0;
-          uStack_c0 = 0;
-          local_c8 = 0;
-          uStack_d0 = 0;
-          local_d8 = 0;
-          uStack_e0 = 0;
-          local_e8 = 0;
-          uStack_f0 = 0;
-          local_f8 = 0;
-          uStack_100 = 0;
-          local_108 = 0;
-          uStack_110 = 0;
-          local_118 = 0;
-          uStack_120 = 0;
-          local_128 = 0;
-          uStack_268 = 0;
-          local_270 = 0;
-          uStack_2a8 = 0;
-          uStack_2b0 = 0;
-          uStack_298 = 0;
-          uStack_2a0 = 0;
-          uStack_288 = 0;
-          local_290 = 0;
-          local_278 = 0;
-          uStack_280 = 0;
-          lStack_2b8 = 0;
-          uStack_2c0 = 0;
-          local_2c8 = DAT_0010e700;
-          iVar9 = FUN_00150bf0(*(undefined8 *)(param_2 + 0xc),*(undefined8 *)(param_2 + 0xe));
-          if (iVar9 == 0) {
-            pcVar11 = "skill_identity_or_active";
-          }
-          else {
-            iVar9 = (*DAT_0020d160)(&local_130);
-            pcVar11 = "skill_configuration_or_generation";
-            if ((((iVar9 == 1) && ((int)uStack_100 != 0)) &&
-                (pcVar11 = "skill_configuration_or_generation", (local_108 & 1) != 0)) &&
-               (local_128 == DAT_0020f5e8)) {
-              iVar9 = FUN_00189c88(DAT_001e0978,*(undefined8 *)(param_2 + 0xe),FUN_001428fc,0,
-                                   &DAT_0020f680);
-              if ((iVar9 == 0) ||
-                 (iVar9 = FUN_001543f8(DAT_0020f678,*(undefined8 *)(param_2 + 0xe)), iVar9 == 0)) {
-                pcVar11 = "skill_current_actor_refresh";
-              }
-              else {
-                iVar9 = FUN_0018a244(DAT_001e0978,*(undefined8 *)(param_2 + 0xe),
-                                     *(undefined8 *)(param_2 + 0x24),FUN_001428fc,0,&local_270);
-                if (iVar9 == 0) {
-                  pcVar11 = "skill_context_not_current_member";
-                }
-                else {
-                  local_2cc = 0;
-                  iVar9 = FUN_001541f8(*(undefined8 *)(param_2 + 0xc),*(undefined8 *)(param_2 + 0xe)
-                                       ,&local_270,&local_2cc);
-                  if (iVar9 == 0) {
-                    pcVar11 = "skill_ability_input_unknown";
-                  }
-                  else {
-                    bVar8 = false;
-                    if (local_2cc != 2) {
-                      bVar8 = bVar7;
-                    }
-                    if (bVar8) {
-                      pcVar11 = "skill_ultimate_route_not_live";
-                    }
-                    else {
-                      pcVar1 = "skill_gadget_smartaim_disabled";
-                      if (local_2cc != 3) {
-                        pcVar1 = "skill_ability_allowed";
-                      }
-                      pcVar11 = "skill_ultimate_smartaim_disabled";
-                      if (local_2cc != 2) {
-                        pcVar11 = pcVar1;
-                      }
-                      if (local_2cc == 3) {
-                        iVar9 = (int)local_d8;
-LAB_001522a4:
-                        if (iVar9 == 0) goto LAB_00152218;
-                      }
-                      else if (local_2cc == 2) {
-                        iVar9 = uStack_e0._4_4_;
-                        goto LAB_001522a4;
-                      }
-                      iVar9 = (*DAT_00213040)(0x17,4,&local_2c8);
-                      if (iVar9 == 0) {
-                        pcVar11 = "register_input_lease_unavailable";
-                      }
-                      else {
-                        local_340 = *(undefined8 *)(param_2 + 0xc);
-                        local_330 = *(undefined8 *)(param_2 + 0xe);
-                        uStack_338 = DAT_0020f678;
-                        local_320 = *(undefined8 *)(param_2 + 6);
-                        uStack_328 = DAT_0020f6f8;
-                        uStack_348 = _UNK_00112918;
-                        local_350 = _DAT_00112910;
-                        local_318 = DAT_0020f690;
-                        local_314 = DAT_0020f638;
-                        local_308 = FUN_001391f0(1);
-                        local_368 = local_f8._4_4_;
-                        local_300 = DAT_0010e588;
-                        local_2f8 = 1;
-                        uStack_2f4 = DAT_0020f694;
-                        local_398 = FUN_00150f7c;
-                        uStack_390 = 0;
-                        local_3d0 = &local_3a8;
-                        local_378 = 1;
-                        uStack_374 = uStack_100._4_4_;
-                        local_2e4 = CONCAT44(param_2[0x18],param_2[0x16]);
-                        local_2e8 = 1;
-                        local_3a8 = &DAT_0020d168;
-                        puStack_3a0 = &DAT_0020f628;
-                        local_388 = &local_240;
-                        local_2f0 = 0;
-                        lStack_380 = local_128;
-                        local_370 = 0;
-                        local_35c = 0;
-                        local_364 = 0;
-                        pcStack_3c8 = thunk_FUN_00186cc8;
-                        local_354 = 0;
-                        local_3c0 = FUN_001546d4;
-                        uStack_3b8 = 0;
-                        local_3b0 = FUN_00154808;
-                        iVar9 = FUN_00184ce0(&DAT_00213098,&lStack_380,&local_350,&local_3d0,
-                                             &local_200);
-                        pcVar11 = "register_proposal_refused";
-                        if (((iVar9 == 1) && (uStack_1f8._4_4_ == 2)) &&
-                           ((lStack_1e8 == *(long *)(param_2 + 0xc) &&
-                            (lStack_1d8 == *(long *)(param_2 + 0xe))))) {
-                          auVar14._8_8_ = CONCAT44(uStack_1a8,uStack_1ac);
-                          auVar14._0_8_ = CONCAT44(uStack_1a8,uStack_1ac);
-                          auVar16 = NEON_cmgt(auVar14,_DAT_00112be0,4);
-                          auVar14 = NEON_cmgt(_DAT_00112be0,auVar14,4);
-                          uVar13 = NEON_umaxv(CONCAT26(auVar14._12_2_,
-                                                       CONCAT24(auVar14._8_2_,
-                                                                CONCAT22(auVar16._4_2_,auVar16._0_2_
-                                                                        ))),2);
-                          if (((uVar13 & 1) == 0) && (lStack_198 == lStack_2b8)) {
-                            iVar9 = FUN_00150bf0();
-                            if ((iVar9 != 0) && (iVar9 = (*DAT_00213048)(&local_2c8), iVar9 != 0)) {
-                              uVar5 = *(undefined8 *)(param_2 + 4);
-                              uVar15 = *(undefined8 *)(param_2 + 0x18);
-                              uVar4 = *(undefined8 *)(param_2 + 0x16);
-                              uVar10 = 1;
-                              param_3[3] = *(undefined8 *)(param_2 + 6);
-                              param_3[2] = uVar5;
-                              param_3[5] = uVar15;
-                              param_3[4] = uVar4;
-                              uVar5 = _UNK_00112948;
-                              uVar4 = _DAT_00112940;
-                              param_3[6] = lStack_2b8;
-                              DAT_002157a8 = local_278;
-                              param_3[7] = CONCAT44(uStack_1a8,uStack_1ac);
-                              param_3[1] = uVar5;
-                              *param_3 = uVar4;
-                              DAT_00215678 = 1;
-                              uRam00000000002156f8 = *(undefined8 *)(param_2 + 0x1e);
-                              _DAT_002156f0 = *(undefined8 *)(param_2 + 0x1c);
-                              _DAT_00215700 = *(undefined8 *)(param_2 + 0x20);
-                              uRam0000000000215708 = *(undefined8 *)(param_2 + 0x22);
-                              DAT_00215710 = *(undefined8 *)(param_2 + 0x24);
-                              _DAT_002156e0 = *(undefined8 *)(param_2 + 0x18);
-                              uRam00000000002156e8 = *(undefined8 *)(param_2 + 0x1a);
-                              uRam00000000002156c8 = *(undefined8 *)(param_2 + 0x12);
-                              _DAT_002156c0 = *(undefined8 *)(param_2 + 0x10);
-                              _DAT_002156d0 = *(undefined8 *)(param_2 + 0x14);
-                              uRam00000000002156d8 = *(undefined8 *)(param_2 + 0x16);
-                              uRam00000000002156a8 = *(undefined8 *)(param_2 + 10);
-                              _DAT_002156a0 = *(undefined8 *)(param_2 + 8);
-                              _DAT_002156b0 = *(undefined8 *)(param_2 + 0xc);
-                              uRam00000000002156b8 = *(undefined8 *)(param_2 + 0xe);
-                              uRam0000000000215688 = *(undefined8 *)(param_2 + 2);
-                              _DAT_00215680 = *(undefined8 *)param_2;
-                              _DAT_00215690 = *(undefined8 *)(param_2 + 4);
-                              uRam0000000000215698 = *(undefined8 *)(param_2 + 6);
-                              DAT_00215740 = param_3[5];
-                              DAT_00215738 = param_3[4];
-                              DAT_00215748 = param_3[6];
-                              DAT_00215750 = param_3[7];
-                              DAT_00215718 = *param_3;
-                              DAT_00215720 = param_3[1];
-                              DAT_00215730 = param_3[3];
-                              DAT_00215728 = param_3[2];
-                              _DAT_00215778 = uStack_2a8;
-                              uRam0000000000215780 = uStack_2a0;
-                              uRam0000000000215790 = local_290;
-                              _DAT_00215788 = uStack_298;
-                              _DAT_00215798 = uStack_288;
-                              uRam00000000002157a0 = uStack_280;
-                              _DAT_00215758 = local_2c8;
-                              uRam0000000000215760 = uStack_2c0;
-                              uRam0000000000215770 = uStack_2b0;
-                              _DAT_00215768 = lStack_2b8;
-                              DAT_002157b8 = uStack_268;
-                              DAT_002157b0 = local_270;
-                              DAT_002157c0 = local_260;
-                              DAT_002157c8 = uStack_258;
-                              DAT_002157d0 = uStack_250;
-                              DAT_002157d8 = uStack_248;
-                              lRam0000000000215808 = lStack_1d8;
-                              _DAT_00215800 = local_1e0;
-                              DAT_00215810 = local_1d0;
-                              uRam0000000000215818 = uStack_1c8;
-                              _DAT_002157e0 = local_200;
-                              uRam00000000002157e8 = uStack_1f8;
-                              lRam00000000002157f8 = lStack_1e8;
-                              _DAT_002157f0 = local_1f0;
-                              lRam0000000000215848 = lStack_198;
-                              _DAT_00215840 = local_1a0;
-                              _DAT_00215850 = local_190;
-                              uRam0000000000215858 = uStack_188;
-                              _DAT_00215820 = local_1c0;
-                              uRam0000000000215828 = uStack_1b8;
-                              uRam0000000000215838 = CONCAT44(uStack_1a4,uStack_1a8);
-                              _DAT_00215830 = CONCAT44(uStack_1ac,local_1b0);
-                              uRam0000000000215898 = uStack_148;
-                              _DAT_00215890 = local_150;
-                              _DAT_002158a0 = uStack_140;
-                              uRam00000000002158a8 = uStack_138;
-                              uRam0000000000215868 = uStack_178;
-                              _DAT_00215860 = local_180;
-                              _DAT_00215870 = local_170;
-                              uRam0000000000215878 = uStack_168;
-                              _DAT_00215880 = uStack_160;
-                              uRam0000000000215888 = uStack_158;
-                              DAT_002158f0 = local_2cc;
-                              uRam00000000002158c8 = local_228;
-                              _DAT_002158c0 = uStack_230;
-                              uRam00000000002158d8 = local_218;
-                              _DAT_002158d0 = uStack_220;
-                              _DAT_002158e0 = uStack_210;
-                              uRam00000000002158e8 = local_208;
-                              uRam00000000002158b8 = uStack_238;
-                              _DAT_002158b0 = local_240;
-                              goto LAB_0015203c;
+    }
+
+    input_lock_acquire();
+    input_event_refresh(event);
+    g_skill_event_count = g_skill_event_count + 1;
+    memset(g_skill_blob, 0, 0x280);
+
+    memset(proposal, 0, sizeof proposal);
+    proposal[0] = ROD_PROPOSAL_VT;
+
+    reason = "skill_identity_or_active";
+
+    if (movement_ctx_valid(*(uint64_t *)(event + 0xc),
+                           *(uint64_t *)(event + 0xe)) != 0) {
+        memset(config, 0, sizeof config);
+        config[0] = ROD_CONFIG_VT;
+
+        reason = "skill_configuration_or_generation";
+        if (((int (*)(void *))g_config_query_fn)(config) == 1
+            && (uint32_t)config[8] != 0
+            && (config[6] & 1) != 0
+            && config[5] == g_colt_epoch) {
+
+            if (game_object_resolve(g_engine_base, *(uint64_t *)(event + 0xe),
+                                    (void *)game_read, 0,
+                                    &CTX64(0x20f680)) == 0
+                || actor_refresh(g_colt_ctx, *(uint64_t *)(event + 0xe)) == 0) {
+                reason = "skill_current_actor_refresh";
+            } else if (skill_context_resolve(g_engine_base,
+                                             *(uint64_t *)(event + 0xe),
+                                             *(uint64_t *)(event + 0x24),
+                                             (void *)game_read, 0,
+                                             skill_ctx) == 0) {
+                reason = "skill_context_not_current_member";
+            } else {
+                ability = 0;
+                if (ability_input_check(*(uint64_t *)(event + 0xc),
+                                        *(uint64_t *)(event + 0xe),
+                                        skill_ctx, &ability) == 0) {
+                    reason = "skill_ability_input_unknown";
+                } else if (ability == 2
+                           && *(uint64_t *)(event + 0x1e) == 1
+                           && event[0x21] == 0) {
+                    reason = "skill_ultimate_route_not_live";
+                } else {
+                    const char *sub;
+
+                    sub = "skill_gadget_smartaim_disabled";
+                    if (ability != 3)
+                        sub = "skill_ability_allowed";
+                    reason = "skill_ultimate_smartaim_disabled";
+                    if (ability != 2)
+                        reason = sub;
+
+                    if ((ability == 3 && (int32_t)config[2] != 0)
+                        || (ability == 2 && (uint32_t)(config[3] >> 32) != 0)
+                        || (ability != 2 && ability != 3)) {
+                        memset(lease, 0, sizeof lease);
+                        lease[0] = ROD_LEASE_VT;
+
+                        if (((int (*)(uint32_t, uint32_t, void *))g_input_lease_acquire)(0x17, 4, lease) == 0) {
+                            reason = "register_input_lease_unavailable";
+                        } else {
+                            void *lease_slot[5];
+
+                            memset(request, 0, sizeof request);
+                            request[0] = *(uint64_t *)(event + 0xc);
+                            request[1] = *(uint64_t *)(event + 0xe);
+                            request[4] = g_colt_ctx;
+                            request[5] = *(uint64_t *)(event + 6);
+                            request[6] = CTX64(0x20f6f8);
+                            request[8] = ROD_SKILL_REQ2_A;
+                            request[9] = ROD_SKILL_REQ2_B;
+                            *(uint32_t *)(request + 10) = CTX32(0x20f690);
+                            *(uint32_t *)(request + 11) = CTX32(0x20f638);
+                            request[12] = engine_frame_time(1);
+                            *(uint32_t *)(request + 13) = (uint32_t)(config[8] >> 32);
+                            request[14] = ROD_REQUEST_VT;
+                            *(uint32_t *)(request + 15) = 1;
+                            *(uint32_t *)(request + 16) = CTX32(0x20f694);
+                            request[17] = (*(uint64_t *)(event + 6) & 0xffffffffull)
+                                        | 0x100000000ull;
+                            *(uint32_t *)(request + 18) = 1;
+                            request[2] = 0;
+                            request[3] = config[5];
+                            request[7] = 0;
+                            request[19] = 0;
+                            request[20] = 0;
+                            request[21] = 0;
+                            request[22] = 0;
+                            request[23] = 0;
+
+                            lease_slot[0] = (void *)(uintptr_t)0x20d168;
+                            lease_slot[1] = (void *)(uintptr_t)0x20f628;
+                            lease_slot[2] = proposal;
+                            lease_slot[3] = (void *)fetch_read_cb;
+                            lease_slot[4] = NULL;
+
+                            if (aim_proposal_solve(g_proposal_engine_state,
+                                                   &config[5],
+                                                   request,
+                                                   lease_slot,
+                                                   proposal + 2) == 1
+                                && *(uint32_t *)((char *)proposal + 0x18) == 2
+                                && ((uint64_t *)proposal)[4] == *(uint64_t *)(event + 0xc)
+                                && ((uint64_t *)proposal)[5] == *(uint64_t *)(event + 0xe)
+                                && xy_matches_sentinel(*(uint32_t *)((char *)proposal + 0x44),
+                                                       *(uint32_t *)((char *)proposal + 0x40))
+                                && ((uint64_t *)proposal)[13] == lease[2]
+                                && movement_ctx_valid(*(uint64_t *)(event + 0xc),
+                                                      *(uint64_t *)(event + 0xe)) != 0
+                                && ((int (*)(void *))g_input_lease_commit)(lease) != 0) {
+
+                                out[3] = *(uint64_t *)(event + 6);
+                                out[2] = *(uint64_t *)(event + 4);
+                                out[5] = *(uint64_t *)(event + 0x18);
+                                out[4] = *(uint64_t *)(event + 0x16);
+                                out[6] = lease[2];
+                                out[7] = ((uint64_t *)proposal)[8];
+                                out[0] = ROD_SKILL_OUT_A;
+                                out[1] = ROD_SKILL_OUT_B;
+
+                                SKB(0x2157a8) = skill_ctx[3];
+                                SKB(0x215678) = 1;
+
+                                for (int i = 0; i < 0x25; i++)
+                                    SKB(0x215680 + i * 8) =
+                                        *(uint64_t *)((char *)event + i * 8);
+                                SKB(0x215680 + 0x25 * 8) = *(uint64_t *)(event + 0x24);
+
+                                SKB(0x215740) = out[5];
+                                SKB(0x215738) = out[4];
+                                SKB(0x215748) = out[6];
+                                SKB(0x215750) = out[7];
+                                SKB(0x215718) = out[0];
+                                SKB(0x215720) = out[1];
+                                SKB(0x215730) = out[3];
+                                SKB(0x215728) = out[2];
+                                SKB(0x215758) = lease[0];
+                                SKB(0x2157b0) = skill_ctx[0];
+                                SKB(0x2157b8) = proposal[4];
+                                SKB(0x2157c0) = proposal[2];
+
+                                input_lock_release();
+                                return 1;
                             }
-                            pcVar11 = "register_proposal_refused";
-                          }
+                            reason = "register_proposal_refused";
                         }
-                      }
                     }
-                  }
                 }
-              }
             }
-          }
-LAB_00152218:
-          FUN_00157680(param_2,&local_200,&local_240,&local_130,pcVar11,0);
-          uVar10 = 0;
-          _DAT_001cfe94 = 0;
-          goto LAB_0015203c;
         }
-      }
     }
-  }
-LAB_00152038:
-  uVar10 = 0;
-LAB_0015203c:
-  if (*(long *)(lVar3 + 0x28) != local_78) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(uVar10);
-  }
-  return;
+
+    smartaim_skill_log(event, proposal, lease, config, reason, 0);
+    input_lock_release();
+    return 0;
 }
 
-/* ===== FUN_00157680 @ 00157680 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_00157680(long param_1,long param_2,long param_3,long param_4,undefined8 param_5,int param_6
-                 )
-
+void smartaim_skill_log(int32_t *event, void *proposal, void *lease,
+                        void *config, const char *reason, int mode)
 {
-  undefined4 uVar1;
-  undefined4 uVar2;
-  long lVar3;
-  int iVar4;
-  long lVar5;
-  timespec local_778 [112];
-  long local_70;
-  
-  lVar3 = tpidr_el0;
-  local_70 = *(long *)(lVar3 + 0x28);
-  iVar4 = clock_gettime(1,local_778);
-  if (iVar4 == 0) {
-    lVar5 = local_778[0].tv_sec * 1000 + (ulong)local_778[0].tv_nsec / 1000000;
-  }
-  else {
-    lVar5 = 0;
-  }
-  if ((((DAT_00215670 < 0x21) || (DAT_002159f0 < 9 && param_6 != 0)) || (DAT_002159f8 == 0)) ||
-     (999 < (ulong)(lVar5 - DAT_002159f8))) {
-    uVar1 = *(undefined4 *)(param_1 + 0x60);
-    if (param_6 != 0) {
-      uVar1 = *(undefined4 *)(param_2 + 0x58);
+    uint64_t now = monotonic_ms();
+
+    if (g_skill_event_count < 0x21
+        || (g_skill_commits < 9 && mode != 0)
+        || g_skill_last_log_ms == 0
+        || now - g_skill_last_log_ms > 999) {
+        char json[0x708];
+        uint32_t committed_lo = *(uint32_t *)((char *)event + 0x60);
+        uint32_t committed_hi = *(uint32_t *)((char *)event + 0x58);
+
+        if (mode != 0) {
+            committed_lo = *(uint32_t *)((char *)lease + 0x58);
+            committed_hi = *(uint32_t *)((char *)lease + 0x54);
+        }
+
+        snprintf(json, sizeof json,
+                 ",\"action\":23,\"kind\":4,\"destination\":2,\"operation\":4,"
+                 "\"delivery\":%llu,\"event_count\":%llu,\"caller_lr_rva\":\"0x%llx\","
+                 "\"publication\":%llu,\"source_tick\":%u,\"clock_known\":%u,"
+                 "\"map_ready\":%u,\"config_supported\":%u,\"active\":%u,"
+                 "\"generation\":%llu,\"target_gid\":%u,\"plan_reason\":%d,"
+                 "\"selection_reason\":%u,\"untouched_xy_known\":1,"
+                 "\"untouched_raw_x\":%d,\"untouched_raw_y\":%d,"
+                 "\"proposed_raw_x\":%d,\"proposed_raw_y\":%d,"
+                 "\"committed_xy_known\":1,\"committed_raw_x\":%d,"
+                 "\"committed_raw_y\":%d,\"register_xy_committed\":%d,"
+                 "\"register_xy_commits\":%llu,\"own_gid\":%u,\"own_x\":%.6f,"
+                 "\"own_y\":%.6f,\"ended\":%u,\"extra_fire_calls\":0,"
+                 "\"screen_xy_writes\":0",
+                 (unsigned long long)*(uint64_t *)(event + 0x18),
+                 (unsigned long long)g_skill_event_count,
+                 (unsigned long long)(*(uint64_t *)((char *)event + 0x48)
+                                      - *(uint64_t *)((char *)event + 0x20)),
+                 (unsigned long long)*(uint64_t *)(event + 6),
+                 (unsigned)CTX32(0x20f650),
+                 (unsigned)CTX32(0x20f63c),
+                 (unsigned)CTX32(0x20f638),
+                 (unsigned)g_evasion_gate,
+                 (unsigned)(uint32_t)(*(uint64_t *)((char *)config + 0x28) & 1),
+                 (unsigned long long)*(uint64_t *)((char *)config + 8),
+                 (unsigned)*(uint32_t *)((char *)lease + 0x50),
+                 (unsigned)*(uint32_t *)((char *)lease + 8),
+                 (unsigned)*(uint32_t *)((char *)proposal + 8),
+                 (unsigned)*(uint32_t *)((char *)event + 0x58),
+                 (unsigned)*(uint32_t *)((char *)event + 0x60),
+                 (unsigned)*(uint32_t *)((char *)lease + 0x54),
+                 (unsigned)*(uint32_t *)((char *)lease + 0x58),
+                 (int)committed_hi,
+                 (int)committed_lo,
+                 mode,
+                 (unsigned long long)g_skill_commits,
+                 (unsigned)CTX32(0x20f690),
+                 CTXFLT(0x20f6b4),
+                 CTXFLT(0x20f6b8),
+                 (unsigned)CTX32(0x20f7e8));
+        log_event("smartaim_input", reason, json);
+        g_skill_last_log_ms = now;
     }
-    uVar2 = *(undefined4 *)(param_1 + 0x58);
-    if (param_6 != 0) {
-      uVar2 = *(undefined4 *)(param_2 + 0x54);
-    }
-    snprintf((char *)local_778,0x708,
-             ",\"action\":23,\"kind\":4,\"destination\":2,\"operation\":4,\"delivery\":%llu,\"event_count\":%llu,\"caller_lr_rva\":\"0x%llx\",\"publication\":%llu,\"source_tick\":%u,\"clock_known\":%u,\"map_ready\":%u,\"config_supported\":%u,\"active\":%u,\"generation\":%llu,\"target_gid\":%u,\"plan_reason\":%d,\"selection_reason\":%u,\"untouched_xy_known\":1,\"untouched_raw_x\":%d,\"untouched_raw_y\":%d,\"proposed_raw_x\":%d,\"proposed_raw_y\":%d,\"committed_xy_known\":1,\"committed_raw_x\":%d,\"committed_raw_y\":%d,\"register_xy_committed\":%d,\"register_xy_commits\":%llu,\"own_gid\":%u,\"own_x\":%.6f,\"own_y\":%.6f,\"ended\":%u,\"extra_fire_calls\":0,\"screen_xy_writes\":0"
-             ,(double)DAT_0020f6b4,(double)DAT_0020f6b8,*(undefined8 *)(param_1 + 0x18),DAT_00215670
-             ,*(long *)(param_1 + 0x48) - *(long *)(param_1 + 0x20),DAT_0020f650,
-             (ulong)DAT_0020f638._4_4_,(undefined4)DAT_0020f638,(uint)DAT_0020d15c,
-             *(uint *)(param_4 + 0x28) & 1,DAT_0020f7c4,*(undefined8 *)(param_4 + 8),
-             *(undefined4 *)(param_2 + 0x50),*(undefined4 *)(param_2 + 8),
-             *(undefined4 *)(param_3 + 8),*(undefined4 *)(param_1 + 0x58),
-             *(undefined4 *)(param_1 + 0x60),*(undefined4 *)(param_2 + 0x54),
-             *(undefined4 *)(param_2 + 0x58),uVar2,uVar1,param_6,DAT_002159f0,DAT_0020f690,
-             DAT_0020f7e8);
-    FUN_001417c8("smartaim_input",param_5,local_778);
-    DAT_002159f8 = lVar5;
-  }
-  if (*(long *)(lVar3 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
 }
 
-/* ===== FUN_0015b854 @ 0015b854 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0015b854(long param_1)
-
+void smartaim_frame_update(void *frame)
 {
-  uint uVar1;
-  long lVar2;
-  bool bVar3;
-  int iVar4;
-  int iVar5;
-  int iVar6;
-  undefined4 uVar7;
-  undefined8 uVar8;
-  ulong uVar9;
-  uint uVar10;
-  long lVar11;
-  long lVar12;
-  ulong uVar13;
-  undefined8 *puVar14;
-  undefined8 local_850;
-  undefined8 uStack_848;
-  undefined8 local_840;
-  undefined8 uStack_838;
-  undefined8 local_830;
-  undefined8 uStack_828;
-  undefined8 local_820;
-  int local_814;
-  undefined8 local_810;
-  undefined8 uStack_808;
-  ulong local_800;
-  undefined8 uStack_7f8;
-  undefined8 local_7f0;
-  undefined8 uStack_7e8;
-  undefined8 uStack_7e0;
-  undefined8 local_7d8;
-  ulong local_7d0;
-  long local_7c8;
-  ulong local_7c0;
-  ulong local_7b8;
-  undefined8 local_7b0;
-  undefined8 local_7a8;
-  long lStack_7a0;
-  undefined4 local_798;
-  undefined8 local_794;
-  undefined8 uStack_78c;
-  undefined8 local_784;
-  undefined8 uStack_77c;
-  undefined8 local_108;
-  undefined8 local_100;
-  undefined8 uStack_f8;
-  undefined8 local_f0;
-  undefined8 uStack_e8;
-  undefined8 local_e0;
-  undefined8 uStack_d8;
-  undefined8 local_d0;
-  undefined8 uStack_c8;
-  undefined8 local_c0;
-  undefined8 uStack_b8;
-  undefined8 local_b0;
-  undefined8 uStack_a8;
-  undefined8 local_a0;
-  undefined8 uStack_98;
-  undefined8 local_90;
-  undefined8 uStack_88;
-  undefined8 local_80;
-  long local_78;
-  
-  lVar2 = tpidr_el0;
-  local_78 = *(long *)(lVar2 + 0x28);
-  if (DAT_002147dc != '\x01') goto LAB_0015bd1c;
-  DAT_00214818 = 0;
-  _DAT_00214800 = 0;
-  DAT_002147f8 = 0;
-  DAT_00214810 = 0;
-  DAT_00214808 = 0;
-  _DAT_0020f7c0 = 0;
-  _DAT_0020f7b8 = 0;
-  uRam000000000020f7d0 = 0;
-  _DAT_0020f7c8 = 0;
-  uRam000000000020f7e0 = 0;
-  _DAT_0020f7d8 = 0;
-  _DAT_0020f7e8 = 0;
-  _DAT_0020f630 = 0;
-  DAT_0020f628 = 0;
-  _DAT_0020f640 = 0;
-  DAT_0020f638 = 0;
-  DAT_0020f650 = 0;
-  _DAT_0020f648 = 0;
-  DAT_0020f660 = 0;
-  _DAT_0020f658 = 0;
-  DAT_0020f670 = 0;
-  DAT_0020f668 = 0;
-  DAT_0020f680 = 0;
-  DAT_0020f678 = 0;
-  _DAT_0020f690 = 0;
-  _DAT_0020f688 = 0;
-  _DAT_0020f6a0 = 0;
-  _DAT_0020f698 = 0;
-  _DAT_0020f6b0 = 0;
-  _DAT_0020f6a8 = 0;
-  DAT_0020f6c0 = 0;
-  _DAT_0020f6b8 = 0;
-  _DAT_0020f6d0 = 0;
-  _DAT_0020f6c8 = 0;
-  local_7c8 = 0;
-  uStack_808 = 0;
-  local_810 = 0;
-  uStack_7f8 = 0;
-  local_800 = 0;
-  uStack_7e8 = 0;
-  local_7f0 = 0;
-  local_7d8 = 0;
-  uStack_7e0 = 0;
-  if ((param_1 == 0) || (lVar11 = *(long *)(param_1 + 8), lVar11 == 0)) {
-    lVar12 = 0;
-    uVar9 = 0;
-LAB_0015ba70:
-    uVar8 = 0;
-    bVar3 = true;
-    local_7c8 = 0;
-    DAT_00217328 = 0;
-  }
-  else {
-    uVar13 = *(ulong *)(lVar11 + 0x10);
-    lVar12 = 0;
-    if (uVar13 + 0x2000 < 0x12000) {
-      uVar9 = 0;
-      goto LAB_0015ba70;
-    }
-    uVar9 = 0;
-    if ((uVar13 & 7) != 0) goto LAB_0015ba70;
-    lVar12 = *(long *)(lVar11 + 0x18);
-    uVar8 = FUN_00189c88(DAT_001e0978,lVar12,FUN_001428fc,0,&local_810);
-    uVar9 = uVar13;
-    if (((((((int)uVar8 == 0) || (uStack_7e8._4_4_ == 0)) ||
-          ((ABS(uStack_7e0._4_4_) < 0.5 && (ABS((float)local_7d8) < 0.5)))) ||
-         (((((uVar8 = FUN_001428fc(uVar8,DAT_001e0978 + 0x1307e20,&local_7b8,8), (int)uVar8 == 0 ||
-             (local_7b8 + 0x2000 < 0x12000)) || ((local_7b8 & 7) != 0)) ||
-           ((uVar8 = FUN_001428fc(uVar8,local_7b8 + 0x50,&local_814,4), (int)uVar8 == 0 ||
-            (local_814 != 5)))) ||
-          (uVar8 = FUN_001428fc(uVar8,local_7b8 + 0x48,&local_7c0,8), (int)uVar8 == 0)))) ||
-        ((local_7c0 + 0x2000 < 0x12000 || ((local_7c0 & 7) != 0)))) ||
-       (((iVar4 = FUN_001428fc(uVar8,uVar13 + 0x918,&local_7d0,8), iVar4 == 0 ||
-         (((0xfffffffffffedfff < local_7d0 - 0x10000 || ((local_7d0 & 7) != 0)) ||
-          (local_7d0 != local_7c0)))) ||
-        (iVar4 = FUN_0013a78c(local_7d0 + 0x28,&local_7c8), iVar4 == 0)))) goto LAB_0015ba70;
-    bVar3 = false;
-    uVar8 = 1;
-  }
-  local_820 = 0;
-  uStack_838 = 0;
-  local_840 = 0;
-  uStack_828 = 0;
-  local_830 = 0;
-  uStack_848 = 0;
-  local_850 = 0;
-  if (DAT_00217330 == -1) goto LAB_0015bd1c;
-  DAT_00217330 = DAT_00217330 + 1;
-  FUN_00189b6c(&DAT_00213060,DAT_00217330,uVar9,local_7c8,uVar8,&local_850);
-  if (param_1 == 0) {
-    DAT_0020f668 = 0;
-  }
-  else {
-    DAT_0020f668 = *(undefined8 *)(param_1 + 0x28);
-  }
-  _DAT_0020f6d0 = _DAT_0020f6d0 & 0xffffffff00000000;
-  DAT_0020f6c0 = 0;
-  _DAT_0020f6c8 = 0;
-  _DAT_0020f688 = uStack_808;
-  DAT_0020f680 = local_810;
-  _DAT_0020f698 = uStack_7f8;
-  _DAT_0020f690 = local_800;
-  _DAT_0020f6a8 = uStack_7e8;
-  _DAT_0020f6a0 = local_7f0;
-  _DAT_0020f6b8 = local_7d8;
-  _DAT_0020f6b0 = uStack_7e0;
-  DAT_0020f628 = DAT_0010e550;
-  DAT_0020f638 = uStack_848;
-  _DAT_0020f630 = local_850;
-  _DAT_0020f648 = uStack_838;
-  _DAT_0020f640 = local_840;
-  _DAT_0020f658 = uStack_828;
-  DAT_0020f650 = local_830;
-  DAT_0020f660 = local_820;
-  DAT_0020f678 = local_7c8;
-  DAT_0020f670 = uVar9;
-  if ((((bVar3) || (*(int *)(param_1 + 0x24) == 0)) ||
-      ((puVar14 = *(undefined8 **)(param_1 + 0x10), puVar14 == (undefined8 *)0x0 ||
-       ((*(int *)(puVar14 + 0xd) == 0 || ((int)uStack_848 == 0)))))) ||
-     ((puVar14[5] != uVar9 ||
-      (((puVar14[7] != local_7c8 || (puVar14[8] != lVar12)) ||
-       (*(int *)(puVar14 + 0xe) != (int)local_800)))))) {
-    DAT_0020f624 = 0;
-    goto LAB_0015bd1c;
-  }
-  if (((DAT_0020f6f8 != puVar14[4]) || (DAT_0020f700 != uVar9)) || (DAT_0020f710 != local_7c8)) {
-    DAT_00217328 = 0;
-    DAT_0020d15c = 0;
-    DAT_00217338 = 0;
-    DAT_0021733c = 0;
-    DAT_00217340 = 0;
-    DAT_00217344 = '\0';
-    FUN_0018e7f0();
-  }
-  uRam000000000020f6e0 = puVar14[1];
-  _DAT_0020f6d8 = *puVar14;
-  DAT_0020f710 = puVar14[7];
-  DAT_0020f708 = puVar14[6];
-  uRam000000000020f720 = puVar14[9];
-  DAT_0020f718 = puVar14[8];
-  DAT_0020f6f0 = puVar14[3];
-  _DAT_0020f6e8 = puVar14[2];
-  DAT_0020f700 = puVar14[5];
-  DAT_0020f6f8 = puVar14[4];
-  _DAT_0020f750 = puVar14[0xf];
-  _DAT_0020f748 = puVar14[0xe];
-  _DAT_0020f760 = puVar14[0x11];
-  _DAT_0020f758 = puVar14[0x10];
-  DAT_0020f730 = puVar14[0xb];
-  DAT_0020f728 = puVar14[10];
-  uRam000000000020f740 = puVar14[0xd];
-  _DAT_0020f738 = puVar14[0xc];
-  uRam000000000020f790 = puVar14[0x17];
-  _DAT_0020f788 = puVar14[0x16];
-  uRam000000000020f7a0 = puVar14[0x19];
-  _DAT_0020f798 = puVar14[0x18];
-  uRam000000000020f770 = puVar14[0x13];
-  _DAT_0020f768 = puVar14[0x12];
-  uRam000000000020f780 = puVar14[0x15];
-  _DAT_0020f778 = puVar14[0x14];
-  DAT_002148a0 = 0;
-  DAT_002148a4 = 0;
-  _DAT_00214898 = 0;
-  uRam00000000002148b0 = 0;
-  _DAT_002148b4 = 0;
-  _DAT_002148a8 = 0;
-  uRam00000000002148ac = 0;
-  uRam00000000002148c0 = 0;
-  uRam00000000002148c4 = 0;
-  DAT_002148b8 = 0;
-  uRam00000000002148bc = 0;
-  uRam00000000002148d0 = 0;
-  _DAT_002148c8 = 0;
-  _DAT_002148e0 = 0;
-  _DAT_002148d8 = 0;
-  uRam00000000002148f0 = 0;
-  _DAT_002148e8 = 0;
-  uRam0000000000214900 = 0;
-  _DAT_002148f8 = 0;
-  uRam0000000000214910 = 0;
-  _DAT_00214908 = 0;
-  uRam0000000000214920 = 0;
-  _DAT_00214918 = 0;
-  uRam0000000000214890 = 0;
-  _DAT_00214888 = 0;
-  uRam0000000000214880 = 0;
-  DAT_00214878 = 0;
-  DAT_00214870 = DAT_0010e7d0;
-  if (((DAT_0020d160 == (code *)0x0) || (iVar4 = (*DAT_0020d160)(&DAT_00214870), iVar4 != 1)) ||
-     (iVar4 = FUN_001543f8(local_7c8,lVar12), iVar4 == 0)) goto LAB_0015bd1c;
-  _DAT_0020f6c8 = CONCAT44(1,DAT_0020f6c8);
-  iVar4 = FUN_00150bf0(uVar9,lVar12);
-  if (iVar4 == 0) {
-    if (DAT_00217344 == '\x01') {
-      DAT_00217328 = 0;
-      goto LAB_0015bcc4;
-    }
-  }
-  else {
-LAB_0015bcc4:
-    DAT_00217344 = iVar4 != 0;
-  }
-  _DAT_0020f6d0 = (CONCAT44(DAT_0020f6d0_4,(uint)DAT_00217328) ^ 0xffffffff) & 0xffffffff00000001;
-  if (DAT_002148a0 == 0) {
-    if (DAT_002148cc == 0) goto LAB_0015bd58;
-LAB_0015bd8c:
-    FUN_00161098(DAT_0020f678,DAT_0020f728,DAT_0020f638._4_4_,DAT_0020f6cc);
-    uStack_78c = CONCAT44(uRam00000000002148b0,uRam00000000002148ac);
-    local_794 = CONCAT44(_DAT_002148a8,DAT_002148a4);
-    uStack_77c = CONCAT44(uRam00000000002148c0,uRam00000000002148bc);
-    local_784 = CONCAT44(DAT_002148b8,_DAT_002148b4);
-    local_7a8 = DAT_00214878;
-    lStack_7a0 = DAT_0020f6f8;
-    local_798 = 1;
-    local_7b0 = DAT_0010e7f8;
-    iVar5 = FUN_001858c0(&DAT_0020d168,&DAT_0020f628,&local_7b0,0);
-    if (iVar5 != 0) {
-      DAT_00217328 = 1;
-    }
-  }
-  else {
-    if ((_DAT_00214898 & 1) != 0 || DAT_002148cc != 0) goto LAB_0015bd8c;
-LAB_0015bd58:
-    iVar5 = FUN_00160fc0();
-    if ((((iVar5 != 0) || (DAT_002148e0 != 0)) || (DAT_002148d8 != 0)) || (DAT_002148e8 != 0))
-    goto LAB_0015bd8c;
-    DAT_0020f624 = 0;
-  }
-  iVar5 = DAT_00209cd8;
-  if ((DAT_00209cd8 == 0) || (iVar6 = gettid(), iVar5 != iVar6)) {
-    uVar10 = 0x1a;
-  }
-  else {
-    uVar10 = 0x1b;
-  }
-  uVar1 = uVar10 | 4;
-  if (iVar4 == 0) {
-    uVar1 = uVar10;
-  }
-  DAT_00214808 = local_830;
-  DAT_002147f8 = DAT_0010e668;
-  DAT_00214810 = puVar14[4];
-  uVar10 = uVar1 | 0x20;
-  if ((DAT_0020f624 != 0 & DAT_0020d15c & DAT_002147d8) == 0) {
-    uVar10 = uVar1;
-  }
-  _DAT_00214800 = CONCAT44(uStack_848._4_4_,uVar10);
-  DAT_00214818 = local_800 & 0xffffffff;
-  if ((DAT_002148a0 != 0) &&
-     ((DAT_00217348 == 0 || (999 < (ulong)(*(long *)(param_1 + 0x28) - DAT_00217348))))) {
-    local_80 = 0;
-    uStack_88 = 0;
-    local_90 = 0;
-    uStack_98 = 0;
-    local_a0 = 0;
-    uStack_a8 = 0;
-    local_b0 = 0;
-    uStack_b8 = 0;
-    local_c0 = 0;
-    uStack_c8 = 0;
-    local_d0 = 0;
-    uStack_d8 = 0;
-    local_e0 = 0;
-    uStack_e8 = 0;
-    local_f0 = 0;
-    uStack_f8 = 0;
-    local_100 = 0;
-    local_108 = DAT_0010e760;
-    uVar7 = FUN_00184398(&DAT_00213130,&local_108);
-    snprintf((char *)&local_7b0,0x6a4,
-             ",\"action\":23,\"publication\":%llu,\"source_tick\":%u,\"source_known\":%u,\"actors\":%u,\"map_known\":%u,\"evidence\":%u,\"generation\":%llu,\"xy_writes\":%llu,\"manual_events\":%llu,\"wrapper_events\":%llu,\"wrong_thread_events\":%llu,\"bad_receiver_events\":%llu,\"route_status_known\":%d,\"route_phase\":%u,\"route_disabled\":%llu,\"route_nested\":%llu,\"skill_events\":%llu,\"skill_proposed\":%llu,\"skill_committed\":%llu,\"skill_refused\":%llu,\"wrapper_continuation\":%llu,\"unsupported_caller\":%llu,\"unsupported_flags\":%llu,\"folded\":%llu,\"unknown_origin\":%llu,\"map_refresh_us\":%llu,\"map_failure_stage\":%u,\"map_failure_index\":%u"
-             ,local_830,uStack_848 >> 0x20,uStack_848 & 0xffffffff,_DAT_0020f6c8 & 0xffffffff,
-             (ulong)DAT_0020d15c,uVar10,DAT_00214878,DAT_002147e8,local_f0,uStack_e8,uStack_d8,
-             local_c0,uVar7,(undefined4)local_100,uStack_c8,local_d0,local_e0,uStack_b8,local_b0,
-             uStack_a8,local_90,uStack_88,local_80,local_a0,uStack_98,DAT_00217350,DAT_00217358,
-             DAT_0021735c);
-    FUN_001417c8("function_frame","standalone_aim_feed",&local_7b0);
-    DAT_00217348 = *(long *)(param_1 + 0x28);
-  }
-LAB_0015bd1c:
-  if (*(long *)(lVar2 + 0x28) == local_78) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
+    uint64_t region = 0;
+    uint64_t obj = 0;
+    int64_t ctrl = 0;
+    int map_ok = 0;
+    uint64_t resolve[16];
+    uint64_t chain = 0;
+    uint64_t list = 0;
+    uint64_t ctrl_list = 0;
+    int32_t type = 0;
+    uint64_t *blob;
+    uintptr_t h;
 
+    if (g_smartaim_armed != 1)
+        return;
+
+    CTX64(0x20f7e8) = 0;
+    g_proposal_state = 0;
+    CTX64(0x20f7c0) = 0;
+    CTX64(0x20f7d8) = 0;
+    memset(g_ctx_block, 0, 0x1d0);
+
+    memset(resolve, 0, sizeof resolve);
+
+    if (frame == 0 || (blob = *(uint64_t **)((char *)frame + 8), blob == NULL)) {
+        ctrl = 0;
+        region = 0;
+        map_ok = 0;
+        g_route_active = 0;
+    } else {
+        region = *(uint64_t *)(blob + 0x10);
+        if (region + 0x2000u < 0x12000u || (region & 7) != 0) {
+            ctrl = 0;
+            region = 0;
+            map_ok = 0;
+            g_route_active = 0;
+        } else {
+            obj = *(uint64_t *)(blob + 0x18);
+            h = game_object_resolve(g_engine_base, obj, (void *)game_read, 0, resolve);
+
+            if (h == 0
+                || (uint32_t)(resolve[3] >> 32) == 0
+                || (fabsf(*(float *)((char *)resolve + 0x10)) < 0.5f
+                    && fabsf(*(float *)((char *)resolve + 0x18)) < 0.5f)
+                || game_read(h, g_engine_base + ENGINE_STATIC_CHAIN_OFF, &chain, 8) == 0
+                || chain + 0x2000u < 0x12000u
+                || (chain & 7) != 0
+                || game_read(h, chain + 0x50, &type, 4) == 0
+                || type != 5
+                || game_read(h, chain + 0x48, &list, 8) == 0
+                || list + 0x2000u < 0x12000u
+                || (list & 7) != 0
+                || game_read(h, region + 0x918, &ctrl_list, 8) == 0
+                || (ctrl_list - 0x10000u > 0xfffffffffffedfffu)
+                || (ctrl_list & 7) != 0
+                || ctrl_list != list
+                || page_perm_check(ctrl_list + 0x28, &ctrl) == 0) {
+                ctrl = 0;
+                region = 0;
+                map_ok = 0;
+                g_route_active = 0;
+            } else {
+                map_ok = 1;
+            }
+        }
+    }
+
+    if (g_map_generation == (uint64_t)-1)
+        return;
+    g_map_generation = g_map_generation + 1;
+    map_publish((void *)(uintptr_t)0x213060, (uint32_t)g_map_generation, region,
+                ctrl, map_ok, resolve);
+
+    CTX64(0x20f668) = (frame == 0) ? 0 : *(uint64_t *)((char *)frame + 0x28);
+    CTX64(0x20f6d0) = CTX64(0x20f6d0) & 0xffffffff00000000ull;
+    CTX64(0x20f6c0) = 0;
+    CTX64(0x20f6c8) = 0;
+    CTX64(0x20f688) = resolve[5];
+    CTX64(0x20f680) = resolve[2];
+    CTX64(0x20f698) = resolve[3];
+    CTX64(0x20f690) = resolve[4];
+    CTX64(0x20f6a8) = resolve[3];
+    CTX64(0x20f6a0) = resolve[2];
+    CTX64(0x20f6b8) = resolve[3];
+    CTX64(0x20f6b0) = resolve[2];
+    CTX64(0x20f628) = ROD_MAP_VT;
+    CTX64(0x20f638) = resolve[7];
+    CTX64(0x20f630) = resolve[0];
+    CTX64(0x20f648) = resolve[6];
+    CTX64(0x20f640) = resolve[5];
+    CTX64(0x20f658) = resolve[4];
+    CTX64(0x20f650) = resolve[3];
+    CTX64(0x20f660) = resolve[1];
+    CTX64(0x20f678) = (uint64_t)ctrl;
+    CTX64(0x20f670) = region;
+
+    if (map_ok == 0
+        || *(int32_t *)((char *)frame + 0x24) == 0
+        || blob == NULL
+        || *(int32_t *)(blob + 0xd) == 0
+        || resolve[7] == 0
+        || blob[5] != region
+        || blob[7] != (uint64_t)ctrl
+        || blob[8] != obj
+        || *(int32_t *)(blob + 0xe) != (int32_t)resolve[4]) {
+        g_ctx_ready = 0;
+        return;
+    }
+
+    if (CTX64(0x20f6f8) != blob[4] || CTX64(0x20f700) != region
+        || CTX64(0x20f710) != (uint64_t)ctrl) {
+        g_route_active = 0;
+        g_evasion_gate = 0;
+        g_map_fail_a = 0;
+        g_map_fail_b = 0;
+        g_map_active = 0;
+        g_route_armed = 0;
+        map_clear();
+    }
+
+    CTX64(0x20f6e0) = blob[1];
+    CTX64(0x20f6d8) = blob[0];
+    CTX64(0x20f710) = blob[7];
+    CTX64(0x20f708) = blob[6];
+    CTX64(0x20f720) = blob[9];
+    CTX64(0x20f718) = blob[8];
+    CTX64(0x20f6f0) = blob[3];
+    CTX64(0x20f6e8) = blob[2];
+    CTX64(0x20f700) = blob[5];
+    CTX64(0x20f6f8) = blob[4];
+    CTX64(0x20f750) = blob[0xf];
+    CTX64(0x20f748) = blob[0xe];
+    CTX64(0x20f760) = blob[0x11];
+    CTX64(0x20f758) = blob[0x10];
+    CTX64(0x20f730) = blob[0xb];
+    CTX64(0x20f728) = blob[0xa];
+    CTX64(0x20f740) = blob[0xd];
+    CTX64(0x20f738) = blob[0xc];
+    CTX64(0x20f790) = blob[0x17];
+    CTX64(0x20f788) = blob[0x16];
+    CTX64(0x20f7a0) = blob[0x19];
+    CTX64(0x20f798) = blob[0x18];
+    CTX64(0x20f770) = blob[0x13];
+    CTX64(0x20f768) = blob[0x12];
+    CTX64(0x20f780) = blob[0x15];
+    CTX64(0x20f778) = blob[0x14];
+
+    {
+        uint64_t config2[21];
+        int install_route = 0;
+        uint32_t flags = 0x1a;
+
+        memset(config2, 0, sizeof config2);
+        config2[0] = ROD_CONFIG_VT;
+
+        if (g_config_query_fn == NULL
+            || ((int (*)(void *))g_config_query_fn)(config2) != 1
+            || actor_refresh((uint64_t)ctrl, obj) == 0)
+            return;
+
+        CTX64(0x20f6c8) = (CTX64(0x20f6c8) & 0xffffffffull) | 0x100000000ull;
+
+        {
+            int valid = movement_ctx_valid(region, obj);
+
+            if (valid == 0) {
+                if (g_route_armed == 1) {
+                    g_route_active = 0;
+                    g_route_armed = 0;
+                }
+            } else {
+                g_route_armed = 1;
+                g_route_active = 1;
+            }
+        }
+
+        CTX64(0x20f6d0) = ((CTX64(0x20f6d0) & 0xffffffff00000000ull)
+                           | (uint32_t)g_route_active)
+                        ^ 0xffffffffull;
+        CTX64(0x20f6d0) = CTX64(0x20f6d0) & 0xffffffff00000001ull;
+
+        if (config2[6] == 0) {
+            if (config2[11] != 0)
+                install_route = 1;
+        } else if ((config2[5] & 1) != 0 || config2[11] != 0) {
+            install_route = 1;
+        }
+
+        if (!install_route) {
+            if (route_install_check() != 0 || config2[14] != 0
+                || config2[13] != 0 || config2[15] != 0)
+                install_route = 1;
+            else
+                g_ctx_ready = 0;
+        }
+
+        if (install_route) {
+            aim_feed_route_install(CTX64(0x20f678), CTX64(0x20f728),
+                                   CTX32(0x20f63c), CTX32(0x20f6cc));
+            if (route_install((void *)(uintptr_t)0x20d168,
+                              (void *)(uintptr_t)0x20f628,
+                              (void *)(uintptr_t)0x10e7f8, 0) != 0)
+                g_route_active = 1;
+        }
+
+        if (g_main_tid != 0 && gettid() == g_main_tid)
+            flags = 0x1b;
+        if (movement_ctx_valid(region, obj) != 0)
+            flags |= 4;
+        if (g_ctx_ready != 0 && g_evasion_gate != 0 && g_smartaim_armed != 0)
+            flags |= 0x20;
+
+        CTX64(0x20f7c0) = ((uint64_t)(uint32_t)resolve[3] << 32) | flags;
+        CTX64(0x20f7c8) = ROD_COUNTERS_VT;
+
+        if (config2[6] != 0
+            && (g_map_last_log_ms == 0
+                || *(uint64_t *)((char *)frame + 0x28) - g_map_last_log_ms > 999)) {
+            uint64_t counters[18];
+
+            memset(counters, 0, sizeof counters);
+            counters[0] = ROD_ROUTE_VT;
+            counters_snapshot(g_counters_ctx, counters);
+
+            {
+                char json[0x6a4];
+                snprintf(json, sizeof json,
+                         ",\"action\":23,\"publication\":%llu,\"source_tick\":%u,"
+                         "\"source_known\":%u,\"actors\":%u,\"map_known\":%u,"
+                         "\"evidence\":%u,\"generation\":%llu,\"xy_writes\":%llu,"
+                         "\"manual_events\":%llu,\"wrapper_events\":%llu,"
+                         "\"wrong_thread_events\":%llu,\"bad_receiver_events\":%llu,"
+                         "\"route_status_known\":%d,\"route_phase\":%u,"
+                         "\"route_disabled\":%llu,\"route_nested\":%llu,"
+                         "\"skill_events\":%llu,\"skill_proposed\":%llu,"
+                         "\"skill_committed\":%llu,\"skill_refused\":%llu,"
+                         "\"wrapper_continuation\":%llu,\"unsupported_caller\":%llu,"
+                         "\"unsupported_flags\":%llu,\"folded\":%llu,"
+                         "\"unknown_origin\":%llu,\"map_refresh_us\":%llu,"
+                         "\"map_failure_stage\":%u,\"map_failure_index\":%u",
+                         (unsigned long long)resolve[3],
+                         (unsigned)(uint32_t)(resolve[7] >> 32),
+                         (unsigned)(uint32_t)resolve[7],
+                         (unsigned)(uint32_t)CTX64(0x20f6c8),
+                         (unsigned)g_evasion_gate,
+                         (unsigned)flags,
+                         (unsigned long long)counters[9],
+                         (unsigned long long)g_smartaim_xy_writes,
+                         (unsigned long long)counters[2],
+                         (unsigned long long)counters[4],
+                         (unsigned long long)counters[3],
+                         (unsigned long long)counters[5],
+                         (unsigned)(uint32_t)counters[1],
+                         (unsigned)(uint32_t)counters[0],
+                         (unsigned long long)counters[6],
+                         (unsigned long long)counters[7],
+                         (unsigned long long)counters[8],
+                         (unsigned long long)counters[10],
+                         (unsigned long long)counters[11],
+                         (unsigned long long)counters[12],
+                         (unsigned long long)counters[13],
+                         (unsigned long long)counters[14],
+                         (unsigned long long)counters[15],
+                         (unsigned long long)counters[16],
+                         (unsigned long long)counters[17],
+                         (unsigned long long)g_map_fail_a,
+                         (unsigned)(uint32_t)g_map_fail_b,
+                         (unsigned)(uint32_t)g_route_gen);
+                log_event("function_frame", "standalone_aim_feed", json);
+            }
+            g_map_last_log_ms = *(uint64_t *)((char *)frame + 0x28);
+        }
+    }
+}
