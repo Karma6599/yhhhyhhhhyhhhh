@@ -1,2150 +1,1869 @@
-/*
- * Spin — Feature
- * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusEvasion69252.so, libNexusEvasionRuntime69252.so
- * Related menu entries (from embedded nexus-overlay-wire/v1):
- *   - menu.killaura "Kill aura" [free]
- *   - menu.autododge "Auto dodge" [free]
- *   - menu.follow "Follow" [Nexus+ PAID]
- *   - menu.aim "Smart aim" [free]
- *   - menu.xray "X-Ray" [Nexus+ PAID]
- *   - menu.hold "Hold fire" [free]
- *   - menu.spin "Spin" [Nexus+ PAID]
- *   - killauraEnabled "Kill aura" [free]
- *   - aopPredictEnabled "Prediction" [free]
- *   - killauraMainAttack "Main attack" [free]
- *   - killauraNoWall "Wall check" [free]
- *   - killauraNoBall "Ignore ball" [free]
- *   - autododgeEnabled "Auto dodge" [free]
- *   - aopAimEnabled "Smart aim" [free]
- *   - isSpinEnabled "Spin" [Nexus+ PAID]
- *   - followEnabled "Follow" [Nexus+ PAID]
- *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
- *   - holdToShootEnabled "Hold fire" [free]
- *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
- *   - espEnabled "ESP" [Nexus+ PAID]
- *   - characterOutlineEnabled "Character outline" [free]
- *   - attackRangeIndicator "Attack range" [Nexus+ PAID]
- *   - hitboxRenderer "Hitboxes" [Nexus+ PAID]
- *   - enemyTracer "Enemy tracer" [Nexus+ PAID]
- *   - trophiesAboveHead "Trophies" [Nexus+ PAID]
- *   - pinEnabled "Auto pin" [Nexus+ PAID]
- *   - sprayEnabled "Auto spray" [Nexus+ PAID]
- *   - ... +205 more (see docs/feature_list.json)
- * Notes: Server-visible spin movement incl. online-only-idle modes and movement mode selection.
- */
+#define _GNU_SOURCE
 
-/* ===== FUN_0010f504 @ 0010f504 [libNexusEvasion69252.so] ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <math.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/syscall.h>
+#include <pthread.h>
 
-undefined ** FUN_0010f504(char *param_1)
+#define SNAPSHOT_VERSION 1
+#define STATUS_OUT_SIZE  0x48
+#define SPIN_SNAPSHOT_SIZE 0x58
+#define QUERY_SLOT_COUNT 0x76
 
+#define SPIN_ACTION 0x19
+
+#define SPIN_FRAME_ENTRY_RVA 0xb30690u
+#define SPIN_FRAME_BL_RVA    0xb30694u
+#define SPIN_MOVE_ENTRY_RVA  0xe7b768u
+#define SPIN_MOVE_BL_RVA     0xe7b76cu
+#define SPIN_MOVE_FN_RVA     0xe7af70u
+
+#define ISLAND_SIZE 0x158
+
+#define ROD_STATUS_TAG   (*(const uint64_t *)(uintptr_t)0x1047a0)
+#define ROD_SPIN_HEADER  (*(const uint64_t *)(uintptr_t)0x1047b0)
+#define ROD_LEASE_TAG_IN (*(const uint64_t *)(uintptr_t)0x1047a8)
+#define ROD_LEASE_TAG_OUT (*(const uint64_t *)(uintptr_t)0x1047c0)
+#define ROD_NG_BIND_TAG  (*(const uint64_t *)(uintptr_t)0x10e7f8)
+#define ROD_FRAME_HEADER (*(const uint64_t *)(uintptr_t)0x10e7a8)
+#define ROD_SPIN_STAMP   (*(const uint64_t *)(uintptr_t)0x10e540)
+#define ROD_SPIN_BL_TMPL (*(const uint64_t *)(uintptr_t)0x10e5b8)
+#define ROD_MOVE_BL_TMPL (*(const uint64_t *)(uintptr_t)0x10e6b8)
+#define ROD_ONLINE_TMPL  ((const void *)(uintptr_t)0x1c3270)
+#define ROD_SPIN_CB_TMPL (*(const uint64_t *)(uintptr_t)0x1cb6f0)
+#define ROD_ONLINE_STAMP (*(const uint64_t *)(uintptr_t)0x10e670)
+#define ROD_ONLINE_RESET (*(const uint64_t *)(uintptr_t)0x10e6c0)
+#define ROD_IDENTITY_A   (*(const uint64_t *)(uintptr_t)0x112a40)
+#define ROD_IDENTITY_B   (*(const uint64_t *)(uintptr_t)0x112a90)
+#define ROD_IDENTITY_C   (*(const uint64_t *)(uintptr_t)0x112c30)
+
+#define ROD_LOADER_FIELD_D   ((const char *)(uintptr_t)0x117e9e)
+#define ROD_LOADER_SIG_D     "Lnexus/loader/d;"
+#define ROD_LOADER_FIELD_E   ((const char *)(uintptr_t)0x11fd4c)
+#define ROD_LOADER_SIG_E     "Lnexus/loader/e;"
+#define ROD_SIG_STRING_A     ((const char *)(uintptr_t)0x11d6aa)
+#define ROD_SIG_STRING_B     ((const char *)(uintptr_t)0x1147f8)
+#define ROD_CB_FIELD_NAME    ((const char *)(uintptr_t)0x119e58)
+#define ROD_CB_FIELD_SIG     ((const char *)(uintptr_t)0x11896b)
+#define ROD_CB_BOOL_NAME     ((const char *)(uintptr_t)0x120926)
+#define ROD_MODULES_NAME     ((const char *)(uintptr_t)0x120939)
+#define ROD_MAP_NAME_A       ((const char *)(uintptr_t)0x11df95)
+#define ROD_SIG_MAP          "Ljava/util/Map;"
+#define ROD_SIG_LIST         "Ljava/util/List;"
+#define ROD_MODULE_NAME_FIELD ((const char *)(uintptr_t)0x1141aa)
+
+static const char GAME_SHA[] =
+    "a10aeb6b4085fb2a15d969a130cd9608231998b5269a40aed41129d99624ede3";
+static const char PROFILE_SHA[] =
+    "114ba105835bd4157cfd80aad9498734d51108ee193601410abeb5e0bab3a71c";
+
+extern char g_handler_lock;
+extern uint64_t g_state_epoch;
+extern int32_t g_state_status;
+extern uint64_t g_state_epoch2;
+extern uint64_t g_state_aux;
+extern int32_t g_prop_state[144];
+
+extern uint64_t g_spin_family_epoch;
+extern uint64_t g_spin_family_aux;
+extern void *g_spin_lease_ctx;
+extern int (*g_spin_lease_fn)(void *, int, void *);
+extern uint64_t g_spin_aux;
+extern uint64_t g_spin_aux2;
+extern uint64_t g_aim_holdfire_gate;
+extern uint32_t g_aim_pair_bitmap;
+extern uint64_t g_holdfire_epoch;
+extern uint64_t g_brawler_family_epoch;
+extern uint64_t g_brawler_family_aux;
+extern void *g_brawler_family_check;
+extern uint64_t g_port_gate[10];
+extern pthread_once_t g_port_once;
+extern void *g_port_once_fn;
+extern uint64_t g_port_aux_epoch;
+extern uint64_t g_port_aux;
+extern uint64_t g_port_aux2;
+
+typedef struct {
+    const char *name;
+    int32_t state_index;
+    int32_t kind;
+    int32_t vmin;
+    int32_t vmax;
+    int32_t f24;
+    int32_t f28;
+    int32_t f32;
+    int32_t f36;
+} evasion_prop_entry_t;
+
+extern evasion_prop_entry_t g_prop_table[142];
+
+extern void handler_state_refresh(void);
+extern void family_once_init(void);
+extern int spin_active(void);
+extern int evasion_key_force_flag(const char *key);
+extern int feature_port_state_check(const char *key);
+extern int spin_mode_gate(int32_t mode);
+extern int port_gate_check(int port_id, uint32_t version, int flags);
+void spin_post_callback(uint64_t frame);
+void loader_identity_verify(void);
+extern int brawler_key_active(const char *key);
+extern int32_t port_id_lookup(const char *key);
+extern uint32_t port_gate_version(void);
+extern int holdfire_gate_a(void);
+extern int nexus_evasion_restore_v1(uint64_t *fns, int32_t *values);
+
+extern void runtime_journal_write(const char *stage, const char *reason,
+                                  const char *payload);
+extern uintptr_t g_engine_base;
+extern uint64_t g_engine_epoch;
+extern uint64_t g_page_size;
+extern int32_t g_files_dir_fd;
+extern int32_t g_journal_fd;
+extern int32_t g_init_thread_id;
+extern uint32_t g_game_callback_acked;
+extern uint64_t g_frame_parse_enabled;
+extern uint64_t g_frame_record_table[];
+extern void *g_evasion_lib_handle;
+extern void *g_expected_lib_base;
+extern char g_expected_lib_path[];
+extern uintptr_t game_read(uintptr_t handle, uintptr_t addr, void *out,
+                          uint32_t len);
+extern int game_image_sha_verify(void *out, size_t len, const void *template_);
+extern int game_thread_present(void);
+extern int guest_identity_check(void *state, uintptr_t engine, void *ptrs,
+                               void *read_fn, int flags);
+extern uint64_t provider_capacity(void);
+extern int spin_provider_install(void *table, uint64_t capacity,
+                                 const void *record);
+extern int online_move_install(void);
+extern int online_move_verify(void *state, void *out);
+extern void *game_island_alloc(void);
+extern int frame_island_code_build(void *out);
+extern int movement_island_code_build(void *out);
+extern void code_cache_flush(void *begin, void *end);
+extern int spin_post_publish(uint64_t entry, uint32_t bl_word, uint64_t bl_full);
+extern int spin_frame_post_verify(int flags);
+extern int spin_move_post_verify(int flags);
+extern int spin_post_exec(void *record, void *header);
+extern void spin_post_field_apply(uint64_t token);
+extern void spin_provider_publish(void *table, void *record, void *out);
+extern uint64_t mono_now_us(void);
+extern uint64_t mono_now_ms_fn(int clock);
+extern int frame_entity_resolve(uintptr_t engine, uint64_t obj, void *read_fn,
+                                int flags, void *out);
+extern void spin_online_preapply(void);
+extern int spin_online_entity_valid(void *state);
+extern int jni_get_object_field(void *env, void *obj, const char *name,
+                                const char *sig);
+extern int jni_string_equals(void *env, void *str, const char *expected);
+extern int jni_get_boolean_field(void *env, void *obj, const char *name);
+extern int jni_string_read(void *env, void *str, char *buf, size_t len);
+extern int jni_get_int_field(void *env, void *obj, const char *name,
+                             int64_t *out);
+extern void *jni_map_value(void *env, void *map);
+extern int sha256_prefix_equal(void *a, void *b);
+extern int file_accessible(const char *path);
+extern int holdfire_post_handler(void);
+extern void spin_move_post_cb(uint64_t frame);
+extern void spin_provider_cb_a(void);
+extern void spin_provider_cb_b(void);
+extern void spin_provider_cb_c(void);
+extern void spin_provider_cb_d(void);
+extern void spin_register_cb_a(void);
+extern void spin_register_cb_b(void);
+
+extern void *g_spin_register_fn;
+extern char g_spin_move_active;
+extern int frame_record_parse(void *table, const void *frame, void *record_out);
+extern uint32_t g_spin_pub_reason;
+extern uint32_t g_spin_pub_writes;
+extern uint32_t g_spin_pub_field_apply;
+extern int32_t g_spin_pub_angle;
+extern uint32_t g_spin_pub_readback;
+extern void (*g_spin_snapshot_fn_rt)(void);
+extern void (*g_spin_lease_fn_rt)(void);
+extern void (*g_spin_recheck_fn_rt)(void);
+extern int (*g_spin_publish_post_fn)(const void *);
+extern int (*g_spin_validate_post_fn)(const void *);
+extern int (*g_spin_publish_movement_fn)(const void *);
+extern int (*g_spin_validate_movement_fn)(const void *);
+extern char g_spin_armed;
+extern uint64_t g_spin_identity_state[4];
+extern uint64_t g_spin_provider_table[0x1000 / 8];
+extern uint64_t g_spin_provider_active;
+extern char g_online_move_bound;
+extern uint64_t g_online_move_engine;
+extern uint64_t g_online_move_tmpl[6];
+extern uint64_t g_online_move_state[8];
+extern char g_spin_post_ready;
+extern uint64_t g_spin_frame_entry;
+extern void *g_spin_frame_island;
+extern void (*g_spin_frame_handler)(void);
+extern void (*g_spin_frame_cb)(uint64_t);
+extern uint64_t g_spin_frame_bl_slot;
+extern uint64_t g_spin_frame_epoch;
+extern uint64_t g_spin_frame_engine;
+extern uint64_t g_spin_frame_stamp;
+extern uint64_t g_spin_frame_bl;
+extern uint64_t g_spin_frame_bl_hi;
+extern uint64_t g_spin_move_entry;
+extern void *g_spin_move_island;
+extern void (*g_spin_move_handler)(void);
+extern void (*g_spin_move_cb)(uint64_t);
+extern uint64_t g_spin_move_bl_slot;
+extern uint64_t g_spin_move_epoch;
+extern uint64_t g_spin_move_engine;
+extern uint64_t g_spin_move_stamp;
+extern uint64_t g_spin_move_bl;
+extern uint64_t g_spin_move_bl_hi;
+extern char g_loader_verify_gate_a;
+extern char g_loader_verify_gate_b;
+extern char g_spin_loader_verified;
+extern uint64_t g_spin_loader_generation;
+extern uint64_t g_spin_profile_sha[8];
+extern uint64_t g_spin_telemetry[53];
+extern char g_spin_state_flag;
+extern char g_spin_stand_latch;
+extern uint64_t g_spin_move_yields;
+extern uint64_t g_spin_move_count;
+extern uint32_t g_spin_move_saved;
+extern uint64_t g_spin_move_entity;
+extern uint32_t g_spin_move_apply_state;
+extern uint32_t g_spin_move_apply_active;
+extern uint64_t g_spin_move_own_static;
+extern uint64_t g_spin_move_last_tick;
+extern uint64_t g_spin_move_last_apply_tick;
+extern float g_spin_move_angle;
+extern uint64_t g_spin_online_state[40];
+extern uint64_t g_spin_pub_count;
+extern uint64_t g_spin_pub_tag;
+extern uint64_t g_spin_pub_aux;
+extern uint64_t g_spin_move_cfg_radius;
+extern uint32_t g_spin_move_cfg_rate;
+extern uint32_t g_spin_move_cfg_mode;
+extern uint32_t g_spin_move_cfg_online;
+extern int32_t g_spin_move_cfg_radius2;
+extern int32_t g_spin_move_cfg_stand;
+extern uint64_t g_spin_move_min_mono;
+extern uint64_t g_spin_frame_identity_a;
+extern uint64_t g_spin_frame_identity_b;
+extern uint64_t g_spin_frame_identity_c;
+extern uint64_t g_spin_move_gate;
+extern uint64_t g_spin_move_gate_hi;
+extern uint64_t g_spin_journal_tag;
+extern uint64_t g_spin_move_last_journal;
+extern int32_t (*g_get_requested_thunk)(const char *);
+extern int32_t (*g_get_effective_thunk)(const char *);
+extern uint32_t (*g_get_port_state_thunk)(const char *);
+
+static void handler_lock_acquire(void)
 {
-  int iVar1;
-  long lVar2;
-  undefined **ppuVar3;
-  
-  if (param_1 != (char *)0x0) {
-    lVar2 = 0;
-    do {
-      if (param_1[lVar2] == '\0') {
-        if (lVar2 == 0x60) {
-          return (undefined **)0x0;
-        }
-        lVar2 = 0x8e;
-        ppuVar3 = &PTR_s_isSpinEnabled_00121698;
-        do {
-          iVar1 = strcmp(param_1,*ppuVar3);
-          if (iVar1 == 0) {
-            return ppuVar3;
-          }
-          lVar2 = lVar2 + -1;
-          ppuVar3 = ppuVar3 + 5;
-        } while (lVar2 != 0);
-        return (undefined **)0x0;
-      }
-      lVar2 = lVar2 + 1;
-    } while (lVar2 != 0x60);
-  }
-  return (undefined **)0x0;
+    while (__atomic_test_and_set(&g_handler_lock, __ATOMIC_ACQUIRE))
+        ;
 }
 
-/* ===== nexus_evasion_get_port_state @ 0010fc18 [libNexusEvasion69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-ulong nexus_evasion_get_port_state(char *param_1)
-
+static void handler_lock_release(void)
 {
-  char cVar1;
-  bool bVar2;
-  char cVar3;
-  int iVar4;
-  long lVar5;
-  ulong uVar6;
-  int *piVar7;
-  
-  if (param_1 != (char *)0x0) {
-    lVar5 = 0;
-    do {
-      if (param_1[lVar5] == '\0') {
-        if (lVar5 == 0x60) {
-          return 0xffffffff;
-        }
-        uVar6 = 0xffffffffffffffbb;
-        piVar7 = &DAT_001216b8;
-        do {
-          iVar4 = strcmp(param_1,*(char **)(piVar7 + -8));
-          if (iVar4 == 0) {
-            iVar4 = FUN_0010f880(param_1);
-            if (iVar4 != 0) {
-              return 1;
-            }
-            if (uVar6 + 0x45 < 0x45) {
-              if (*piVar7 == 0) {
-                do {
-                  cVar3 = DAT_00129ce8;
-                  cVar1 = '\x01';
-                  bVar2 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-                  if (bVar2) {
-                    _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-                    cVar1 = ExclusiveMonitorsStatus();
-                  }
-                } while (cVar1 != '\0' || cVar3 != '\0');
-                FUN_0010f580();
-                iVar4 = FUN_0010f934(param_1);
-                _DAT_00129ce8 = 0;
-                return (ulong)(iVar4 != 0) << 1;
-              }
-            }
-            else if (*piVar7 == 0) {
-              return (ulong)(uVar6 < 0x49);
-            }
-            return 3;
-          }
-          piVar7 = piVar7 + 10;
-          uVar6 = uVar6 + 1;
-        } while (uVar6 != 0x49);
-        return 0xffffffff;
-      }
-      lVar5 = lVar5 + 1;
-    } while (lVar5 != 0x60);
-  }
-  return 0xffffffff;
+    g_handler_lock = 0;
 }
 
-/* ===== FUN_00112be8 @ 00112be8 [libNexusEvasion69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-int * FUN_00112be8(int *param_1)
-
+static const evasion_prop_entry_t *prop_find(const char *name)
 {
-  uint uVar1;
-  int iVar2;
-  char cVar3;
-  int iVar4;
-  undefined8 uVar5;
-  long lVar6;
-  undefined8 uVar7;
-  undefined8 uVar8;
-  char cVar9;
-  undefined **ppuVar10;
-  bool bVar11;
-  bool bVar12;
-  int iVar13;
-  int iVar14;
-  int *piVar15;
-  int iVar16;
-  uint uVar17;
-  undefined **ppuVar18;
-  
-  piVar15 = param_1;
-  if (param_1 != (int *)0x0) {
-    if ((*param_1 == 1) && (param_1[1] == 0x48)) {
-      do {
-        cVar9 = DAT_00129ce8;
-        cVar3 = '\x01';
-        bVar11 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-        if (bVar11) {
-          _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-          cVar3 = ExclusiveMonitorsStatus();
-        }
-      } while (cVar3 != '\0' || cVar9 != '\0');
-      FUN_0010f580();
-      iVar13 = FUN_001158a0();
-      iVar4 = DAT_00129130;
-      ppuVar10 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar18 = ppuVar10;
-        iVar14 = strcmp("spinMovementMode",*ppuVar18);
-        ppuVar10 = ppuVar18 + 5;
-      } while (iVar14 != 0);
-      iVar14 = FUN_0011c394((&DAT_00129130)[*(int *)(ppuVar18 + 1)]);
-      uVar8 = DAT_00129b30;
-      uVar7 = DAT_00129ac0;
-      lVar6 = DAT_00129a60;
-      uVar5 = DAT_00129348;
-      uVar17 = 0;
-      if (iVar13 != 0) {
-        uVar17 = (uint)(iVar4 != 0);
-      }
-      iVar16 = 3;
-      if (iVar13 != 0) {
-        iVar16 = 1;
-      }
-      bVar11 = DAT_00129a60 != 0;
-      iVar2 = 2;
-      if (bVar11) {
-        iVar2 = iVar16;
-      }
-      uVar1 = 0;
-      if (iVar14 != 0) {
-        uVar1 = uVar17;
-      }
-      iVar16 = 4;
-      if (iVar14 != 0) {
-        iVar16 = 5;
-      }
-      piVar15 = (int *)0x1;
-      bVar12 = DAT_00129a60 != 0;
-      *(undefined8 *)param_1 = DAT_001047a0;
-      param_1[2] = iVar4;
-      param_1[3] = (uint)bVar11;
-      if ((iVar4 != 0 && iVar13 != 0) && bVar12) {
-        iVar2 = iVar16;
-      }
-      param_1[4] = iVar13;
-      param_1[5] = uVar1;
-      param_1[8] = 0;
-      param_1[9] = 0;
-      *(undefined8 *)(param_1 + 10) = uVar5;
-      *(undefined8 *)(param_1 + 0xc) = uVar8;
-      *(long *)(param_1 + 0xe) = lVar6;
-      param_1[6] = 0;
-      param_1[7] = iVar2;
-      *(undefined8 *)(param_1 + 0x10) = uVar7;
-      _DAT_00129ce8 = 0;
+    if (name == NULL)
+        return NULL;
+    for (int i = 0; i < 142; i++) {
+        if (strcmp(name, g_prop_table[i].name) == 0)
+            return &g_prop_table[i];
     }
-    else {
-      piVar15 = (int *)0x0;
-    }
-  }
-  return piVar15;
+    return NULL;
 }
 
-/* ===== FUN_00112e84 @ 00112e84 [libNexusEvasion69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 FUN_00112e84(char *param_1,int *param_2)
-
+static int32_t prop_value(const char *name)
 {
-  char *pcVar1;
-  uint uVar2;
-  uint uVar3;
-  char cVar4;
-  undefined8 uVar5;
-  undefined8 uVar6;
-  undefined8 uVar7;
-  undefined8 uVar8;
-  char cVar9;
-  undefined8 uVar10;
-  bool bVar11;
-  bool bVar12;
-  uint uVar13;
-  uint uVar14;
-  int iVar15;
-  int iVar16;
-  undefined8 uVar17;
-  long lVar18;
-  int iVar19;
-  undefined **ppuVar20;
-  
-  if ((((param_2 == (int *)0x0) || (*param_2 != 1)) || (param_2[1] != 0x48)) ||
-     (uVar13 = FUN_00112d44(), (int)uVar13 < 0)) {
-    uVar17 = 0;
-  }
-  else {
-    do {
-      cVar9 = DAT_00129ce8;
-      cVar4 = '\x01';
-      bVar11 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-      if (bVar11) {
-        _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-        cVar4 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar4 != '\0' || cVar9 != '\0');
-    FUN_0010f580();
-    uVar3 = (uint)(DAT_00129c50 != 0) | (uint)(DAT_00129c58 != 0) << 1 |
-            (uint)(DAT_00129c60 != 0) << 2 | (uint)(DAT_00129c68 != 0) << 3 |
-            (uint)(DAT_00129c70 != 0) << 4 | (uint)(DAT_00129c78 != 0) << 5 |
-            (uint)(DAT_00129c80 != 0) << 6 | (uint)(DAT_00129c88 != 0) << 7 |
-            (uint)(DAT_00129c90 != 0) << 8 | (uint)(DAT_00129c98 != 0) << 9;
-    uVar14 = FUN_001187d8();
-    iVar15 = FUN_001189fc(uVar13,uVar14,0);
-    if (*param_1 != '\0') {
-      lVar18 = 1;
-      do {
-        pcVar1 = param_1 + lVar18;
-        lVar18 = lVar18 + 1;
-      } while (*pcVar1 != '\0');
-    }
-    iVar16 = strcmp(param_1,"isSpinEnabled");
-    lVar18 = 0;
-    if (iVar16 != 0) {
-      ppuVar20 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        lVar18 = lVar18 + 1;
-        iVar16 = strcmp(param_1,*ppuVar20);
-        ppuVar20 = ppuVar20 + 5;
-      } while (iVar16 != 0);
-    }
-    uVar10 = DAT_00129cf8;
-    uVar6 = DAT_00129348;
-    uVar5 = DAT_001047a0;
-    uVar17 = 1;
-    uVar2 = 1 << (ulong)(uVar13 & 0x1f);
-    iVar16 = (&DAT_00129130)[(int)(&DAT_001216a0)[lVar18 * 10]];
-    param_2[8] = 0;
-    param_2[9] = uVar3;
-    uVar8 = DAT_00129cc0;
-    uVar7 = DAT_00129c38;
-    *(undefined8 *)param_2 = uVar5;
-    *(undefined8 *)(param_2 + 10) = uVar6;
-    *(undefined8 *)(param_2 + 0xc) = uVar10;
-    uVar13 = 0;
-    if (iVar15 != 0) {
-      uVar13 = (uint)(iVar16 != 0);
-    }
-    iVar19 = 4;
-    if (iVar15 != 0) {
-      iVar19 = 5;
-    }
-    *(undefined8 *)(param_2 + 0xe) = uVar7;
-    *(undefined8 *)(param_2 + 0x10) = uVar8;
-    if (iVar16 == 0) {
-      iVar19 = 1;
-    }
-    bVar11 = (uVar14 & uVar2) != 0;
-    if (!bVar11) {
-      iVar19 = 3;
-    }
-    bVar12 = (uVar3 & uVar2) != 0;
-    if (!bVar12) {
-      iVar19 = 2;
-    }
-    param_2[4] = (uint)bVar11;
-    param_2[5] = uVar13;
-    param_2[2] = iVar16;
-    param_2[3] = (uint)bVar12;
-    param_2[6] = 0;
-    param_2[7] = iVar19;
-    _DAT_00129ce8 = 0;
-  }
-  return uVar17;
-}
+    const evasion_prop_entry_t *entry = prop_find(name);
 
-/* ===== nexus_evasion_spin_snapshot_v1 @ 00115bd4 [libNexusEvasion69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-int * nexus_evasion_spin_snapshot_v1(int *param_1)
-
-{
-  char cVar1;
-  undefined8 uVar2;
-  int iVar3;
-  int iVar4;
-  long lVar5;
-  undefined8 uVar6;
-  undefined8 uVar7;
-  undefined8 uVar8;
-  char cVar9;
-  undefined **ppuVar10;
-  bool bVar11;
-  int iVar12;
-  int iVar13;
-  int iVar14;
-  int iVar15;
-  int iVar16;
-  int *piVar17;
-  undefined **ppuVar18;
-  
-  piVar17 = param_1;
-  if (param_1 != (int *)0x0) {
-    if ((*param_1 == 1) && (param_1[1] == 0x58)) {
-      do {
-        cVar9 = DAT_00129ce8;
-        cVar1 = '\x01';
-        bVar11 = (bool)ExclusiveMonitorPass(0x129ce8,0x10);
-        if (bVar11) {
-          _DAT_00129ce8 = CONCAT31(DAT_00129ce8_1,1);
-          cVar1 = ExclusiveMonitorsStatus();
-        }
-      } while (cVar1 != '\0' || cVar9 != '\0');
-      FUN_0010f580();
-      iVar12 = FUN_001158a0();
-      uVar8 = DAT_00129b30;
-      uVar7 = DAT_00129ac0;
-      uVar6 = DAT_00129a68;
-      lVar5 = DAT_00129a60;
-      uVar2 = DAT_00129348;
-      iVar3 = DAT_00129130;
-      bVar11 = DAT_00129a60 != 0;
-      ppuVar10 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar18 = ppuVar10;
-        iVar13 = strcmp("spinSpeed",*ppuVar18);
-        iVar4 = DAT_001293c4;
-        ppuVar10 = ppuVar18 + 5;
-      } while (iVar13 != 0);
-      iVar13 = (&DAT_00129130)[*(int *)(ppuVar18 + 1)];
-      ppuVar10 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar18 = ppuVar10;
-        iVar14 = strcmp("spinMovementMode",*ppuVar18);
-        ppuVar10 = ppuVar18 + 5;
-      } while (iVar14 != 0);
-      iVar14 = (&DAT_00129130)[*(int *)(ppuVar18 + 1)];
-      ppuVar10 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar18 = ppuVar10;
-        iVar15 = strcmp("spinRadius",*ppuVar18);
-        ppuVar10 = ppuVar18 + 5;
-      } while (iVar15 != 0);
-      iVar15 = (&DAT_00129130)[*(int *)(ppuVar18 + 1)];
-      ppuVar10 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar18 = ppuVar10;
-        iVar16 = strcmp("spinOnlineOnlyIdle",*ppuVar18);
-        ppuVar10 = ppuVar18 + 5;
-      } while (iVar16 != 0);
-      piVar17 = (int *)0x1;
-      iVar16 = (&DAT_00129130)[*(int *)(ppuVar18 + 1)];
-      param_1[0x12] = iVar14;
-      param_1[0x13] = iVar15;
-      *(undefined8 *)(param_1 + 2) = uVar2;
-      *(undefined8 *)(param_1 + 6) = uVar6;
-      *(long *)(param_1 + 4) = lVar5;
-      uVar2 = DAT_001047b0;
-      param_1[0x14] = iVar16;
-      *(undefined8 *)param_1 = uVar2;
-      *(undefined8 *)(param_1 + 8) = uVar7;
-      *(undefined8 *)(param_1 + 10) = uVar8;
-      param_1[0xc] = (uint)bVar11;
-      param_1[0xd] = iVar12;
-      param_1[0x10] = 0x168;
-      param_1[0x11] = iVar4;
-      param_1[0xe] = iVar3;
-      param_1[0xf] = iVar13;
-      _DAT_00129ce8 = 0;
-    }
-    else {
-      piVar17 = (int *)0x0;
-    }
-  }
-  return piVar17;
-}
-
-/* ===== FUN_00115e3c @ 00115e3c [libNexusEvasion69252.so] ===== */
-
-void FUN_00115e3c(int param_1,uint param_2,undefined8 *param_3)
-
-{
-  long lVar1;
-  undefined8 uVar2;
-  undefined8 uVar3;
-  undefined8 uVar4;
-  undefined8 uVar5;
-  undefined8 uVar6;
-  undefined8 uVar7;
-  undefined **ppuVar8;
-  bool bVar9;
-  int iVar10;
-  int iVar11;
-  undefined8 uVar12;
-  uint uVar13;
-  undefined **ppuVar14;
-  undefined8 local_80;
-  undefined8 uStack_78;
-  long lStack_70;
-  long local_68;
-  undefined8 uStack_60;
-  long local_58;
-  
-  lVar1 = tpidr_el0;
-  local_58 = *(long *)(lVar1 + 0x28);
-  FUN_0010f580();
-  ppuVar8 = &PTR_s_cameraEnabled_001216c0;
-  do {
-    ppuVar14 = ppuVar8;
-    iVar10 = strcmp("spinMovementMode",*ppuVar14);
-    ppuVar8 = ppuVar14 + 5;
-  } while (iVar10 != 0);
-  iVar10 = (&DAT_00129130)[*(int *)(ppuVar14 + 1)];
-  if ((param_2 == 1) && (iVar10 == 0)) {
-    bVar9 = true;
-  }
-  else {
-    if (iVar10 != 1) {
-      uVar12 = 0;
-      goto LAB_00116048;
-    }
-    bVar9 = (param_2 & 0xfffffffe) == 2;
-  }
-  uVar12 = 0;
-  if ((param_1 == 0x19) && (bVar9)) {
-    iVar11 = FUN_0011c394(iVar10);
-    uVar12 = 0;
-    if ((iVar11 != 0) && ((DAT_001293c4 == 0 && (DAT_00129130 != 0)))) {
-      iVar11 = FUN_001158a0(0);
-      uVar12 = 0;
-      if ((iVar11 != 0) && (DAT_00129a98 != (code *)0x0)) {
-        uStack_60 = 0;
-        local_68 = 0;
-        lStack_70 = 0;
-        uStack_78 = 0;
-        local_80 = DAT_001047a8;
-        iVar11 = (*DAT_00129a98)(DAT_00129a80,0x19,&local_80);
-        uVar6 = DAT_00129ac0;
-        uVar5 = DAT_00129a68;
-        uVar4 = DAT_00129a60;
-        uVar3 = DAT_00129348;
-        uVar2 = DAT_001047c0;
-        uVar12 = 0;
-        if (((iVar11 == 1) && ((int)local_80 == 1)) && (local_80._4_4_ == 0x28)) {
-          uVar12 = 0;
-          uVar13 = 0xff;
-          if (iVar10 != 1) {
-            uVar13 = 0x3f;
-          }
-          if ((((((uVar13 & ((uint)uStack_78 ^ 0xffffffff)) == 0) && (uStack_60._4_4_ == 0)) &&
-               ((lStack_70 != 0 && ((local_68 != 0 && (uStack_78._4_4_ != 0)))))) &&
-              (999999 < (uint)uStack_60)) && ((uint)uStack_60 < 2000000)) {
-            uVar12 = 1;
-            *(undefined4 *)(param_3 + 1) = 0x19;
-            *(uint *)((long)param_3 + 0xc) = param_2;
-            uVar7 = DAT_00129b30;
-            *param_3 = uVar2;
-            param_3[4] = uVar5;
-            param_3[3] = uVar4;
-            param_3[2] = uVar3;
-            param_3[5] = uVar6;
-            param_3[6] = uVar7;
-            param_3[8] = uStack_78;
-            param_3[7] = local_80;
-            param_3[10] = local_68;
-            param_3[9] = lStack_70;
-            param_3[0xb] = uStack_60;
-          }
-        }
-      }
-    }
-  }
-LAB_00116048:
-  if (*(long *)(lVar1 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar12);
-}
-
-/* ===== FUN_001189fc @ 001189fc [libNexusEvasion69252.so] ===== */
-
-ulong FUN_001189fc(uint param_1,uint param_2,int param_3)
-
-{
-  uint uVar1;
-  undefined **ppuVar2;
-  int iVar3;
-  ulong uVar4;
-  undefined **ppuVar5;
-  
-  if (9 < param_1) {
-    return 0;
-  }
-  if ((param_2 >> (ulong)(param_1 & 0x1f) & 1) == 0) {
-    return 0;
-  }
-  if (param_1 < 2) {
-    if ((param_2 & 1) == 0) {
-      return 0;
-    }
-    ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-    do {
-      ppuVar5 = ppuVar2;
-      iVar3 = strcmp("holdToShootEnabled",*ppuVar5);
-      ppuVar2 = ppuVar5 + 5;
-    } while (iVar3 != 0);
-    if ((&DAT_00129130)[*(int *)(ppuVar5 + 1)] != 0) {
-      if (DAT_00129b78 == 0) {
+    if (entry == NULL)
         return 0;
-      }
-      uVar4 = FUN_00116854();
-      if ((int)uVar4 == 0) {
-        return uVar4;
-      }
-      ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar5 = ppuVar2;
-        iVar3 = strcmp("holdToShootAim",*ppuVar5);
-        ppuVar2 = ppuVar5 + 5;
-      } while (iVar3 != 0);
-      uVar1 = (&DAT_00129130)[*(int *)(ppuVar5 + 1)];
-      ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar5 = ppuVar2;
-        iVar3 = strcmp("holdToShootRangeCheck",*ppuVar5);
-        ppuVar2 = ppuVar5 + 5;
-      } while (iVar3 != 0);
-      if (1 < ((&DAT_00129130)[*(int *)(ppuVar5 + 1)] | uVar1)) {
-        return 0;
-      }
-      if ((DAT_00129b90 >> (ulong)((uVar1 | (&DAT_00129130)[*(int *)(ppuVar5 + 1)] << 1) & 0x1f) & 1
-          ) == 0) {
-        return 0;
-      }
+    return g_prop_state[entry->state_index];
+}
+
+const void *prop_entry_lookup(const char *key)
+{
+    size_t len;
+
+    if (key == NULL)
+        return NULL;
+    for (len = 0; key[len] != '\0'; len++) {
+        if (len == 0x60)
+            return NULL;
     }
-    ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-    do {
-      ppuVar5 = ppuVar2;
-      iVar3 = strcmp("aopPredictEnabled",*ppuVar5);
-      ppuVar2 = ppuVar5 + 5;
-    } while (iVar3 != 0);
-    if ((param_3 != 0 && param_1 == 1) || ((&DAT_00129130)[*(int *)(ppuVar5 + 1)] != 0)) {
-      ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-      do {
-        ppuVar5 = ppuVar2;
-        iVar3 = strcmp("killauraEnabled",*ppuVar5);
-        ppuVar2 = ppuVar5 + 5;
-      } while (iVar3 != 0);
-      if ((&DAT_00129130)[*(int *)(ppuVar5 + 1)] == 0) {
-        if ((param_2 >> 1 & 1) == 0) {
-          return 0;
+    return prop_find(key);
+}
+
+uint32_t nexus_evasion_get_port_state(const char *name)
+{
+    size_t len;
+    int i;
+
+    if (name == NULL)
+        return 0xffffffffu;
+
+    for (len = 0; name[len] != '\0'; len++) {
+        if (len == 0x60)
+            return 0xffffffffu;
+    }
+
+    for (i = 0; i < 142; i++) {
+        if (strcmp(name, g_prop_table[i].name) != 0)
+            continue;
+        if (evasion_key_force_flag(name) != 0)
+            return 1;
+        if (g_prop_table[i].f32 == 0) {
+            int ok;
+
+            if (i >= 69)
+                return 1;
+            handler_lock_acquire();
+            handler_state_refresh();
+            ok = feature_port_state_check(name);
+            handler_lock_release();
+            return (uint32_t)(ok != 0) << 1;
         }
-      }
-      else {
-        iVar3 = FUN_00118eec("aopPredictVersion");
-        if ((param_2 >> 1 & 1) == 0) {
-          return 0;
-        }
-        if (iVar3 - 3U < 0xfffffffe) {
-          return 0;
-        }
-      }
-      iVar3 = FUN_00118eec("aopPredictVersion");
-      if (iVar3 - 3U < 0xfffffffe) {
+        return 3;
+    }
+    return 0xffffffffu;
+}
+
+void spin_status_fill(int32_t *out)
+{
+    int active;
+    int32_t requested;
+    int32_t mode;
+    uint32_t effective;
+    int code;
+
+    if (out == NULL || out[0] != SNAPSHOT_VERSION || out[1] != STATUS_OUT_SIZE)
+        return;
+
+    handler_lock_acquire();
+    handler_state_refresh();
+
+    active = spin_active();
+    requested = g_prop_state[0];
+    mode = spin_mode_gate(prop_value("spinMovementMode"));
+
+    effective = 0;
+    if (active != 0)
+        effective = (uint32_t)(mode != 0);
+    code = 3;
+    if (active != 0)
+        code = 1;
+    if (g_spin_family_epoch == 0)
+        code = 2;
+    if (requested != 0 && active != 0 && g_spin_family_epoch != 0)
+        code = mode != 0 ? 5 : 4;
+
+    *(uint64_t *)(void *)out = ROD_STATUS_TAG;
+    out[2] = requested;
+    out[3] = (int32_t)(g_spin_family_epoch != 0);
+    out[4] = active;
+    out[5] = (int32_t)(mode != 0 ? effective : 0);
+    out[6] = 0;
+    out[7] = code;
+    out[8] = 0;
+    out[9] = 0;
+    *(uint64_t *)(void *)(out + 10) = g_state_epoch;
+    *(uint64_t *)(void *)(out + 12) = g_spin_aux2;
+    *(uint64_t *)(void *)(out + 14) = g_spin_family_epoch;
+    *(uint64_t *)(void *)(out + 16) = g_spin_aux;
+
+    handler_lock_release();
+}
+
+int port_status_fill(const char *key, int32_t *out)
+{
+    uint32_t port_id;
+    uint32_t gate_flags;
+    uint32_t version;
+    int gate;
+    uint32_t port_bit;
+    uint32_t version_bit;
+    uint32_t flags_bit;
+    int32_t requested;
+    uint32_t effective;
+    int code;
+
+    if (out == NULL || out[0] != SNAPSHOT_VERSION || out[1] != STATUS_OUT_SIZE)
         return 0;
-      }
-    }
-    ppuVar2 = &PTR_s_cameraEnabled_001216c0;
-    do {
-      ppuVar5 = ppuVar2;
-      iVar3 = strcmp("aopAimTargetMode",*ppuVar5);
-      ppuVar2 = ppuVar5 + 5;
-    } while (iVar3 != 0);
-    if ((&DAT_00129130)[*(int *)(ppuVar5 + 1)] == 1) {
-      return 1;
-    }
-    iVar3 = FUN_00118eec("aopAimTargetMode");
-    return (ulong)(iVar3 == 2);
-  }
-  switch(param_1) {
-  case 4:
-    goto switchD_00118a74_caseD_4;
-  case 5:
-    if (DAT_00129478 == 0) {
-      return 0;
-    }
-    if (DAT_00129490 == (code *)0x0) {
-      return 0;
-    }
-    iVar3 = (*DAT_00129490)(0);
-    if (iVar3 != 1) {
-      return 0;
-    }
-    if (DAT_001293d0 != DAT_00129478) {
-      return 0;
-    }
-    if (DAT_001293a8 != DAT_00129480) {
-      return 0;
-    }
-    iVar3 = FUN_0011b320("coltModEnabled");
-    break;
-  case 6:
-    if (DAT_00129478 == 0) {
-      return 0;
-    }
-    if (DAT_00129490 == (code *)0x0) {
-      return 0;
-    }
-    iVar3 = (*DAT_00129490)(0);
-    if (iVar3 != 1) {
-      return 0;
-    }
-    if (DAT_001293d0 != DAT_00129478) {
-      return 0;
-    }
-    if (DAT_001293a8 != DAT_00129480) {
-      return 0;
-    }
-    iVar3 = FUN_0011b320("autofarmEnabled");
-    break;
-  case 7:
-    if (DAT_00129478 == 0) {
-      return 0;
-    }
-    if (DAT_00129490 == (code *)0x0) {
-      return 0;
-    }
-    iVar3 = (*DAT_00129490)(0);
-    if (iVar3 != 1) {
-      return 0;
-    }
-    if (DAT_001293d0 != DAT_00129478) {
-      return 0;
-    }
-    if (DAT_001293a8 != DAT_00129480) {
-      return 0;
-    }
-    iVar3 = FUN_0011b320("boltModEnabled");
-    break;
-  case 8:
-    if (DAT_00129478 == 0) {
-      return 0;
-    }
-    if (DAT_00129490 == (code *)0x0) {
-      return 0;
-    }
-    iVar3 = (*DAT_00129490)(0);
-    if (iVar3 != 1) {
-      return 0;
-    }
-    if (DAT_001293d0 != DAT_00129478) {
-      return 0;
-    }
-    if (DAT_001293a8 != DAT_00129480) {
-      return 0;
-    }
-    iVar3 = FUN_0011b320("kitNaniModEnabled");
-    break;
-  case 9:
-    if (DAT_00129478 == 0) {
-      return 0;
-    }
-    if (DAT_00129490 == (code *)0x0) {
-      return 0;
-    }
-    iVar3 = (*DAT_00129490)(0);
-    if (iVar3 != 1) {
-      return 0;
-    }
-    if (DAT_001293d0 != DAT_00129478) {
-      return 0;
-    }
-    if (DAT_001293a8 != DAT_00129480) {
-      return 0;
-    }
-    goto switchD_00118a74_caseD_4;
-  default:
-    if ((param_2 >> 2 & 1) == 0) {
-      return 0;
-    }
-    iVar3 = FUN_00118eec("dodgeVersion");
-    if (4 < iVar3 - 1U) {
-      return 0;
-    }
-    iVar3 = FUN_00118eec("isSpinEnabled");
-    if (iVar3 == 0) {
-      return 1;
-    }
-    iVar3 = FUN_00118eec("spinMovementMode");
-    if (iVar3 == 0) {
-      return 1;
-    }
-    iVar3 = FUN_00118eec("spinOnlineOnlyIdle");
-    return (ulong)(iVar3 != 0);
-  }
-  if (iVar3 != 0) {
+
+    port_id = (uint32_t)port_id_lookup(key);
+    if ((int32_t)port_id < 0)
+        return 0;
+
+    handler_lock_acquire();
+    handler_state_refresh();
+
+    gate_flags = 0;
+    for (int i = 0; i < 10; i++)
+        gate_flags |= (uint32_t)(g_port_gate[i] != 0) << i;
+    version = port_gate_version();
+    gate = port_gate_check((int)port_id, version, 0);
+    requested = prop_value(key);
+
+    port_bit = 1u << (port_id & 0x1f);
+    version_bit = (uint32_t)(version & port_bit) != 0;
+    flags_bit = (uint32_t)(gate_flags & port_bit) != 0;
+
+    effective = 0;
+    if (gate != 0)
+        effective = (uint32_t)(requested != 0);
+    code = 4;
+    if (gate != 0)
+        code = 5;
+    if (requested == 0)
+        code = 1;
+    if (!version_bit)
+        code = 3;
+    if (!flags_bit)
+        code = 2;
+
+    *(uint64_t *)(void *)out = ROD_STATUS_TAG;
+    out[2] = requested;
+    out[3] = (int32_t)flags_bit;
+    out[4] = (int32_t)version_bit;
+    out[5] = (int32_t)effective;
+    out[6] = 0;
+    out[7] = code;
+    out[8] = 0;
+    out[9] = (int32_t)gate_flags;
+    *(uint64_t *)(void *)(out + 10) = g_state_epoch;
+    *(uint64_t *)(void *)(out + 12) = g_port_aux_epoch;
+    *(uint64_t *)(void *)(out + 14) = g_port_aux;
+    *(uint64_t *)(void *)(out + 16) = g_port_aux2;
+
+    handler_lock_release();
     return 1;
-  }
-switchD_00118a74_caseD_4:
-  iVar3 = pthread_once((pthread_once_t *)&DAT_00129cd8,FUN_0011b480);
-  if (DAT_00129ce0 == (code *)0x0) {
-    return 0;
-  }
-  iVar3 = (*DAT_00129ce0)(iVar3);
-  return (ulong)(iVar3 == 1);
 }
 
-/* ===== FUN_00118eec @ 00118eec [libNexusEvasion69252.so] ===== */
-
-undefined4 FUN_00118eec(char *param_1)
-
+int nexus_evasion_spin_snapshot_v1(int32_t *out)
 {
-  char *pcVar1;
-  int iVar2;
-  long lVar3;
-  undefined **ppuVar4;
-  
-  if (*param_1 != '\0') {
-    lVar3 = 1;
-    do {
-      pcVar1 = param_1 + lVar3;
-      lVar3 = lVar3 + 1;
-    } while (*pcVar1 != '\0');
-  }
-  iVar2 = strcmp(param_1,"isSpinEnabled");
-  lVar3 = 0;
-  if (iVar2 != 0) {
-    ppuVar4 = &PTR_s_cameraEnabled_001216c0;
-    do {
-      lVar3 = lVar3 + 1;
-      iVar2 = strcmp(param_1,*ppuVar4);
-      ppuVar4 = ppuVar4 + 5;
-    } while (iVar2 != 0);
-  }
-  return (&DAT_00129130)[(int)(&DAT_001216a0)[lVar3 * 10]];
+    int active;
+    int32_t status;
+
+    if (out == NULL)
+        return 0;
+    if (out[0] != SNAPSHOT_VERSION || out[1] != SPIN_SNAPSHOT_SIZE)
+        return 0;
+
+    handler_lock_acquire();
+    handler_state_refresh();
+
+    active = spin_active();
+    status = g_state_status;
+
+    *(uint64_t *)(void *)(out + 2) = g_state_epoch;
+    *(uint64_t *)(void *)(out + 4) = g_spin_family_epoch;
+    *(uint64_t *)(void *)(out + 6) = g_spin_family_aux;
+    *(uint64_t *)(void *)(out + 8) = g_spin_aux;
+    *(uint64_t *)(void *)(out + 10) = g_spin_aux2;
+    out[12] = (int32_t)(g_spin_family_epoch != 0);
+    out[13] = active;
+    out[14] = g_prop_state[0];
+    out[15] = prop_value("spinSpeed");
+    out[16] = 0x168;
+    out[17] = status;
+    out[18] = prop_value("spinMovementMode");
+    out[19] = prop_value("spinRadius");
+    out[20] = prop_value("spinOnlineOnlyIdle");
+    *(uint64_t *)(void *)out = ROD_SPIN_HEADER;
+
+    handler_lock_release();
+    return 1;
 }
 
-/* ===== FUN_0011c828 @ 0011c828 [libNexusEvasion69252.so] ===== */
+typedef struct {
+    uint64_t header;
+    uint32_t flags;
+    uint32_t token_hi;
+    uint64_t lease_ctx;
+    uint64_t lease_aux;
+    uint32_t token;
+    uint32_t zero;
+} spin_lease_record_t;
 
-void FUN_0011c828(undefined8 param_1,long param_2,long param_3)
+_Static_assert(sizeof(spin_lease_record_t) == 0x28, "lease record size");
 
+void spin_action_lease_submit(int action, uint32_t mode, uint64_t *out)
 {
-  long lVar1;
-  int iVar2;
-  long lVar3;
-  int iVar4;
-  ulong uVar5;
-  int *piVar6;
-  int *piVar7;
-  int local_5b0 [118];
-  long local_3d8 [118];
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  iVar4 = 4;
-  local_28 = *(long *)(lVar1 + 0x28);
-  if ((param_2 != 0) && (param_3 == 0x76)) {
-    uVar5 = 0;
-    lVar3 = 0;
-    piVar6 = (int *)(param_2 + 4);
-    piVar7 = &DAT_00124248;
-    do {
-      if (((uVar5 != (uint)piVar6[-1]) || (iVar4 = *piVar6, iVar4 < piVar7[-1])) ||
-         (*piVar7 < iVar4)) {
-        iVar4 = 4;
-        goto LAB_0011c8f0;
-      }
-      if (*(long *)(piVar7 + -4) != 0) {
-        local_3d8[lVar3] = *(long *)(piVar7 + -4);
-        local_5b0[lVar3] = iVar4;
-        lVar3 = lVar3 + 1;
-      }
-      uVar5 = uVar5 + 1;
-      piVar7 = piVar7 + 6;
-      piVar6 = piVar6 + 2;
-    } while (uVar5 != 0x76);
-    iVar2 = nexus_evasion_restore_v1(local_3d8,local_5b0);
-    iVar4 = iVar2;
-    if (iVar2 != 2) {
-      iVar4 = 4;
-    }
-    if (iVar2 == 1) {
-      iVar4 = 1;
-    }
-  }
-LAB_0011c8f0:
-  if (*(long *)(lVar1 + 0x28) != local_28) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(iVar4);
-  }
-  return;
-}
+    int32_t mode_value;
+    int mode_ok;
 
-/* ===== nexus_evasion_get_requested @ 0011d520 [libNexusEvasion69252.so] ===== */
+    handler_state_refresh();
 
-void nexus_evasion_get_requested(void)
-
-{
-  (*(code *)PTR_nexus_evasion_get_requested_00124f50)();
-  return;
-}
-
-/* ===== nexus_evasion_get_effective @ 0011d530 [libNexusEvasion69252.so] ===== */
-
-void nexus_evasion_get_effective(void)
-
-{
-  (*(code *)PTR_nexus_evasion_get_effective_00124f58)();
-  return;
-}
-
-/* ===== nexus_evasion_get_port_state @ 0011d540 [libNexusEvasion69252.so] ===== */
-
-void nexus_evasion_get_port_state(void)
-
-{
-  (*(code *)PTR_nexus_evasion_get_port_state_00124f60)();
-  return;
-}
-
-/* ===== FUN_0014382c @ 0014382c [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0014382c(void)
-
-{
-  uint uVar1;
-  long lVar2;
-  undefined8 uVar3;
-  int iVar4;
-  char *pcVar5;
-  long lVar6;
-  void *pvVar7;
-  char *pcVar8;
-  char *pcVar9;
-  uint uVar10;
-  undefined8 local_390;
-  long local_388;
-  undefined8 uStack_380;
-  code *local_378;
-  code *pcStack_370;
-  code *local_368;
-  code *pcStack_360;
-  code *local_358;
-  char *local_350;
-  long local_348;
-  undefined1 auStack_330 [344];
-  undefined1 auStack_1d8 [344];
-  long local_80;
-  
-  lVar2 = tpidr_el0;
-  local_80 = *(long *)(lVar2 + 0x28);
-  DAT_00215d78 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_register_v1");
-  DAT_00215d80 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_snapshot_v1");
-  DAT_00215d88 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_lease_v1");
-  DAT_00215d90 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_recheck_v1");
-  DAT_00215d98 = dlsym(DAT_0020d0f0,"nexus_evasion_publish_spin_post_v1");
-  DAT_00215da0 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_validate_post_v1");
-  DAT_00215da8 = dlsym(DAT_0020d0f0,"nexus_evasion_publish_spin_movement_post_v1");
-  DAT_00215db0 = dlsym(DAT_0020d0f0,"nexus_evasion_spin_validate_movement_post_v1");
-  if (((((((DAT_00215d78 == 0) || (iVar4 = dladdr(DAT_00215d78,&local_350), iVar4 == 0)) ||
-         (local_348 != DAT_0020c0e8)) ||
-        ((local_350 == (char *)0x0 || (iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0)))) ||
-       ((DAT_00215d80 == 0 ||
-        ((iVar4 = dladdr(DAT_00215d80,&local_350), iVar4 == 0 || (local_348 != DAT_0020c0e8)))))) ||
-      ((local_350 == (char *)0x0 ||
-       ((((((iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0 || (DAT_00215d88 == 0)) ||
-           (iVar4 = dladdr(DAT_00215d88,&local_350), iVar4 == 0)) ||
-          (((local_348 != DAT_0020c0e8 || (local_350 == (char *)0x0)) ||
-           ((iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0 ||
-            ((DAT_00215d90 == 0 || (iVar4 = dladdr(DAT_00215d90,&local_350), iVar4 == 0)))))))) ||
-         (local_348 != DAT_0020c0e8)) ||
-        (((local_350 == (char *)0x0 || (iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0)) ||
-         (DAT_00215d98 == 0)))))))) ||
-     ((((iVar4 = dladdr(DAT_00215d98,&local_350), iVar4 == 0 || (local_348 != DAT_0020c0e8)) ||
-       (((local_350 == (char *)0x0 ||
-         ((iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0 || (DAT_00215da0 == 0)))) ||
-        (iVar4 = dladdr(DAT_00215da0,&local_350), iVar4 == 0)))) ||
-      (((((((local_348 != DAT_0020c0e8 || (local_350 == (char *)0x0)) ||
-           (iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0)) ||
-          ((DAT_00215da8 == 0 || (iVar4 = dladdr(DAT_00215da8,&local_350), iVar4 == 0)))) ||
-         (local_348 != DAT_0020c0e8)) ||
-        (((local_350 == (char *)0x0 || (iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0)) ||
-         ((DAT_00215db0 == 0 ||
-          (((iVar4 = dladdr(DAT_00215db0,&local_350), iVar4 == 0 || (local_348 != DAT_0020c0e8)) ||
-           (local_350 == (char *)0x0)))))))) ||
-       (iVar4 = strcmp(local_350,&DAT_0020c0f0), iVar4 != 0)))))) {
-    pcVar8 = "exports";
-  }
-  else {
-    DAT_00215db8 = 1;
-    iVar4 = FUN_0018d938(&DAT_00215dc0,DAT_001e0978,&PTR_DAT_001c3220,FUN_001428fc,0);
-    if (iVar4 == 0) {
-      pcVar8 = "guest_game_identity";
-    }
-    else {
-      lVar6 = FUN_001bbbac();
-      if (lVar6 - 0x1001U < 0xfffffffffffff000) {
-        pcVar8 = "provider_size";
-      }
-      else {
-        local_388 = DAT_001e0978;
-        uStack_380 = 0;
-        local_378 = FUN_001428fc;
-        pcStack_370 = FUN_001592e8;
-        local_368 = FUN_00159434;
-        pcStack_360 = FUN_001596ac;
-        local_390 = DAT_0010e7f8;
-        DAT_00215dd8 = 1;
-        local_358 = FUN_00159730;
-        iVar4 = FUN_001bbbb4(&DAT_00215de0,0x1000,&local_390);
-        DAT_00215dd8 = 0;
-        if (iVar4 == 1) {
-          DAT_00216de0 = 1;
-          DAT_00216de8 = DAT_001e0978;
-          uRam0000000000216df8 = _UNK_001c3278;
-          _DAT_00216df0 = _DAT_001c3270;
-          puRam0000000000216e08 = PTR_FUN_001c3288;
-          _DAT_00216e00 = PTR_FUN_001c3280;
-          DAT_00216e10 = PTR_FUN_001c3290;
-          iVar4 = FUN_00158080();
-          if ((iVar4 == 0) ||
-             (iVar4 = FUN_001a16a0(&DAT_00216de8,&DAT_00216e18), uVar3 = DAT_0010e540, iVar4 != 1))
-          {
-            pcVar8 = "online_movement_native_guards";
-          }
-          else {
-            DAT_00216e60 = 1;
-            DAT_00216e90 = DAT_001e0978 + 0xb30690;
-            DAT_00216e98 = (void *)0x0;
-            DAT_00216e80 = FUN_001455a4;
-            DAT_00216e88 = FUN_00159ba0;
-            DAT_00216ea0 = DAT_001e0978 + 0xb30694;
-            DAT_00216e70 = DAT_00209d00;
-            DAT_00216e78 = DAT_001e0978;
-            DAT_00216e68 = DAT_0010e540;
-            _DAT_00216ea8 = DAT_0010e5b8;
-            pvVar7 = (void *)FUN_00152af0();
-            DAT_00216e98 = pvVar7;
-            if (((pvVar7 != (void *)0x0) && ((((uint)DAT_00216e90 | (uint)pvVar7) & 3) == 0)) &&
-               (0xfffffffff0000002 < ((long)pvVar7 - DAT_00216e90) - 0x7fffffdU)) {
-              uVar10 = (uint)((long)pvVar7 - DAT_00216e90);
-              uVar1 = uVar10 + 3;
-              if (-1 < (int)uVar10) {
-                uVar1 = uVar10;
-              }
-              _DAT_00216ea8 =
-                   CONCAT44(uVar1 >> 2,DAT_00216ea8) & 0x3ffffffffffffff | 0x1400000000000000;
-              iVar4 = FUN_0015a024(auStack_1d8);
-              if (iVar4 != 0) {
-                memcpy(pvVar7,auStack_1d8,0x158);
-                FUN_001bdaf0(pvVar7,(long)pvVar7 + 0x158);
-                iVar4 = mprotect(DAT_00216e98,DAT_00209d88,5);
-                if (iVar4 == 0) {
-                  iVar4 = FUN_001428fc(0,DAT_00216e98,auStack_330,0x158);
-                  if (iVar4 != 0) {
-                    iVar4 = memcmp(auStack_1d8,auStack_330,0x158);
-                    if ((iVar4 == 0) && (iVar4 = FUN_0015a11c(), iVar4 != 0)) {
-                      DAT_00216eb8 = DAT_00209d00;
-                      DAT_00216ec0 = DAT_001e0978;
-                      DAT_00216ed8 = DAT_001e0978 + 0xe7b768;
-                      DAT_00216eb0 = uVar3;
-                      DAT_00216ee8 = DAT_001e0978 + 0xe7b76c;
-                      DAT_00216ec8 = FUN_001455a4;
-                      DAT_00216ed0 = FUN_0015a3f0;
-                      DAT_00216ee0 = (void *)0x0;
-                      _DAT_00216ef0 = DAT_0010e6b8;
-                      pvVar7 = (void *)FUN_00152af0();
-                      DAT_00216ee0 = pvVar7;
-                      if ((pvVar7 != (void *)0x0) &&
-                         (((((uint)DAT_00216ed8 | (uint)pvVar7) & 3) == 0 &&
-                          (0xfffffffff0000002 < ((long)pvVar7 - DAT_00216ed8) - 0x7fffffdU)))) {
-                        uVar10 = (uint)((long)pvVar7 - DAT_00216ed8);
-                        uVar1 = uVar10 + 3;
-                        if (-1 < (int)uVar10) {
-                          uVar1 = uVar10;
-                        }
-                        _DAT_00216ef0 =
-                             CONCAT44(uVar1 >> 2,DAT_00216ef0) & 0x3ffffffffffffff |
-                             0x1400000000000000;
-                        iVar4 = FUN_0015a744(auStack_1d8);
-                        if (iVar4 != 0) {
-                          memcpy(pvVar7,auStack_1d8,0x158);
-                          FUN_001bdaf0(pvVar7,(long)pvVar7 + 0x158);
-                          iVar4 = mprotect(DAT_00216ee0,DAT_00209d88,5);
-                          if (iVar4 == 0) {
-                            iVar4 = FUN_001428fc(0,DAT_00216ee0,auStack_330,0x158);
-                            if (iVar4 != 0) {
-                              iVar4 = memcmp(auStack_1d8,auStack_330,0x158);
-                              if ((iVar4 == 0) && (iVar4 = FUN_0015a83c(), iVar4 != 0)) {
-                                iVar4 = FUN_0015aa90(DAT_00216e90,_DAT_00216ea8 & 0xffffffff,
-                                                     DAT_00216eac);
-                                if (iVar4 < 0) {
-                                  FUN_001417c8("fatal","spin_post_publication_restore_unverified",0)
-                                  ;
-                    /* WARNING: Subroutine does not return */
-                                  abort();
-                                }
-                                if (iVar4 == 1) {
-                                  DAT_00216ef8 = 1;
-                                  iVar4 = FUN_0015aa90(DAT_00216ed8,_DAT_00216ef0 & 0xffffffff,
-                                                       DAT_00216ef4);
-                                  if (iVar4 < 0) {
-                                    FUN_001417c8("fatal",
-                                                 "spin_movement_post_publication_restore_unverified"
-                                                 ,0);
-                    /* WARNING: Subroutine does not return */
-                                    abort();
-                                  }
-                                  if (iVar4 == 1) {
-                                    DAT_00216efc = 1;
-                                    iVar4 = FUN_0015a11c();
-                                    if ((iVar4 != 0) && (iVar4 = FUN_0015a83c(1), iVar4 != 0)) {
-                                      pcVar5 = "spin_post_installed";
-                                      pcVar8 = 
-                                      "owned_final_and_movement_epilogues_no_capability_yet";
-                                      pcVar9 = 
-                                      ",\"action\":25,\"frame_entry_rva\":\"0xb30690\",\"movement_entry_rva\":\"0xe7b768\",\"movement_function_rva\":\"0xe7af70\",\"original_call_added\":false,\"online_movement_bound\":true"
-                                      ;
-                                      goto LAB_001439a0;
-                                    }
-                                  }
-                                  FUN_0015abf4();
-                                  pcVar8 = "movement_post_publication";
-                                }
-                                else {
-                                  pcVar8 = "post_publication";
-                                }
-                                goto LAB_0014398c;
-                              }
-                            }
-                            pcVar8 = "movement_post_prepublication_readback";
-                            goto LAB_0014398c;
-                          }
-                        }
-                      }
-                      pcVar8 = "movement_post_island";
-                      goto LAB_0014398c;
-                    }
-                  }
-                  pcVar8 = "post_prepublication_readback";
-                  goto LAB_0014398c;
-                }
-              }
-            }
-            pcVar8 = "post_island";
-          }
-        }
-        else {
-          pcVar8 = "provider_native_guards";
-        }
-      }
-    }
-  }
-LAB_0014398c:
-  DAT_00215dd8 = 0;
-  pcVar5 = "spin_unavailable";
-  pcVar9 = ",\"action\":25,\"other_features_unchanged\":true";
-LAB_001439a0:
-  FUN_001417c8(pcVar5,pcVar8,pcVar9);
-  if (*(long *)(lVar2 + 0x28) == local_80) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00146764 @ 00146764 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_00146764(long *param_1,undefined8 param_2,int param_3)
-
-{
-  int iVar1;
-  long lVar2;
-  bool bVar3;
-  char cVar4;
-  int iVar5;
-  uint uVar6;
-  int iVar7;
-  long lVar8;
-  long lVar9;
-  long lVar10;
-  long lVar11;
-  long lVar12;
-  void *pvVar13;
-  undefined8 uVar14;
-  long lVar15;
-  long lVar16;
-  long lVar17;
-  undefined8 uVar18;
-  char *pcVar19;
-  char *pcVar20;
-  char *pcVar21;
-  int local_12d0;
-  long local_1298;
-  long local_1290;
-  long local_1288;
-  long local_1270;
-  long local_1268;
-  long local_1260;
-  int local_1258;
-  undefined1 auStack_1120 [4096];
-  undefined1 auStack_120 [32];
-  undefined8 local_100;
-  undefined8 uStack_f8;
-  undefined8 uStack_f0;
-  undefined8 uStack_e8;
-  undefined8 local_e0;
-  undefined8 uStack_d8;
-  undefined8 uStack_d0;
-  undefined8 uStack_c8;
-  undefined1 local_c0;
-  undefined8 local_bc;
-  undefined8 uStack_b4;
-  undefined8 local_ac;
-  undefined8 uStack_a4;
-  undefined8 local_9c;
-  undefined8 uStack_94;
-  undefined8 local_8c;
-  undefined8 uStack_84;
-  long local_78;
-  
-  lVar2 = tpidr_el0;
-  local_78 = *(long *)(lVar2 + 0x28);
-  DAT_00216f08 = 0;
-  DAT_00214c18 = 0;
-  uRam0000000000228de8 = 0;
-  _DAT_00228de0 = 0;
-  uRam0000000000228df8 = 0;
-  _DAT_00228df0 = 0;
-  uRam0000000000228e08 = 0;
-  _DAT_00228e00 = 0;
-  uRam0000000000228e18 = 0;
-  _DAT_00228e10 = 0;
-  if ((((param_1 != (long *)0x0) && (param_3 != 0)) && (DAT_00209cd4 != 0)) &&
-     ((-1 < DAT_001cfb50 && (DAT_00209d00 != 0)))) {
-    iVar5 = (**(code **)(*param_1 + 0x98))(param_1,0x80);
-    if (iVar5 < 0) {
-      if (*(long *)(lVar2 + 0x28) == local_78) {
-                    /* WARNING: Could not recover jumptable at 0x001468fc. Too many branches */
-                    /* WARNING: Treating indirect jump as call */
-        (**(code **)(*param_1 + 0x88))(param_1);
+    if (mode == 1 && mode_value == 0) {
+        mode_ok = 1;
+    } else if (mode_value == 1) {
+        mode_ok = (mode & 0xfffffffeu) == 2;
+    } else {
         return;
-      }
-      goto LAB_00146e38;
     }
-    lVar8 = (**(code **)(*param_1 + 0x480))(param_1,param_2,&DAT_00117e9e,"Lnexus/loader/d;");
-    pcVar20 = "core";
-    if (((lVar8 == 0) ||
-        (lVar9 = (**(code **)(*param_1 + 0x488))(param_1,param_2,lVar8), lVar9 == 0)) ||
-       ((cVar4 = (**(code **)(*param_1 + 0x720))(param_1), pcVar20 = "core", cVar4 != '\0' ||
-        (lVar10 = (**(code **)(*param_1 + 0xf8))(param_1,lVar9), lVar10 == 0)))) {
-LAB_00146868:
-      bVar3 = true;
-    }
-    else {
-      lVar11 = (**(code **)(*param_1 + 0x2f0))(param_1,lVar10,&DAT_0011fd4c,"Lnexus/loader/e;");
-      if (lVar11 == 0) {
-        lVar11 = 0;
-      }
-      else {
-        lVar11 = (**(code **)(*param_1 + 0x2f8))(param_1,lVar9,lVar11);
-      }
-      (**(code **)(*param_1 + 0xb8))(param_1,lVar10);
-      if ((lVar11 == 0) || (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 != '\0')) {
-        bVar3 = true;
-        pcVar20 = "core";
-      }
-      else {
-        cVar4 = (**(code **)(*param_1 + 0x720))(param_1);
-        if ((cVar4 == '\0') && (lVar10 = (**(code **)(*param_1 + 0xf8))(param_1,lVar9), lVar10 != 0)
-           ) {
-          lVar12 = (**(code **)(*param_1 + 0x2f0))
-                             (param_1,lVar10,&DAT_0011d6aa,"Ljava/lang/String;");
-          if (lVar12 == 0) {
-            lVar12 = 0;
-          }
-          else {
-            lVar12 = (**(code **)(*param_1 + 0x2f8))(param_1,lVar9,lVar12);
-          }
-          (**(code **)(*param_1 + 0xb8))(param_1,lVar10);
-          if ((((lVar12 != 0) && (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0'))
-              && (uVar6 = (**(code **)(*param_1 + 0x540))(param_1,lVar12), -1 < (int)uVar6)) &&
-             (((uVar6 < 0xa0 && (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0'))
-              && (pvVar13 = (void *)(**(code **)(*param_1 + 0x548))(param_1,lVar12,0),
-                 pvVar13 != (void *)0x0)))) {
-            memcpy(&local_1260,pvVar13,(ulong)uVar6);
-            lVar10 = *param_1;
-            *(undefined1 *)((long)&local_1260 + (ulong)uVar6) = 0;
-            (**(code **)(lVar10 + 0x550))(param_1,lVar12,pvVar13);
-            if (((local_1260 == 0x676e696b6e696c) &&
-                (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')) &&
-               (lVar10 = (**(code **)(*param_1 + 0xf8))(param_1,lVar9), lVar10 != 0)) {
-              lVar12 = (**(code **)(*param_1 + 0x2f0))
-                                 (param_1,lVar10,&DAT_001147f8,"Ljava/lang/String;");
-              if (lVar12 == 0) {
-                lVar12 = 0;
-              }
-              else {
-                lVar12 = (**(code **)(*param_1 + 0x2f8))(param_1,lVar9,lVar12);
-              }
-              (**(code **)(*param_1 + 0xb8))(param_1,lVar10);
-              if (((((lVar12 != 0) &&
-                    (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')) &&
-                   (uVar6 = (**(code **)(*param_1 + 0x540))(param_1,lVar12), -1 < (int)uVar6)) &&
-                  ((uVar6 < 0xa0 &&
-                   (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')))) &&
-                 (pvVar13 = (void *)(**(code **)(*param_1 + 0x548))(param_1,lVar12,0),
-                 pvVar13 != (void *)0x0)) {
-                memcpy(&local_1260,pvVar13,(ulong)uVar6);
-                lVar10 = *param_1;
-                *(undefined1 *)((long)&local_1260 + (ulong)uVar6) = 0;
-                (**(code **)(lVar10 + 0x550))(param_1,lVar12,pvVar13);
-                if (((local_1260 == 0x476e6f6973617645 && local_1258 == 0x656d61) &&
-                    (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')) &&
-                   (lVar10 = (**(code **)(*param_1 + 0xf8))(param_1,lVar9), lVar10 != 0)) {
-                  lVar12 = (**(code **)(*param_1 + 0x2f0))
-                                     (param_1,lVar10,&DAT_00119e58,&DAT_0011896b);
-                  if (lVar12 == 0) {
-                    (**(code **)(*param_1 + 0xb8))(param_1,lVar10);
-                  }
-                  else {
-                    cVar4 = (**(code **)(*param_1 + 0x300))(param_1,lVar9,lVar12);
-                    (**(code **)(*param_1 + 0xb8))(param_1,lVar10);
-                    if (((cVar4 == '\x01') &&
-                        (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')) &&
-                       (iVar5 = FUN_0016a4cc(param_1,lVar9,&DAT_00120926), iVar5 != 0)) {
-                      local_1268 = 0;
-                      uVar14 = FUN_0016a2d4(param_1,lVar11,"profileSha","Ljava/lang/String;");
-                      iVar5 = FUN_0016a5b8(param_1,uVar14,&local_bc,0x41);
-                      if ((iVar5 == 0) ||
-                         (iVar5 = memcmp(&local_bc,
-                                         "114ba105835bd4157cfd80aad9498734d51108ee193601410abeb5e0bab3a71c"
-                                         ,0x41), iVar5 != 0)) {
-                        bVar3 = true;
-                        pcVar20 = "selected_profile";
-                      }
-                      else {
-                        iVar5 = FUN_0016a6a8(param_1,lVar11,"revision",&local_1268);
-                        lVar10 = local_1268;
-                        bVar3 = true;
-                        pcVar20 = "selected_profile";
-                        if (((iVar5 != 0) && (0 < local_1268)) &&
-                           (iVar5 = FUN_0016a4cc(param_1,lVar11,"localAllowed"), iVar5 != 0)) {
-                          uVar14 = FUN_0016a2d4(param_1,lVar11,"transport","Ljava/lang/String;");
-                          iVar5 = FUN_0016a3a4(param_1,uVar14,"https_release");
-                          if (iVar5 != 0) {
-                            uVar14 = FUN_0016a2d4(param_1,lVar11,"gameSha","Ljava/lang/String;");
-                            iVar5 = FUN_0016a3a4(param_1,uVar14,
-                                                 "a10aeb6b4085fb2a15d969a130cd9608231998b5269a40aed41129d99624ede3"
-                                                );
-                            if (iVar5 != 0) {
-                              uVar14 = FUN_0016a2d4(param_1,lVar9,&DAT_00120939,"Ljava/util/Map;");
-                              lVar12 = FUN_0016a79c(param_1,uVar14);
-                              if ((((((lVar12 == 0) ||
-                                     (cVar4 = (**(code **)(*param_1 + 0x720))(param_1),
-                                     cVar4 != '\0')) ||
-                                    (lVar15 = (**(code **)(*param_1 + 0xf8))(param_1,lVar12),
-                                    lVar15 == 0)) ||
-                                   ((lVar15 = (**(code **)(*param_1 + 0x108))
-                                                        (param_1,lVar15,"booleanValue",&DAT_001198f1
-                                                        ), lVar15 == 0 ||
-                                    (cVar4 = (**(code **)(*param_1 + 0x128))(param_1,lVar12,lVar15),
-                                    cVar4 != '\x01')))) ||
-                                  (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 != '\0'))
-                                 || ((lVar12 = FUN_0016a2d4(param_1,lVar11,"modules",
-                                                            "Ljava/util/List;"), lVar12 == 0 ||
-                                     (lVar15 = (**(code **)(*param_1 + 0xf8))(param_1,lVar12),
-                                     lVar15 == 0)))) {
-                                pcVar20 = "callback_record";
-                              }
-                              else {
-                                lVar16 = (**(code **)(*param_1 + 0x108))
-                                                   (param_1,lVar15,&DAT_00114e24,&DAT_00119177);
-                                lVar15 = (**(code **)(*param_1 + 0x108))
-                                                   (param_1,lVar15,&DAT_001141a6,
-                                                    "(I)Ljava/lang/Object;");
-                                pcVar20 = "callback_record";
-                                if (((lVar16 != 0) && (lVar15 != 0)) &&
-                                   (cVar4 = (**(code **)(*param_1 + 0x720))(param_1), cVar4 == '\0')
-                                   ) {
-                                  iVar5 = (**(code **)(*param_1 + 0x188))(param_1,lVar12,lVar16);
-                                  if ((iVar5 - 0x11U < 0xfffffff0) ||
-                                     (cVar4 = (**(code **)(*param_1 + 0x720))(param_1),
-                                     cVar4 != '\0')) {
-                                    pcVar20 = "selected_module";
-                                  }
-                                  else {
-                                    pcVar21 = "selected_module";
-                                    local_12d0 = 0;
-                                    iVar1 = 0;
-                                    local_c0 = 0;
-                                    uStack_f8 = 0;
-                                    local_100 = 0;
-                                    uStack_e8 = 0;
-                                    uStack_f0 = 0;
-                                    uStack_d8 = 0;
-                                    local_e0 = 0;
-                                    uStack_c8 = 0;
-                                    uStack_d0 = 0;
-                                    local_1270 = 0;
-                                    do {
-                                      lVar16 = (**(code **)(*param_1 + 0x110))
-                                                         (param_1,lVar12,lVar15,iVar1);
-                                      pcVar20 = "selected_module";
-                                      if ((lVar16 == 0) ||
-                                         (cVar4 = (**(code **)(*param_1 + 0x720))(param_1),
-                                         pcVar20 = pcVar21, cVar4 != '\0')) goto LAB_00146868;
-                                      lVar17 = FUN_0016a2d4(param_1,lVar16,&DAT_001141aa,
-                                                            "Ljava/lang/String;");
-                                      iVar7 = FUN_0016a3a4(param_1,lVar17,"EvasionGame");
-                                      if (iVar7 != 0) {
-                                        iVar7 = FUN_0016a4cc(param_1,lVar16,"callback");
-                                        if (iVar7 == 0) goto LAB_00146868;
-                                        uVar14 = FUN_0016a2d4(param_1,lVar16,&DAT_0011aae0,
-                                                              "Ljava/lang/String;");
-                                        iVar7 = FUN_0016a3a4(param_1,uVar14,"jni-onload-v1");
-                                        if (iVar7 == 0) goto LAB_00146868;
-                                        uVar14 = FUN_0016a2d4(param_1,lVar16,&DAT_00119e5a,
-                                                              "Ljava/lang/String;");
-                                        iVar7 = FUN_0016a5b8(param_1,uVar14,&local_100,0x41);
-                                        if ((iVar7 == 0) ||
-                                           (iVar7 = FUN_0016a6a8(param_1,lVar16,"bytes",&local_1270)
-                                           , iVar7 == 0)) goto LAB_00146868;
-                                        local_12d0 = local_12d0 + 1;
-                                      }
-                                      if (lVar17 != 0) {
-                                        (**(code **)(*param_1 + 0xb8))(param_1,lVar17);
-                                      }
-                                      (**(code **)(*param_1 + 0xb8))(param_1,lVar16);
-                                      lVar16 = local_1270;
-                                      iVar1 = iVar1 + 1;
-                                    } while (iVar5 != iVar1);
-                                    bVar3 = true;
-                                    pcVar20 = "selected_module";
-                                    if ((((local_12d0 == 1) && (0x3f < local_1270)) &&
-                                        (local_1270 < 0x100001)) &&
-                                       (cVar4 = (**(code **)(*param_1 + 0x720))(param_1),
-                                       cVar4 == '\0')) {
-                                      uVar14 = FUN_0016a2d4(param_1,lVar9,&DAT_0011df95,
-                                                            "Ljava/util/Map;");
-                                      uVar14 = FUN_0016a79c(param_1,uVar14);
-                                      iVar5 = FUN_0016a5b8(param_1,uVar14,auStack_1120,0x1000);
-                                      if ((iVar5 == 0) ||
-                                         (iVar5 = FUN_0016a8c0(&local_100,auStack_120), iVar5 == 0))
-                                      {
-                                        pcVar20 = "selected_self_path_sha";
-                                      }
-                                      else {
-                                        iVar5 = dladdr(FUN_00159ba0,&local_1290);
-                                        pcVar20 = "selected_self_path_sha";
-                                        if (((iVar5 != 0) && (local_1288 != 0)) &&
-                                           ((local_1290 != 0 &&
-                                            ((iVar5 = FUN_0016a97c(auStack_1120), iVar5 != 0 &&
-                                             (iVar5 = FUN_00142158(auStack_1120,lVar16,auStack_120),
-                                             iVar5 != 0)))))) {
-                                          local_1298 = 0;
-                                          uVar14 = FUN_0016a2d4(param_1,lVar9,&DAT_0011fd4c,
-                                                                "Lnexus/loader/e;");
-                                          uVar18 = (**(code **)(*param_1 + 0x488))
-                                                             (param_1,param_2,lVar8);
-                                          cVar4 = (**(code **)(*param_1 + 0xc0))
-                                                            (param_1,lVar9,uVar18);
-                                          if ((cVar4 == '\0') ||
-                                             (cVar4 = (**(code **)(*param_1 + 0xc0))
-                                                                (param_1,lVar11,uVar14),
-                                             cVar4 == '\0')) {
-                                            pcVar20 = "selected_plan_changed";
-                                          }
-                                          else {
-                                            iVar5 = FUN_0016a6a8(param_1,uVar14,"revision",
-                                                                 &local_1298);
-                                            pcVar20 = "selected_plan_changed";
-                                            if ((iVar5 != 0) && (local_1298 == lVar10)) {
-                                              uVar14 = FUN_0016a2d4(param_1,lVar9,&DAT_0011d6aa,
-                                                                    "Ljava/lang/String;");
-                                              iVar5 = FUN_0016a3a4(param_1,uVar14,"linking");
-                                              if (iVar5 != 0) {
-                                                uVar14 = FUN_0016a2d4(param_1,lVar9,&DAT_001147f8,
-                                                                      "Ljava/lang/String;");
-                                                iVar5 = FUN_0016a3a4(param_1,uVar14,"EvasionGame");
-                                                if ((iVar5 != 0) &&
-                                                   (cVar4 = (**(code **)(*param_1 + 0x720))(param_1)
-                                                   , cVar4 == '\0')) {
-                                                  DAT_00214c18 = lVar10;
-                                                  DAT_00216f08 = 1;
-                                                  bVar3 = false;
-                                                  uRam0000000000228de8 = uStack_b4;
-                                                  _DAT_00228de0 = local_bc;
-                                                  uRam0000000000228df8 = uStack_a4;
-                                                  _DAT_00228df0 = local_ac;
-                                                  uRam0000000000228e08 = uStack_94;
-                                                  _DAT_00228e00 = local_9c;
-                                                  uRam0000000000228e18 = uStack_84;
-                                                  _DAT_00228e10 = local_8c;
-                                                }
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                      goto LAB_0014686c;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        bVar3 = true;
-        pcVar20 = "link_phase";
-      }
-    }
-LAB_0014686c:
-    cVar4 = (**(code **)(*param_1 + 0x720))(param_1);
-    if (cVar4 != '\0') {
-      (**(code **)(*param_1 + 0x88))(param_1);
-    }
-    (**(code **)(*param_1 + 0xa0))(param_1,0);
-    if (bVar3) {
-      pcVar21 = "spin_loader_refused";
-      pcVar19 = ",\"action\":25,\"capability_issued\":false";
-    }
-    else {
-      snprintf((char *)&local_1260,0x140,
-               ",\"action\":25,\"loader_generation\":%llu,\"profile_sha256\":\"%s\",\"callback_verified\":true,\"self_file_verified\":true,\"paid_state_changed\":false"
-               ,DAT_00214c18,"114ba105835bd4157cfd80aad9498734d51108ee193601410abeb5e0bab3a71c");
-      pcVar21 = "spin_loader_verified";
-      pcVar20 = "actual_signed_release_selection";
-      pcVar19 = (char *)&local_1260;
-    }
-    FUN_001417c8(pcVar21,pcVar20,pcVar19);
-  }
-  if (*(long *)(lVar2 + 0x28) == local_78) {
-    return;
-  }
-LAB_00146e38:
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
 
-/* ===== FUN_001474c0 @ 001474c0 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_001474c0(int param_1)
-
-{
-  long lVar1;
-  int iVar2;
-  char *pcVar3;
-  char *pcVar4;
-  char *pcVar5;
-  undefined8 local_80;
-  undefined8 local_78;
-  long lStack_70;
-  code *local_68;
-  code *pcStack_60;
-  undefined8 local_58;
-  undefined *puStack_50;
-  code *local_48;
-  code *pcStack_40;
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  if ((DAT_00216ef8 == '\x01' && DAT_00216efc != '\0') && DAT_00216de0 != '\0') {
-    if (((param_1 == 0) || (DAT_00216f08 == '\0')) || (DAT_00214c18 == 0)) {
-      FUN_0015abf4();
-      if (*(long *)(lVar1 + 0x28) == local_38) {
-        pcVar3 = "verified_lab_loader_identity_missing";
-LAB_0014769c:
-        FUN_001417c8("spin_unavailable",pcVar3,0);
+    if (action != SPIN_ACTION || !mode_ok)
         return;
-      }
-      goto LAB_001476d8;
+
+    if (spin_mode_gate(mode_value) == 0)
+        return;
+    if (!(g_state_status == 0 && g_prop_state[0] != 0))
+        return;
+    if (spin_active() == 0)
+        return;
+    if (g_spin_lease_fn == NULL)
+        return;
+
+    {
+        spin_lease_record_t rec;
+        uint32_t need_mask;
+        int ok;
+
+        memset(&rec, 0, sizeof rec);
+        rec.header = ROD_LEASE_TAG_IN;
+        ok = g_spin_lease_fn(g_spin_lease_ctx, SPIN_ACTION, &rec);
+        if (ok != 1)
+            return;
+        if (rec.header != ROD_LEASE_TAG_IN)
+            return;
+        if ((uint32_t)rec.header != 1 || (uint32_t)(rec.header >> 32) != 0x28)
+            return;
+
+        need_mask = mode_value != 1 ? 0x3fu : 0xffu;
+        if ((need_mask & ~rec.flags) != 0)
+            return;
+        if (rec.zero != 0)
+            return;
+        if (rec.lease_ctx == 0 || rec.lease_aux == 0 || rec.token_hi == 0)
+            return;
+        if (!(rec.token > 999999u && rec.token < 2000000u))
+            return;
+
+        out[0] = ROD_LEASE_TAG_OUT;
+        *(uint32_t *)(void *)(out + 1) = SPIN_ACTION;
+        *(uint32_t *)(void *)((char *)(out + 1) + 4) = mode;
+        out[2] = g_state_epoch;
+        out[3] = g_spin_family_epoch;
+        out[4] = g_spin_family_aux;
+        out[5] = g_spin_aux;
+        out[6] = g_spin_aux2;
+        out[7] = rec.header;
+        out[8] = rec.flags | (uint64_t)rec.token_hi << 32;
+        out[9] = rec.lease_ctx;
+        out[10] = rec.lease_aux;
+        out[11] = (uint64_t)rec.token | (uint64_t)rec.zero << 32;
     }
-    iVar2 = (*DAT_00215d98)(&DAT_00216e68);
-    if (iVar2 != 1) {
-      FUN_0015abf4();
-      if (*(long *)(lVar1 + 0x28) == local_38) {
-        pcVar3 = "post_proof_rejected";
-        goto LAB_0014769c;
-      }
-      goto LAB_001476d8;
-    }
-    iVar2 = (*DAT_00215da8)(&DAT_00216eb0);
-    if (iVar2 != 1) {
-      FUN_0015abf4();
-      if (*(long *)(lVar1 + 0x28) == local_38) {
-        pcVar3 = "movement_post_proof_rejected";
-        goto LAB_0014769c;
-      }
-      goto LAB_001476d8;
-    }
-    DAT_00216f00 = 1;
-    DAT_00228e20 = 0x100000001;
-    local_78 = DAT_00209d00;
-    lStack_70 = DAT_00214c18;
-    local_68 = FUN_001455a4;
-    pcStack_60 = FUN_00159ba0;
-    local_58 = 0;
-    puStack_50 = PTR_FUN_001cb6f0;
-    local_80 = DAT_0010e540;
-    local_48 = FUN_0016aa6c;
-    pcStack_40 = FUN_0016ab00;
-    iVar2 = (*DAT_00215d78)(&local_80);
-    if (iVar2 == 1) {
-      pcVar3 = "spin_registered";
-      pcVar4 = "verified_action25_lab_trial";
-      pcVar5 = 
-      ",\"action\":25,\"scope\":\"LAB_TRIAL\",\"modes\":[\"offline_facing_priority\",\"online_movement\"],\"rotation\":360,\"movement_reassert_rva\":\"0xe7b768\",\"paid_state_changed\":false,\"free_grant\":false"
-      ;
-      DAT_00216f04 = 1;
-    }
-    else {
-      pcVar3 = "spin_unavailable";
-      pcVar4 = "lab_trial_registration_rejected";
-      pcVar5 = (char *)0x0;
-      DAT_00228e20 = 0x200000000;
-    }
-    FUN_001417c8(pcVar3,pcVar4,pcVar5);
-  }
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-LAB_001476d8:
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
 }
 
-/* ===== FUN_00159ba0 @ 00159ba0 [libNexusEvasionRuntime69252.so] ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_00159ba0(long param_1)
-
+static int32_t key_value_get(const char *name)
 {
-  uint uVar1;
-  uint uVar2;
-  undefined4 uVar3;
-  long lVar4;
-  undefined8 uVar5;
-  ulong uVar6;
-  undefined4 uVar7;
-  undefined8 uVar8;
-  undefined4 uVar9;
-  undefined4 uVar10;
-  undefined4 uVar11;
-  undefined4 uVar12;
-  undefined4 uVar13;
-  undefined8 uVar14;
-  long lVar15;
-  undefined8 uVar16;
-  undefined8 uVar17;
-  ulong uVar18;
-  int iVar19;
-  int iVar20;
-  undefined4 *puVar21;
-  long lVar22;
-  ulong uVar23;
-  long lVar24;
-  undefined8 local_800;
-  undefined8 local_7f8;
-  undefined8 uStack_7f0;
-  undefined8 local_7e8;
-  undefined8 uStack_7e0;
-  undefined8 local_7d8;
-  undefined8 uStack_7d0;
-  undefined8 local_7c8;
-  undefined8 *local_7c0;
-  undefined8 *puStack_7b8;
-  undefined8 *local_7b0;
-  undefined8 *puStack_7a8;
-  undefined8 local_7a0;
-  undefined8 *local_798;
-  undefined8 *puStack_790;
-  undefined8 local_788;
-  undefined8 local_780;
-  ulong local_778;
-  undefined8 local_770;
-  int local_768;
-  int local_764;
-  undefined8 local_760;
-  undefined8 uStack_758;
-  undefined8 local_750;
-  ulong local_748;
-  undefined8 local_740;
-  uint local_738;
-  undefined4 local_734;
-  undefined8 local_730;
-  undefined8 local_728;
-  undefined8 local_720;
-  undefined8 uStack_718;
-  undefined8 uStack_710;
-  undefined8 uStack_708;
-  long local_700;
-  undefined8 uStack_6f8;
-  undefined8 local_6f0;
-  undefined8 local_6e0;
-  undefined8 uStack_6d8;
-  ulong local_6d0;
-  ulong local_6c8;
-  undefined8 local_6c0;
-  char acStack_6b8 [1400];
-  undefined8 local_140;
-  undefined8 uStack_138;
-  undefined8 uStack_130;
-  undefined8 uStack_128;
-  undefined8 local_120;
-  undefined8 uStack_118;
-  undefined8 uStack_110;
-  undefined8 uStack_108;
-  undefined8 local_100;
-  undefined8 uStack_f8;
-  undefined8 uStack_f0;
-  undefined8 uStack_e8;
-  undefined8 local_e0;
-  undefined8 uStack_d8;
-  ulong local_d0;
-  undefined8 uStack_c8;
-  undefined8 local_c0;
-  undefined8 uStack_b8;
-  undefined8 uStack_b0;
-  undefined8 uStack_a8;
-  undefined8 local_a0;
-  undefined8 uStack_98;
-  undefined8 uStack_90;
-  undefined8 uStack_88;
-  undefined8 local_80;
-  undefined8 uStack_78;
-  long local_70;
-  
-  lVar4 = tpidr_el0;
-  local_70 = *(long *)(lVar4 + 0x28);
-  puVar21 = (undefined4 *)__errno();
-  iVar20 = DAT_00209cd8;
-  uVar3 = *puVar21;
-  if (((((DAT_00216f04 == '\x01') && ((int)DAT_001dfff0 != 0)) && (DAT_00209cd8 != 0)) &&
-      ((iVar19 = gettid(), iVar20 == iVar19 && (param_1 != 0)))) &&
-     (((DAT_002170e4 & 1) == 0 && ((DAT_00216f10 != 0 && (DAT_00216f14 == 0)))))) {
-    DAT_00216f14 = 1;
-    DAT_002171a8 = DAT_002171a8 + 1;
-    if ((DAT_00217090 != 1) &&
-       (((((DAT_00216f28 ^ *(ulong *)(param_1 + 0x98)) & 0xffffffffffffff) == 0 &&
-         (((DAT_00216f30 ^ *(ulong *)(param_1 + 0xc0)) & 0xffffffffffffff) == 0)) &&
-        (DAT_00217030 == DAT_0020f650)))) {
-      lVar22 = FUN_0015b4a0();
-      uVar23 = FUN_001391f0(1);
-      if ((uVar23 != 0) && (DAT_002170b0 <= uVar23)) {
-        local_734 = 0;
-        local_764 = iVar20;
-        local_788 = 0;
-        uStack_6d8 = DAT_00216f20;
-        local_6e0 = _DAT_00216f18;
-        local_6c8 = DAT_00216f30;
-        local_6d0 = DAT_00216f28;
-        uStack_98 = uRam0000000000216fe8;
-        local_a0 = _DAT_00216fe0;
-        uStack_88 = uRam0000000000216ff8;
-        uStack_90 = _DAT_00216ff0;
-        uStack_78 = uRam0000000000217008;
-        local_80 = _DAT_00217000;
-        uStack_d8 = uRam0000000000216fa8;
-        local_e0 = _DAT_00216fa0;
-        uStack_c8 = uRam0000000000216fb8;
-        local_d0 = _DAT_00216fb0;
-        local_6c0 = DAT_00216f38;
-        uStack_b8 = uRam0000000000216fc8;
-        local_c0 = _DAT_00216fc0;
-        uStack_a8 = uRam0000000000216fd8;
-        uStack_b0 = _DAT_00216fd0;
-        uStack_118 = uRam0000000000216f68;
-        local_120 = DAT_00216f60;
-        uStack_108 = DAT_00216f78;
-        uStack_110 = _DAT_00216f70;
-        uStack_f8 = uRam0000000000216f88;
-        local_100 = _DAT_00216f80;
-        uStack_e8 = uRam0000000000216f98;
-        uStack_f0 = _DAT_00216f90;
-        uStack_138 = uRam0000000000216f48;
-        local_140 = _DAT_00216f40;
-        uStack_128 = uRam0000000000216f58;
-        uStack_130 = _DAT_00216f50;
-        uStack_718 = uRam0000000000217018;
-        local_720 = _DAT_00217010;
-        uStack_708 = uRam0000000000217028;
-        uStack_710 = _DAT_00217020;
-        uStack_6f8 = uRam0000000000217038;
-        local_700 = DAT_00217030;
-        local_6f0 = DAT_00217040;
-        local_740 = DAT_0010e520;
-        local_738 = DAT_00217080;
-        local_730 = DAT_00217050;
-        local_728 = DAT_00217084;
-        local_768 = DAT_00209cd8;
-        local_770 = DAT_0010e580;
-        uStack_758 = _UNK_00112a98;
-        local_760 = _DAT_00112a90;
-        local_798 = &local_6e0;
-        local_748 = DAT_00216f28;
-        puStack_790 = &local_140;
-        local_7a0 = DAT_0010e580;
-        local_750 = DAT_0010e740;
-        local_7c0 = &local_7a0;
-        puStack_7b8 = &local_720;
-        local_780 = DAT_0010e588;
-        local_7c8 = DAT_0010e668;
-        local_7b0 = &local_740;
-        puStack_7a8 = &local_770;
-        DAT_002170e4 = 1;
-        uStack_7d0 = 0;
-        local_7d8 = 0;
-        uStack_7e0 = 0;
-        local_7e8 = 0;
-        uStack_7f0 = 0;
-        local_7f8 = 0;
-        local_800 = DAT_0010e7a8;
-        local_778 = uVar23;
-        iVar20 = FUN_0015acc4(&local_7c8,&local_800);
-        uVar1 = 0;
-        if (local_7f8._4_4_ != 0) {
-          uVar1 = (uint)(iVar20 != 0);
-        }
-        uVar2 = 0;
-        if ((int)uStack_7d0 != 0) {
-          uVar2 = (uint)(iVar20 != 0);
-        }
-        local_760 = CONCAT44(uVar1,iVar20);
-        uStack_758 = CONCAT44(uStack_758._4_4_,uVar2);
-        FUN_0015b524(local_6c8);
-        FUN_001bbda8(&DAT_00215de0,&local_7c8,&DAT_002171b0);
-        uVar18 = local_d0;
-        uVar17 = local_120;
-        uVar16 = uStack_6d8;
-        lVar15 = local_700;
-        uVar14 = local_730;
-        uVar1 = local_738;
-        uVar10 = DAT_002171e4;
-        uVar9 = DAT_002171dc;
-        uVar8 = DAT_002171d0;
-        uVar7 = DAT_002171bc;
-        iVar20 = DAT_002171b8;
-        uVar6 = DAT_002171a8;
-        uVar5 = DAT_00214c18;
-        DAT_002170e0 = 0;
-        DAT_002170e4 = 0;
-        DAT_002170e8 = 0;
-        DAT_002170f0 = 0;
-        if (((DAT_002171a8 < 9) || (DAT_002171b8 != DAT_001cfbc0)) ||
-           ((DAT_002171f8 == 0 || (999 < uVar23 - DAT_002171f8)))) {
-          uVar11 = (undefined4)local_760;
-          uVar12 = local_760._4_4_;
-          uVar13 = (undefined4)uStack_758;
-          lVar24 = FUN_0015b4a0();
-          snprintf(acStack_6b8,0x578,
-                   ",\"action\":25,\"scope\":\"LAB_TRIAL\",\"mode\":\"offline\",\"publication\":%llu,\"sequence\":%llu,\"epoch\":%llu,\"own_gid\":%d,\"requested\":%u,\"generation\":%llu,\"loader_generation\":%llu,\"post_entry_rva\":\"0xb30690\",\"post_calls\":%llu,\"active_known\":%u,\"active\":%u,\"ended\":%u,\"provider_reason\":%u,\"angle\":%d,\"writes_completed\":%u,\"readback_verified\":%u,\"field_apply_calls\":%llu,\"duration_us\":%llu,\"native_calls\":0,\"client_inputs\":0,\"paid_state_changed\":false"
-                   ,lVar15,uVar16,uVar17,uVar18 & 0xffffffff,(ulong)uVar1,uVar14,uVar5,uVar6,uVar11,
-                   uVar12,uVar13,iVar20,uVar9,uVar7,uVar10,uVar8,lVar24 - lVar22);
-          FUN_001417c8("spin_post","post_natural_local_facing",acStack_6b8);
-          DAT_001cfbc0 = DAT_002171b8;
-          DAT_002171f8 = uVar23;
-        }
-      }
-    }
-  }
-  *puVar21 = uVar3;
-  if (*(long *)(lVar4 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    return prop_value(name);
 }
 
-/* ===== FUN_0015abf4 @ 0015abf4 [libNexusEvasionRuntime69252.so] ===== */
-
-void FUN_0015abf4(void)
-
+int port_gate_check(int port_id, uint32_t version, int flags)
 {
-  int iVar1;
-  
-  if (DAT_00216efc == '\x01') {
-    iVar1 = FUN_0015a83c(1);
-    if (iVar1 == 0) {
-      return;
+    uint32_t port_bit;
+    int32_t v;
+
+    if (port_id > 9)
+        return 0;
+    port_bit = 1u << (port_id & 0x1f);
+    if ((version & port_bit) == 0)
+        return 0;
+
+    if (port_id < 2) {
+        if ((version & 1) == 0)
+            return 0;
+        if (prop_value("holdToShootEnabled") != 0) {
+            if (g_aim_holdfire_gate == 0)
+                return 0;
+            if (holdfire_gate_a() == 0)
+                return 0;
+            v = prop_value("holdToShootAim") | prop_value("holdToShootRangeCheck");
+            if (v > 1)
+                return 0;
+            if ((g_aim_pair_bitmap >> (v & 0x1f) & 1) == 0)
+                return 0;
+        }
+        if ((flags != 0 && port_id == 1) || prop_value("aopPredictEnabled") != 0) {
+            if (prop_value("killauraEnabled") == 0) {
+                if ((version >> 1 & 1) == 0)
+                    return 0;
+            } else {
+                if ((version >> 1 & 1) == 0)
+                    return 0;
+                v = key_value_get("aopPredictVersion");
+                if ((uint32_t)(v - 3) > 1)
+                    return 0;
+            }
+            v = key_value_get("aopPredictVersion");
+            if ((uint32_t)(v - 3) > 1)
+                return 0;
+        }
+        if (prop_value("aopAimTargetMode") == 1)
+            return 1;
+        return key_value_get("aopAimTargetMode") == 2;
     }
-    iVar1 = FUN_0015aa90(DAT_00216ed8,DAT_00216ef4,DAT_00216ef0);
-    if (iVar1 < 0) {
-      FUN_001417c8("fatal","spin_movement_post_restore_unverified",0);
-                    /* WARNING: Subroutine does not return */
-      abort();
+
+    switch (port_id) {
+    case 4:
+    case 9:
+        break;
+    case 5:
+    case 6:
+    case 7:
+    case 8: {
+        const char *key;
+
+        if (g_brawler_family_epoch == 0)
+            return 0;
+        if (g_brawler_family_check == NULL)
+            return 0;
+        if (((int (*)(void))g_brawler_family_check)() != 1)
+            return 0;
+        if (g_state_epoch2 != g_brawler_family_epoch)
+            return 0;
+        if (g_state_aux != g_brawler_family_aux)
+            return 0;
+        key = port_id == 5 ? "coltModEnabled"
+             : port_id == 6 ? "autofarmEnabled"
+             : port_id == 7 ? "boltModEnabled"
+             : "kitNaniModEnabled";
+        if (brawler_key_active(key) != 0)
+            return 1;
+        break;
     }
-    if (iVar1 == 1) {
-      DAT_00216efc = '\0';
+    default:
+        if ((version >> 2 & 1) == 0)
+            return 0;
+        v = key_value_get("dodgeVersion");
+        if ((uint32_t)(v - 1) > 4)
+            return 0;
+        if (key_value_get("isSpinEnabled") == 0)
+            return 1;
+        if (key_value_get("spinMovementMode") == 0)
+            return 1;
+        return key_value_get("spinOnlineOnlyIdle") != 0;
     }
-  }
-  if ((DAT_00216ef8 == '\x01') && (iVar1 = FUN_0015a11c(1), iVar1 != 0)) {
-    iVar1 = FUN_0015aa90(DAT_00216e90,DAT_00216eac,DAT_00216ea8);
-    if (iVar1 < 0) {
-      FUN_001417c8("fatal","spin_post_restore_unverified",0);
-                    /* WARNING: Subroutine does not return */
-      abort();
-    }
-    if (iVar1 == 1) {
-      DAT_00216ef8 = '\0';
-    }
-  }
-  return;
+
+    pthread_once(&g_port_once, family_once_init);
+    if (g_port_once_fn == NULL)
+        return 0;
+    return ((int (*)(int))g_port_once_fn)(0) == 1;
 }
 
-/* ===== FUN_001603a8 @ 001603a8 [libNexusEvasionRuntime69252.so] ===== */
 
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_001603a8(long param_1)
-
+int evasion_query_restore(void *self, const int32_t *record, int32_t size)
 {
-  int iVar1;
-  ulong uVar2;
-  long lVar3;
-  int iVar4;
-  int iVar5;
-  undefined8 uVar6;
-  ulong uVar7;
-  long lVar8;
-  float local_458;
-  float fStack_454;
-  undefined8 local_450;
-  undefined8 local_448;
-  undefined8 uStack_440;
-  undefined8 local_438;
-  undefined8 uStack_430;
-  undefined8 local_428;
-  undefined8 uStack_420;
-  undefined8 local_418;
-  undefined8 local_410;
-  undefined8 local_408;
-  undefined8 uStack_400;
-  undefined8 local_3f8;
-  undefined8 uStack_3f0;
-  undefined8 local_3e8;
-  undefined4 local_3e0;
-  undefined1 auStack_3d8 [44];
-  int local_3ac;
-  ulong local_398;
-  char acStack_390 [800];
-  long local_70;
-  
-  iVar4 = DAT_00209cd8;
-  lVar3 = tpidr_el0;
-  local_70 = *(long *)(lVar3 + 0x28);
-  if ((((((param_1 != 0) && (DAT_00216e60 != '\0')) && (DAT_00216f10 != 0)) &&
-       (((*(long *)(param_1 + 8) != 0 && (lVar8 = *(long *)(param_1 + 0x10), lVar8 != 0)) &&
-        ((*(int *)(param_1 + 0x24) != 0 && ((DAT_00217080 != 0 && (DAT_00217090 == 1)))))))) &&
-      (0 < (int)DAT_00217094)) &&
-     (((DAT_00209cd8 != 0 && (uVar6 = gettid(), iVar4 == (int)uVar6)) && ((int)DAT_0020f638 != 0))))
-  {
-    local_398 = 0;
-    iVar4 = FUN_001428fc(uVar6,*(long *)(lVar8 + 0x30) + 0x58,&local_398,8);
-    if (((iVar4 != 0) && (0x11fff < local_398 + 0x2000)) &&
-       (((local_398 & 7) == 0 &&
-        ((iVar4 = FUN_00189c88(DAT_001e0978,*(undefined8 *)(lVar8 + 0x40),FUN_001428fc,0,auStack_3d8
-                              ), iVar4 != 0 && (local_3ac != 0)))))) {
-      uStack_400 = *(undefined8 *)(lVar8 + 0x28);
-      local_408 = *(undefined8 *)(lVar8 + 0x20);
-      uStack_3f0 = *(undefined8 *)(lVar8 + 0x38);
-      local_3f8 = *(undefined8 *)(lVar8 + 0x30);
-      local_410 = *(undefined8 *)(*(long *)(param_1 + 8) + 8);
-      local_3e8 = *(undefined8 *)(lVar8 + 0x40);
-      local_3e0 = *(undefined4 *)(lVar8 + 0x70);
-      local_418 = DAT_0010e7f8;
-      uStack_420 = 0;
-      local_428 = 0;
-      uStack_430 = 0;
-      local_438 = 0;
-      uStack_440 = 0;
-      local_448 = 0;
-      local_450 = DAT_0010e7a8;
-      if ((DAT_0020adec == '\x01') &&
-         ((((iVar4 = FUN_0018a8cc(&DAT_0020adf0,&local_418,&local_450), iVar4 == 1 &&
-            ((int)local_448 != 0)) && (local_448._4_4_ != 0)) && ((int)uStack_420 == 0)))) {
-        DAT_00217120 = *(undefined8 *)(lVar8 + 0x20);
-        DAT_00217130 = *(undefined8 *)(param_1 + 0x28);
-        DAT_00217100 = DAT_0010e670;
-        DAT_00217140 = *(undefined8 *)(lVar8 + 0x30);
-        DAT_00217138 = *(undefined8 *)(lVar8 + 0x28);
-        DAT_00217128 = DAT_00217050;
-        DAT_00217150 = *(undefined8 *)(lVar8 + 0x40);
-        DAT_00217148 = *(undefined8 *)(lVar8 + 0x38);
-        _DAT_00217160 = *(ulong *)(lVar8 + 0x70);
-        DAT_00217108 = 1;
-        DAT_0021710c = DAT_0020f638._4_4_;
-        DAT_00217168 = *(undefined4 *)(lVar8 + 0x78);
-        DAT_00217190 = 0;
-        DAT_00217198 = 0;
-        DAT_00217110 = 0;
-        DAT_00217118 = DAT_0020f650;
-        DAT_00217158 = local_398;
-        uRam0000000000217174 = (undefined4)_UNK_00112a48;
-        uRam0000000000217178 = (undefined4)((ulong)_UNK_00112a48 >> 0x20);
-        _DAT_0021716c = (undefined4)_DAT_00112a40;
-        _DAT_00217170 = (undefined4)((ulong)_DAT_00112a40 >> 0x20);
-        uRam0000000000217184 = (undefined4)_UNK_00112c38;
-        uRam0000000000217188 = (undefined4)((ulong)_UNK_00112c38 >> 0x20);
-        _DAT_0021717c = (undefined4)_DAT_00112c30;
-        _DAT_00217180 = (undefined4)((ulong)_DAT_00112c30 >> 0x20);
-        DAT_002171a0._0_4_ = 0;
-        if (((int)DAT_00217098 != 0) &&
-           ((DAT_00228c58 == 0 || (iVar4 = FUN_0016b778(&DAT_00217100), iVar4 == 0)))) {
-          DAT_00228c60 = DAT_00228c60 + 1;
-          if (DAT_00228cf8 == 1) {
-            DAT_00228cb8 = DAT_00228cb8 + 1;
-          }
-          DAT_00228cf8 = 0;
-          DAT_00228cc0 = 0;
-          DAT_00228cd0 = 0;
-          DAT_00228ce8 = 0;
-          DAT_00228cc8 = 0;
-          DAT_00228c88 = 0;
-          uRam0000000000228ca8 = 0;
-          DAT_00228c90 = 0;
-          _DAT_00228c78 = 0;
-          _DAT_00228c70 = 0;
-          DAT_00228c68 = DAT_0010e6c0;
-          DAT_00228cd8 = 0.0;
-          DAT_00228cb0 = 0;
-          DAT_00228c80 = DAT_00217118;
-          _DAT_00228ca0 = (ulong)DAT_0021710c;
-          DAT_00228c98 = DAT_00228cb8;
-          goto LAB_001607f0;
+    uint64_t fns[QUERY_SLOT_COUNT];
+    int32_t values[QUERY_SLOT_COUNT];
+    const int32_t *slot;
+    const int32_t *table;
+    int count;
+    int result;
+    int i;
+
+    (void)self;
+
+    if (record == NULL || size != QUERY_SLOT_COUNT)
+        return 4;
+
+    count = 0;
+    slot = record;
+    table = (const int32_t *)(uintptr_t)0x124248;
+    for (i = 0; i < QUERY_SLOT_COUNT; i++) {
+        const int32_t *entry = table + i * 6;
+        int64_t fn = *(const int64_t *)(const void *)(entry - 4);
+
+        if (slot[0] != i || slot[1] < entry[-1] || slot[1] > entry[0])
+            return 4;
+        if (fn != 0) {
+            fns[count] = (uint64_t)fn;
+            values[count] = slot[1];
+            count++;
         }
-        uRam0000000000228ca8 = 0;
-        DAT_00228cb0 = 0;
-        DAT_00228c88 = 0;
-        DAT_00228c98 = 0;
-        DAT_00228c90 = 0;
-        _DAT_00228c78 = 0;
-        DAT_00228c68 = DAT_0010e6c0;
-        _DAT_00228ca0 = (ulong)DAT_0021710c;
-        if (((DAT_00228cc0 == *(long *)(lVar8 + 0x40)) && (DAT_00228cc8 == *(long *)(lVar8 + 0x20)))
-           && (DAT_00228cd0 != 0)) {
-          uVar7 = *(ulong *)(param_1 + 0x28);
-          uVar2 = uVar7 - DAT_00228cd0;
-          if ((uVar7 < DAT_00228cd0) || (0xfa < uVar2)) goto LAB_00160690;
-          if (99 < uVar2) {
-            uVar2 = 100;
-          }
-          if (0xf < uVar2) {
-            DAT_00228cd8 = (float)NEON_fmadd((float)uVar2 * (float)(int)DAT_00217084,0x358637bd,
-                                             DAT_00228cd8);
-            DAT_00228cd0 = uVar7;
-          }
-          if (DAT_00228cd8 < 6.2831855 == NAN(DAT_00228cd8)) {
-            do {
-              DAT_00228cd8 = DAT_00228cd8 + -6.2831855;
-            } while (DAT_00228cd8 < 6.2831855 == NAN(DAT_00228cd8));
-          }
-        }
-        else {
-LAB_00160690:
-          if (DAT_00228cf8 == 1) {
-            DAT_00228cb8 = DAT_00228cb8 + 1;
-          }
-          DAT_00228cf8 = 0;
-          DAT_00228cc8 = *(long *)(lVar8 + 0x20);
-          DAT_00228cd0 = *(ulong *)(param_1 + 0x28);
-          DAT_00228ce8 = 0;
-          DAT_00228cd8 = 0.0;
-          DAT_00228c98 = DAT_00228cb8;
-          DAT_00228cc0 = *(long *)(lVar8 + 0x40);
-        }
-        _DAT_00228c70 = 0;
-        DAT_002170f8 = 1;
-        DAT_00228ce0 = DAT_00228ce0 + 1;
-        DAT_00228c80 = DAT_00217118;
-        FUN_00169ce4();
-        iVar4 = *(int *)(lVar8 + 0x74);
-        sincosf(DAT_00228cd8,&fStack_454,&local_458);
-        iVar4 = iVar4 + (int)(long)local_458;
-        iVar1 = *(int *)(lVar8 + 0x78) + (int)(long)fStack_454;
-        if ((int)(long)local_458 == 0 && (int)(long)fStack_454 == 0) {
-          iVar4 = iVar4 + 1;
-        }
-        DAT_00228cb0 = CONCAT44(iVar1,iVar4);
-        if (((DAT_00228ce8 == 0) || (*(ulong *)(param_1 + 0x28) < DAT_00228ce8)) ||
-           (0x17 < *(ulong *)(param_1 + 0x28) - DAT_00228ce8)) {
-          iVar5 = (*DAT_00216e28)(DAT_00216e20,&DAT_00217100,1,iVar4,iVar1);
-          if (iVar5 != 1) goto LAB_001609ac;
-          (*DAT_00216e50)(DAT_00216e20,*(undefined8 *)(lVar8 + 0x38),iVar4,iVar1,1);
-          _DAT_00228c78 = CONCAT44(DAT_00228c7c,1);
-          DAT_00228d48 = DAT_00217148;
-          DAT_00228d40 = DAT_00217140;
-          DAT_00228d58 = DAT_00217158;
-          DAT_00228d50 = DAT_00217150;
-          uRam0000000000228d88 = CONCAT44(uRam000000000021718c,uRam0000000000217188);
-          _DAT_00228d80 = CONCAT44(uRam0000000000217184,_DAT_00217180);
-          DAT_00228c70 = 1;
-          DAT_00228cf0 = DAT_00228cf0 + 1;
-          DAT_00228cf8 = 1;
-          uRam0000000000228d98 = DAT_00217198;
-          _DAT_00228d90 = DAT_00217190;
-          DAT_00228da0 = CONCAT44(DAT_002171a0._4_4_,(undefined4)DAT_002171a0);
-          uRam0000000000228d68 = CONCAT44(_DAT_0021716c,DAT_00217168);
-          uRam0000000000228d78 = CONCAT44(_DAT_0021717c,uRam0000000000217178);
-          _DAT_00228d70 = CONCAT44(uRam0000000000217174,_DAT_00217170);
-          _DAT_00228d60 = _DAT_00217160;
-          DAT_00228da8 = DAT_00217118;
-          DAT_00228d28 = DAT_00217128;
-          DAT_00228d20 = DAT_00217120;
-          DAT_00228d38 = DAT_00217138;
-          _DAT_00228d30 = DAT_00217130;
-          uRam0000000000228d08 = CONCAT44(DAT_0021710c,DAT_00217108);
-          DAT_00228db0 = DAT_0021710c;
-          DAT_00228ce8 = *(ulong *)(param_1 + 0x28);
-          _DAT_00228d00 = DAT_00217100;
-          uRam0000000000228d18 = DAT_00217118;
-          _DAT_00228d10 = DAT_00217110;
-          DAT_00228db4 = iVar4;
-          DAT_00228db8 = iVar1;
-        }
-        else if (DAT_00228c7c == 0) {
-          DAT_00228c70 = 7;
-        }
-        else {
-LAB_001609ac:
-          if (DAT_00228c70 == 0) {
-            DAT_00228c70 = 5;
-          }
-        }
-        iVar4 = DAT_00228c70;
-        DAT_00228c90 = DAT_00228dc0;
-        DAT_00228c98 = DAT_00228cb8;
-        DAT_00228c88 = DAT_00228cf0;
-        DAT_002170f8 = 0;
-        lVar8 = *(long *)(param_1 + 0x28);
-        _DAT_00228c70 = (ulong)CONCAT14(DAT_00228cf8,DAT_00228c70);
-        if (((DAT_00228ce0 < 9) || (DAT_00228dc8 == 0)) || (999 < (ulong)(lVar8 - DAT_00228dc8))) {
-          snprintf(acStack_390,800,
-                   ",\"action\":25,\"mode\":\"online\",\"publication\":%llu,\"source_tick\":%u,\"epoch\":%llu,\"own_gid\":%d,\"configured_radius\":%d,\"effective_radius_raw\":1,\"only_standing\":%d,\"priority_yields\":%llu,\"phase\":%.6f,\"apply_reason\":%u,\"pending\":%u,\"local_calls\":%llu,\"queue_calls\":%llu,\"target_x\":%d,\"target_y\":%d,\"native_acceptance_proven\":false"
-                   ,(double)DAT_00228cd8,DAT_00217118,(ulong)DAT_0021710c,DAT_00217120,
-                   _DAT_00217160 & 0xffffffff,(ulong)DAT_00217094,(int)DAT_00217098,DAT_00228c60,
-                   iVar4,(uint)DAT_00228cf8,DAT_00228cf0,DAT_00228dc0,(undefined4)DAT_00228cb0,
-                   DAT_00228cb0._4_4_);
-          FUN_001417c8("spin_move","tale_style_real_client_input",acStack_390);
-          DAT_00228dc8 = lVar8;
-        }
-        goto LAB_001607f0;
-      }
+        slot += 2;
     }
-  }
-  if (DAT_00228cf8 == 1) {
-    DAT_00228cb8 = DAT_00228cb8 + 1;
-  }
-  DAT_00228cf8 = 0;
-  _DAT_00228c70 = _DAT_00228c70 & 0xffffffff;
-  DAT_00228cc0 = 0;
-  DAT_00228ce8 = 0;
-  DAT_00228cd0 = 0;
-  DAT_00228cc8 = 0;
-  DAT_00228cd8 = 0.0;
-  DAT_00228c98 = DAT_00228cb8;
-LAB_001607f0:
-  if (*(long *)(lVar3 + 0x28) == local_70) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+
+    result = (int)nexus_evasion_restore_v1(fns, values);
+    if (result == 1)
+        return 1;
+    if (result == 2)
+        return 2;
+    return 4;
 }
+
+int32_t nexus_evasion_get_requested_thunk(const char *name)
+{
+    return g_get_requested_thunk(name);
+}
+
+int32_t nexus_evasion_get_effective_thunk(const char *name)
+{
+    return g_get_effective_thunk(name);
+}
+
+uint32_t nexus_evasion_get_port_state_thunk(const char *name)
+{
+    return g_get_port_state_thunk(name);
+}
+
+static int sym_verified(void *sym)
+{
+    Dl_info info;
+
+    if (sym == NULL)
+        return 0;
+    if (dladdr(sym, &info) == 0)
+        return 0;
+    if (info.dli_fbase != g_expected_lib_base)
+        return 0;
+    if (info.dli_fname == NULL)
+        return 0;
+    return strcmp(info.dli_fname, g_expected_lib_path) == 0;
+}
+
+typedef struct {
+    uint64_t header;
+    uintptr_t engine;
+    void *reserved;
+    void *read_fn;
+    void *cb_a;
+    void *cb_b;
+    void *cb_c;
+    void *cb_d;
+} spin_provider_record_t;
+
+void spin_exports_bind(void)
+{
+    const char *stage;
+    const char *event;
+    const char *payload;
+    uint64_t island;
+    uint64_t island2;
+    int result;
+
+    g_spin_register_fn = dlsym(g_evasion_lib_handle,
+                               "nexus_evasion_spin_register_v1");
+    g_spin_snapshot_fn_rt = (void (*)(void))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_spin_snapshot_v1");
+    g_spin_lease_fn_rt = (void (*)(void))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_spin_lease_v1");
+    g_spin_recheck_fn_rt = (void (*)(void))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_spin_recheck_v1");
+    g_spin_publish_post_fn = (int (*)(const void *))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_publish_spin_post_v1");
+    g_spin_validate_post_fn = (int (*)(const void *))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_spin_validate_post_v1");
+    g_spin_publish_movement_fn = (int (*)(const void *))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_publish_spin_movement_post_v1");
+    g_spin_validate_movement_fn = (int (*)(const void *))dlsym(
+        g_evasion_lib_handle, "nexus_evasion_spin_validate_movement_post_v1");
+
+    if (!sym_verified(g_spin_register_fn)
+        || !sym_verified((void *)(uintptr_t)g_spin_snapshot_fn_rt)
+        || !sym_verified((void *)(uintptr_t)g_spin_lease_fn_rt)
+        || !sym_verified((void *)(uintptr_t)g_spin_recheck_fn_rt)
+        || !sym_verified((void *)(uintptr_t)g_spin_publish_post_fn)
+        || !sym_verified((void *)(uintptr_t)g_spin_validate_post_fn)
+        || !sym_verified((void *)(uintptr_t)g_spin_publish_movement_fn)
+        || !sym_verified((void *)(uintptr_t)g_spin_validate_movement_fn)) {
+        stage = "spin_unavailable";
+        event = "exports";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    g_spin_armed = 1;
+
+    if (guest_identity_check(g_spin_identity_state, g_engine_base,
+                             (void *)(uintptr_t)0x1c3220,
+                             (void *)(uintptr_t)game_read, 0) == 0) {
+        stage = "spin_unavailable";
+        event = "guest_game_identity";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    if (provider_capacity() - 0x1001 >= 0xfffffffffffff000ull) {
+        stage = "spin_unavailable";
+        event = "provider_size";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    {
+        spin_provider_record_t rec;
+
+        rec.header = ROD_NG_BIND_TAG;
+        rec.engine = g_engine_base;
+        rec.reserved = NULL;
+        rec.read_fn = (void *)(uintptr_t)game_read;
+        rec.cb_a = (void *)(uintptr_t)spin_provider_cb_a;
+        rec.cb_b = (void *)(uintptr_t)spin_provider_cb_b;
+        rec.cb_c = (void *)(uintptr_t)spin_provider_cb_c;
+        rec.cb_d = (void *)(uintptr_t)spin_provider_cb_d;
+
+        g_spin_provider_active = 1;
+        result = spin_provider_install(g_spin_provider_table, 0x1000, &rec);
+        g_spin_provider_active = 0;
+        if (result != 1) {
+            stage = "spin_unavailable";
+            event = "provider_native_guards";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+    }
+
+    g_online_move_bound = 1;
+    g_online_move_engine = g_engine_base;
+    memcpy(g_online_move_tmpl, (const void *)(uintptr_t)0x1c3270,
+           sizeof g_online_move_tmpl);
+
+    if (online_move_install() == 0
+        || online_move_verify(&g_online_move_engine, &g_online_move_state) != 1) {
+        stage = "spin_unavailable";
+        event = "online_movement_native_guards";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    g_spin_post_ready = 1;
+    g_spin_frame_entry = g_engine_base + SPIN_FRAME_ENTRY_RVA;
+    g_spin_frame_island = NULL;
+    g_spin_frame_handler = (void (*)(void))(uintptr_t)holdfire_post_handler;
+    g_spin_frame_cb = spin_post_callback;
+    g_spin_frame_bl_slot = g_engine_base + SPIN_FRAME_BL_RVA;
+    g_spin_frame_epoch = g_engine_epoch;
+    g_spin_frame_engine = g_engine_base;
+    g_spin_frame_stamp = ROD_SPIN_STAMP;
+    g_spin_frame_bl = ROD_SPIN_BL_TMPL;
+
+    island = (uint64_t)(uintptr_t)game_island_alloc();
+    g_spin_frame_island = (void *)(uintptr_t)island;
+    if (island == 0 || ((uint32_t)g_spin_frame_entry | (uint32_t)island) & 3) {
+        stage = "spin_unavailable";
+        event = "post_island";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+    if (island - g_spin_frame_entry - 0x7fffffdull
+        <= 0xfffffffff0000002ull) {
+        stage = "spin_unavailable";
+        event = "post_island";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    {
+        uint8_t island_code[ISLAND_SIZE];
+        uint8_t readback[ISLAND_SIZE];
+        uint32_t delta;
+        uint32_t q;
+
+        if (frame_island_code_build(island_code) == 0) {
+            stage = "spin_unavailable";
+            event = "post_island";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+
+        delta = (uint32_t)(island - g_spin_frame_entry);
+        q = (int32_t)delta < 0 ? delta + 3 : delta;
+        g_spin_frame_bl = (((((uint64_t)q >> 2) << 32)
+                           | (g_spin_frame_bl & 0xffffffffull))
+                          & 0x3ffffffffffffffull) | 0x1400000000000000ull;
+
+        memcpy((void *)(uintptr_t)island, island_code, ISLAND_SIZE);
+        code_cache_flush((void *)(uintptr_t)island,
+                         (void *)(uintptr_t)(island + ISLAND_SIZE));
+        if (mprotect((void *)(uintptr_t)island, g_page_size,
+                     PROT_READ | PROT_EXEC) != 0) {
+            stage = "spin_unavailable";
+            event = "post_prepublication_readback";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+        if (game_read(0, island, readback, ISLAND_SIZE) == 0
+            || memcmp(island_code, readback, ISLAND_SIZE) != 0
+            || spin_frame_post_verify(0) == 0) {
+            stage = "spin_unavailable";
+            event = "post_prepublication_readback";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+    }
+
+    g_spin_move_entry = g_engine_base + SPIN_MOVE_ENTRY_RVA;
+    g_spin_move_bl_slot = g_engine_base + SPIN_MOVE_BL_RVA;
+    g_spin_move_island = NULL;
+    g_spin_move_epoch = g_engine_epoch;
+    g_spin_move_engine = g_engine_base;
+    g_spin_move_stamp = ROD_SPIN_STAMP;
+    g_spin_move_handler = (void (*)(void))(uintptr_t)holdfire_post_handler;
+    g_spin_move_cb = spin_move_post_cb;
+    g_spin_move_bl = ROD_MOVE_BL_TMPL;
+
+    island2 = (uint64_t)(uintptr_t)game_island_alloc();
+    g_spin_move_island = (void *)(uintptr_t)island2;
+    if (island2 == 0 || ((uint32_t)g_spin_move_entry | (uint32_t)island2) & 3) {
+        stage = "spin_unavailable";
+        event = "movement_post_island";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+    if (island2 - g_spin_move_entry - 0x7fffffdull
+        <= 0xfffffffff0000002ull) {
+        stage = "spin_unavailable";
+        event = "movement_post_island";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    {
+        uint8_t island_code[ISLAND_SIZE];
+        uint8_t readback[ISLAND_SIZE];
+        uint32_t delta;
+        uint32_t q;
+
+        if (movement_island_code_build(island_code) == 0) {
+            stage = "spin_unavailable";
+            event = "movement_post_island";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+
+        delta = (uint32_t)(island2 - g_spin_move_entry);
+        q = (int32_t)delta < 0 ? delta + 3 : delta;
+        g_spin_move_bl = (((((uint64_t)q >> 2) << 32)
+                          | (g_spin_move_bl & 0xffffffffull))
+                         & 0x3ffffffffffffffull) | 0x1400000000000000ull;
+
+        memcpy((void *)(uintptr_t)island2, island_code, ISLAND_SIZE);
+        code_cache_flush((void *)(uintptr_t)island2,
+                         (void *)(uintptr_t)(island2 + ISLAND_SIZE));
+        if (mprotect((void *)(uintptr_t)island2, g_page_size,
+                     PROT_READ | PROT_EXEC) != 0) {
+            stage = "spin_unavailable";
+            event = "movement_post_prepublication_readback";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+        if (game_read(0, island2, readback, ISLAND_SIZE) == 0
+            || memcmp(island_code, readback, ISLAND_SIZE) != 0
+            || spin_move_post_verify(0) == 0) {
+            stage = "spin_unavailable";
+            event = "movement_post_prepublication_readback";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+    }
+
+    result = spin_post_publish(g_spin_frame_entry,
+                               (uint32_t)g_spin_frame_bl,
+                               g_spin_frame_bl_hi);
+    if (result < 0) {
+        runtime_journal_write("fatal",
+                              "spin_post_publication_restore_unverified",
+                              NULL);
+        abort();
+    }
+    if (result == 1)
+        g_loader_verify_gate_a = 1;
+
+    if (result == 1) {
+        result = spin_post_publish(g_spin_move_entry,
+                                   (uint32_t)g_spin_move_bl,
+                                   g_spin_move_bl_hi);
+        if (result < 0) {
+            runtime_journal_write(
+                "fatal", "spin_movement_post_publication_restore_unverified",
+                NULL);
+            abort();
+        }
+        if (result == 1) {
+            g_loader_verify_gate_b = 1;
+            if (spin_frame_post_verify(0) != 0
+                && spin_move_post_verify(1) != 0) {
+                runtime_journal_write(
+                    "spin_post_installed",
+                    "owned_final_and_movement_epilogues_no_capability_yet",
+                    ",\"action\":25,\"frame_entry_rva\":\"0xb30690\","
+                    "\"movement_entry_rva\":\"0xe7b768\","
+                    "\"movement_function_rva\":\"0xe7af70\","
+                    "\"original_call_added\":false,\"online_movement_bound\":true");
+                return;
+            }
+            loader_identity_verify();
+            stage = "spin_unavailable";
+            event = "movement_post_publication";
+            payload = ",\"action\":25,\"other_features_unchanged\":true";
+            goto out;
+        }
+        stage = "spin_unavailable";
+        event = "post_publication";
+        payload = ",\"action\":25,\"other_features_unchanged\":true";
+        goto out;
+    }
+
+    stage = "spin_unavailable";
+    event = "post_publication";
+    payload = ",\"action\":25,\"other_features_unchanged\":true";
+
+out:
+    g_spin_provider_active = 0;
+    runtime_journal_write(stage, event, payload);
+}
+
+typedef struct {
+    uint64_t stamp;
+    uint64_t epoch;
+    uint64_t generation;
+    void *handler;
+    void (*callback)(uint64_t);
+    uint64_t reserved;
+    void *cb_tmpl;
+    void *reg_cb_a;
+    void *reg_cb_b;
+} spin_register_record_t;
+
+void spin_handler_install(int acked)
+{
+    if (!(g_loader_verify_gate_a == 1 && g_loader_verify_gate_b != 0
+          && g_online_move_bound != 0))
+        return;
+
+    if (acked == 0 || g_spin_loader_verified == 0 || g_spin_loader_generation == 0) {
+        loader_identity_verify();
+        runtime_journal_write("spin_unavailable",
+                              "verified_lab_loader_identity_missing", NULL);
+        return;
+    }
+
+    if (g_spin_validate_post_fn(&g_spin_frame_stamp) != 1) {
+        loader_identity_verify();
+        runtime_journal_write("spin_unavailable", "post_proof_rejected", NULL);
+        return;
+    }
+
+    if (g_spin_validate_movement_fn(&g_spin_move_stamp) != 1) {
+        loader_identity_verify();
+        runtime_journal_write("spin_unavailable",
+                              "movement_post_proof_rejected", NULL);
+        return;
+    }
+
+    g_spin_move_apply_state = 1;
+    g_online_move_state[0] = 0x100000001ull;
+
+    {
+        spin_register_record_t rec;
+        int result;
+
+        rec.stamp = ROD_SPIN_STAMP;
+        rec.epoch = g_engine_epoch;
+        rec.generation = g_spin_loader_generation;
+        rec.handler = (void *)(uintptr_t)holdfire_post_handler;
+        rec.callback = spin_post_callback;
+        rec.reserved = 0;
+        rec.cb_tmpl = (void *)(uintptr_t)ROD_SPIN_CB_TMPL;
+        rec.reg_cb_a = (void *)(uintptr_t)spin_register_cb_a;
+        rec.reg_cb_b = (void *)(uintptr_t)spin_register_cb_b;
+
+        result = ((int (*)(const void *))g_spin_register_fn)(&rec);
+        if (result == 1) {
+            g_spin_state_flag = 1;
+            runtime_journal_write(
+                "spin_registered", "verified_action25_lab_trial",
+                ",\"action\":25,\"scope\":\"LAB_TRIAL\","
+                "\"modes\":[\"offline_facing_priority\",\"online_movement\"],"
+                "\"rotation\":360,\"movement_reassert_rva\":\"0xe7b768\","
+                "\"paid_state_changed\":false,\"free_grant\":false");
+        } else {
+            g_online_move_state[0] = 0x200000000ull;
+            runtime_journal_write("spin_unavailable",
+                                  "lab_trial_registration_rejected", NULL);
+        }
+    }
+}
+
+void spin_post_callback(uint64_t frame)
+{
+    int saved_errno = errno;
+    uint64_t start_us;
+    uint64_t now_ms;
+    int32_t tid = g_init_thread_id;
+
+    if (!(g_spin_state_flag == 1 && (int32_t)g_game_callback_acked != 0
+          && g_init_thread_id != 0))
+        goto out;
+    if (!((int32_t)syscall(SYS_gettid) == tid && frame != 0))
+        goto out;
+    if (!((g_spin_move_gate & 1) == 0 && g_spin_telemetry[0] != 0
+          && g_spin_telemetry[1] == 0))
+        goto out;
+
+    g_spin_telemetry[1] = 1;
+    g_spin_pub_count++;
+
+    if (g_spin_move_cfg_online == 1)
+        goto release;
+
+    if (!(((g_spin_frame_identity_a ^ *(const uint64_t *)(const void *)(frame + 0x98))
+           & 0xffffffffffffffull) == 0
+          && ((g_spin_frame_identity_b ^ *(const uint64_t *)(const void *)(frame + 0xc0))
+              & 0xffffffffffffffull) == 0
+          && g_spin_frame_identity_c == g_spin_move_gate))
+        goto release;
+
+    start_us = mono_now_us();
+    now_ms = mono_now_ms_fn(1);
+    if (now_ms == 0 || now_ms < g_spin_move_min_mono)
+        goto release;
+
+    {
+        uint64_t exec_record[34];
+        uint64_t provider_record[13];
+        char buf[1400];
+        int result;
+        uint32_t ok_a;
+        uint32_t ok_b;
+
+        memset(exec_record, 0, sizeof exec_record);
+        memset(provider_record, 0, sizeof provider_record);
+
+        memcpy(&exec_record[4], &g_spin_telemetry[1], 13 * 8);
+        memcpy(&exec_record[17], &g_spin_telemetry[14], 26 * 8);
+
+        provider_record[0] = ROD_FRAME_HEADER;
+        provider_record[4] = ROD_SPIN_STAMP;
+        provider_record[5] = ROD_NG_BIND_TAG;
+        provider_record[6] = (uint64_t)(uintptr_t)&exec_record[4];
+        provider_record[7] = g_spin_frame_identity_a;
+        provider_record[8] = (uint64_t)(uintptr_t)&exec_record[17];
+        provider_record[9] = ROD_IDENTITY_A;
+        provider_record[10] = ROD_IDENTITY_B;
+        provider_record[11] = ROD_IDENTITY_C;
+        provider_record[12] = now_ms;
+
+        g_spin_move_gate = 1;
+        result = spin_post_exec(provider_record, exec_record);
+        ok_a = 0;
+        if ((uint32_t)exec_record[1] != 0)
+            ok_a = (uint32_t)(result != 0);
+        ok_b = 0;
+        if ((int32_t)exec_record[0] != 0)
+            ok_b = (uint32_t)(result != 0);
+        provider_record[5] = (uint64_t)result | (uint64_t)ok_a << 32;
+        provider_record[4] = (provider_record[4] & 0xffffffffull)
+                             | (uint64_t)ok_b << 32;
+
+        spin_post_field_apply(g_spin_frame_identity_b);
+        spin_provider_publish(g_spin_provider_table, provider_record,
+                              &g_spin_pub_tag);
+
+        g_spin_move_gate = 0;
+        g_spin_move_gate_hi = 0;
+
+        if (g_spin_pub_count < 9 || g_spin_pub_tag != g_spin_journal_tag
+            || g_spin_move_last_journal == 0
+            || 999 < now_ms - g_spin_move_last_journal) {
+            snprintf(buf, 0x578,
+                     ",\"action\":25,\"scope\":\"LAB_TRIAL\","
+                     "\"mode\":\"offline\",\"publication\":%llu,"
+                     "\"sequence\":%llu,\"epoch\":%llu,\"own_gid\":%d,"
+                     "\"requested\":%u,\"generation\":%llu,"
+                     "\"loader_generation\":%llu,"
+                     "\"post_entry_rva\":\"0xb30690\",\"post_calls\":%llu,"
+                     "\"active_known\":%u,\"active\":%u,\"ended\":%u,"
+                     "\"provider_reason\":%u,\"angle\":%d,"
+                     "\"writes_completed\":%u,\"readback_verified\":%u,"
+                     "\"field_apply_calls\":%llu,\"duration_us\":%llu,"
+                     "\"native_calls\":0,\"client_inputs\":0,"
+                     "\"paid_state_changed\":false",
+                     (unsigned long long)g_spin_telemetry[4],
+                     (unsigned long long)g_spin_telemetry[2],
+                     (unsigned long long)g_spin_telemetry[11],
+                     (uint32_t)g_spin_telemetry[24],
+                     (uint32_t)g_spin_telemetry[38],
+                     (unsigned long long)g_spin_telemetry[35],
+                     (unsigned long long)g_spin_loader_generation,
+                     (unsigned long long)g_spin_pub_count,
+                     (uint32_t)result, ok_a, ok_b,
+                     g_spin_pub_reason, (int)g_spin_pub_angle,
+                     g_spin_pub_writes, g_spin_pub_readback,
+                     (unsigned long long)g_spin_pub_field_apply,
+                     (unsigned long long)(mono_now_us() - start_us));
+            runtime_journal_write("spin_post", "post_natural_local_facing", buf);
+            g_spin_journal_tag = g_spin_pub_tag;
+            g_spin_move_last_journal = now_ms;
+        }
+    }
+
+release:
+    g_spin_telemetry[1] = 0;
+out:
+    errno = saved_errno;
+}
+
+void loader_identity_verify(void)
+{
+    int result;
+
+    if (g_loader_verify_gate_b == 1) {
+        result = spin_move_post_verify(1);
+        if (result != 0) {
+            result = spin_post_publish(g_spin_move_entry,
+                                       g_spin_move_bl_hi,
+                                       g_spin_move_bl);
+            if (result < 0) {
+                runtime_journal_write(
+                    "fatal", "spin_movement_post_restore_unverified", NULL);
+                abort();
+            }
+            if (result == 1)
+                g_loader_verify_gate_b = 0;
+        }
+    }
+
+    if (g_loader_verify_gate_a == 1) {
+        result = spin_frame_post_verify(1);
+        if (result != 0) {
+            result = spin_post_publish(g_spin_frame_entry,
+                                       g_spin_frame_bl_hi,
+                                       g_spin_frame_bl);
+            if (result < 0) {
+                runtime_journal_write("fatal", "spin_post_restore_unverified",
+                                      NULL);
+                abort();
+            }
+            if (result == 1)
+                g_loader_verify_gate_a = 0;
+        }
+    }
+}
+
+void spin_move_callback(uint64_t frame)
+{
+    const uint64_t *f = (const uint64_t *)(uintptr_t)frame;
+    uint64_t world;
+    uint64_t now;
+    uint64_t ptr;
+    float angle;
+    float sin_v;
+    float cos_v;
+    int target_x;
+    int target_y;
+    int apply;
+    int result;
+    uint8_t entity[44];
+    char buf[800];
+
+    if (frame == 0 || g_spin_post_ready == 0 || g_spin_telemetry[0] == 0)
+        goto inactive;
+    if (f[1] == 0)
+        goto inactive;
+    world = f[2];
+    if (world == 0)
+        goto inactive;
+    if (*(const int32_t *)(const void *)(f + 0x24 / 8) == 0)
+        goto inactive;
+    if (g_spin_move_cfg_radius == 0 || g_spin_move_cfg_online != 1)
+        goto inactive;
+    if (g_spin_move_cfg_radius2 <= 0)
+        goto inactive;
+    if (g_init_thread_id == 0
+        || (int32_t)syscall(SYS_gettid) != g_init_thread_id)
+        goto inactive;
+    if ((int32_t)g_spin_move_gate_hi == 0)
+        goto inactive;
+
+    ptr = 0;
+    if (game_read((uint64_t)(uintptr_t)syscall(SYS_gettid),
+                  *(const uint64_t *)(const void *)
+                      ((const char *)f + 0x30) + 0x58,
+                  &ptr, 8) == 0)
+        goto inactive;
+    if (ptr + 0x2000 < 0x12000 || (ptr & 7) != 0)
+        goto inactive;
+    if (frame_entity_resolve(g_engine_base,
+                             *(const uint64_t *)(const void *)
+                                 ((const char *)f + 0x40),
+                             (void *)(uintptr_t)game_read, 0, entity) == 0)
+        goto inactive;
+    if (*(int32_t *)(const void *)((char *)entity + 40) == 0)
+        goto inactive;
+
+    {
+        uint64_t rec_in[8];
+        uint64_t rec_out[5];
+        uint64_t *e = (uint64_t *)(uintptr_t)world;
+
+        rec_in[0] = *(const uint64_t *)(const void *)((const char *)f + 0x20);
+        rec_in[1] = *(const uint64_t *)(const void *)((const char *)f + 0x28);
+        rec_in[2] = *(const uint64_t *)(const void *)((const char *)f + 0x38);
+        rec_in[3] = *(const uint64_t *)(const void *)((const char *)f + 0x30);
+        rec_in[4] = *(const uint64_t *)(const void *)
+                    (*(const uint64_t *)(const void *)(f + 1) + 8);
+        rec_in[5] = *(const uint64_t *)(const void *)((const char *)f + 0x40);
+        rec_in[6] = *(const uint64_t *)(const void *)((const char *)e + 0x70);
+        rec_in[7] = 0;
+        memset(rec_out, 0, sizeof rec_out);
+        rec_out[0] = ROD_FRAME_HEADER;
+
+        if (!(g_frame_parse_enabled == 1
+              && frame_record_parse(&g_frame_record_table, rec_in, rec_out) == 1
+              && (int32_t)rec_out[1] != 0
+              && (uint32_t)(rec_out[1] >> 32) != 0
+              && (int32_t)rec_out[2] == 0))
+            goto inactive;
+
+        g_spin_online_state[2] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x20);
+        g_spin_online_state[4] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x28);
+        g_spin_online_state[5] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x38);
+        g_spin_online_state[3] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x30);
+        g_spin_online_state[6] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x40);
+        g_spin_online_state[7] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x70);
+        g_spin_online_state[0] = ROD_ONLINE_STAMP;
+        g_spin_online_state[1] = 1;
+        g_spin_online_state[8] = (uint64_t)(uint32_t)g_spin_move_gate_hi;
+        g_spin_online_state[9] = *(const uint64_t *)(const void *)
+                                 ((const char *)e + 0x78);
+        g_spin_online_state[10] = 0;
+        g_spin_online_state[11] = 0;
+        g_spin_online_state[12] = 0;
+        g_spin_online_state[13] = g_spin_frame_identity_c;
+        g_spin_online_state[14] = ptr;
+        g_spin_online_state[15] = ROD_IDENTITY_A;
+        g_spin_online_state[16] = ROD_IDENTITY_C;
+        g_spin_online_state[17] = ROD_IDENTITY_B;
+        g_spin_online_state[19] = 0;
+    }
+
+    if (g_spin_move_cfg_stand != 0
+        && (g_spin_stand_latch == 0
+            || spin_online_entity_valid(g_spin_online_state) == 0)) {
+        g_spin_move_yields++;
+        if (g_spin_move_active == 1)
+            g_spin_move_count++;
+        g_spin_move_active = 0;
+        g_spin_move_entity = 0;
+        g_spin_move_last_tick = 0;
+        g_spin_move_last_apply_tick = 0;
+        g_spin_move_own_static = 0;
+        g_spin_move_angle = 0.0f;
+        g_spin_move_saved = (uint32_t)g_spin_move_count;
+        g_online_move_state[1] = ROD_ONLINE_RESET;
+        g_spin_move_apply_state = (uint32_t)g_spin_online_state[13];
+        g_spin_move_apply_active = (uint32_t)(g_spin_online_state[13] >> 32);
+        g_spin_move_last_journal = g_spin_move_last_journal;
+        return;
+    }
+
+    g_spin_move_apply_active = 0;
+    if (g_spin_move_entity != 0)
+        g_spin_move_count = g_spin_move_count;
+    g_spin_move_saved = (uint32_t)g_spin_move_count;
+    g_online_move_state[1] = ROD_ONLINE_RESET;
+    g_spin_move_apply_state = (uint32_t)g_spin_move_gate_hi;
+
+    if (g_spin_move_entity == g_spin_online_state[6]
+        && g_spin_move_own_static == g_spin_online_state[2]
+        && g_spin_move_last_tick != 0) {
+        uint64_t delta;
+
+        now = f[5];
+        delta = now - g_spin_move_last_tick;
+        if (now < g_spin_move_last_tick || delta > 0xfa)
+            goto resync;
+        if (delta > 99)
+            delta = 100;
+        if (delta > 0xf) {
+            g_spin_move_angle = fmaf((float)delta * (float)(int)g_spin_move_cfg_rate,
+                                     1.0e-7f, g_spin_move_angle);
+            g_spin_move_last_tick = now;
+        }
+        angle = g_spin_move_angle;
+        while (!(angle < 6.2831855f))
+            angle -= 6.2831855f;
+        g_spin_move_angle = angle;
+    } else {
+resync:
+        if (g_spin_move_active == 1)
+            g_spin_move_count++;
+        g_spin_move_active = 0;
+        g_spin_move_own_static = *(const uint64_t *)(const void *)
+                                 ((const uint64_t *)(uintptr_t)world + 4);
+        g_spin_move_last_tick = f[5];
+        g_spin_move_last_apply_tick = 0;
+        g_spin_move_angle = 0.0f;
+        g_spin_move_saved = (uint32_t)g_spin_move_count;
+        g_spin_move_entity = g_spin_online_state[6];
+    }
+
+    g_spin_move_apply_state = 0;
+    g_spin_telemetry[47] = 1;
+    g_spin_move_yields++;
+    g_online_move_state[1] = g_spin_online_state[13];
+
+    spin_online_preapply();
+
+    {
+        const uint64_t *e = (const uint64_t *)(uintptr_t)world;
+
+        sincosf(g_spin_move_angle, &sin_v, &cos_v);
+        target_y = (int)*(const int32_t *)(const void *)((const char *)e + 0x74)
+                   + (int)cos_v;
+        target_x = (int)*(const int32_t *)(const void *)((const char *)e + 0x78)
+                   + (int)sin_v;
+        if ((int)cos_v == 0 && (int)sin_v == 0)
+            target_y++;
+        g_spin_move_count = (uint64_t)(uint32_t)target_x
+                            | (uint64_t)(uint32_t)target_y << 32;
+    }
+
+    apply = g_spin_move_apply_active == 0 || f[5] < g_spin_move_last_apply_tick
+            || f[5] - g_spin_move_last_apply_tick > 0x17;
+    if (apply) {
+        result = ((int (*)(uint64_t, void *, int, int, int))
+                  (uintptr_t)g_online_move_state[4])(
+            g_online_move_state[3], (void *)(uintptr_t)g_spin_online_state, 1,
+            target_y, target_x);
+        if (result != 1)
+            goto apply_rejected;
+
+        ((void (*)(uint64_t, uint64_t, int, int, int))
+         (uintptr_t)g_online_move_state[10])(
+            g_online_move_state[3],
+            *(const uint64_t *)(const void *)((const uint64_t *)(uintptr_t)world + 7),
+            target_y, target_x, 1);
+
+        g_spin_move_apply_active = 1;
+        g_online_move_state[4] = g_spin_online_state[5];
+        g_online_move_state[3] = g_spin_online_state[3];
+        g_online_move_state[6] = g_spin_online_state[5];
+        g_online_move_state[5] = g_spin_online_state[4];
+        g_spin_move_apply_state = 1;
+        g_spin_telemetry[48]++;
+        g_spin_move_active = 1;
+        g_spin_move_last_apply_tick = f[5];
+    } else if (g_spin_move_apply_active == 0) {
+        g_spin_move_apply_state = 7;
+        goto journal;
+    } else {
+apply_rejected:
+        if (g_spin_move_apply_state == 0)
+            g_spin_move_apply_state = 5;
+    }
+
+journal:
+    {
+        uint64_t now_tick = f[5];
+
+        if (g_spin_move_yields < 9 || g_spin_move_last_journal == 0
+            || 999 < now_tick - g_spin_move_last_journal) {
+            snprintf(buf, sizeof buf,
+                     ",\"action\":25,\"mode\":\"online\","
+                     "\"publication\":%llu,\"source_tick\":%u,"
+                     "\"epoch\":%llu,\"own_gid\":%d,"
+                     "\"configured_radius\":%d,"
+                     "\"effective_radius_raw\":1,\"only_standing\":%d,"
+                     "\"priority_yields\":%llu,\"phase\":%.6f,"
+                     "\"apply_reason\":%u,\"pending\":%u,"
+                     "\"local_calls\":%llu,\"queue_calls\":%llu,"
+                     "\"target_x\":%d,\"target_y\":%d,"
+                     "\"native_acceptance_proven\":false",
+                     (unsigned long long)g_spin_online_state[13],
+                     (unsigned)g_spin_move_gate_hi,
+                     (unsigned long long)g_spin_online_state[2],
+                     (int)g_spin_online_state[1],
+                     (int)g_spin_move_cfg_radius2,
+                     (int)g_spin_move_cfg_stand,
+                     (unsigned long long)g_spin_move_yields,
+                     (double)g_spin_move_angle,
+                     g_spin_move_apply_state,
+                     (unsigned)g_spin_move_active,
+                     (unsigned long long)g_spin_telemetry[48],
+                     (unsigned long long)g_spin_telemetry[46],
+                     (int)(uint32_t)g_spin_move_count,
+                     (int)(uint32_t)(g_spin_move_count >> 32));
+            runtime_journal_write("spin_move", "tale_style_real_client_input",
+                                  buf);
+            g_spin_move_last_journal = now_tick;
+        }
+    }
+    return;
+
+inactive:
+    if (g_spin_move_active == 1)
+        g_spin_move_count++;
+    g_spin_move_active = 0;
+    g_spin_move_apply_state = 0;
+    g_spin_move_entity = 0;
+    g_spin_move_last_apply_tick = 0;
+    g_spin_move_last_tick = 0;
+    g_spin_move_own_static = 0;
+    g_spin_move_angle = 0.0f;
+    g_spin_move_saved = (uint32_t)g_spin_move_count;
+}
+
+#ifdef NEXUS_WITH_JNI
+#include <jni.h>
+
+extern uint32_t g_evasion_game_acked;
+
+void handlers_install_main(JNIEnv *env, jclass loader_cls, int acked)
+{
+    jfieldID field_d;
+    jfieldID field_e;
+    jfieldID field_str;
+    jfieldID field_cb;
+    jobject loader_d;
+    jobject loader_e;
+    jclass d_cls;
+    jstring phase;
+    jstring profile;
+    jstring str;
+    jlong revision = 0;
+    const char *utf;
+    char phase_buf[0xa0];
+    char profile_buf[0x41];
+    char self_path[0x1000];
+    char self_sha[0x41];
+    char payload[0x140];
+    const char *stage = "core";
+    const char *event;
+    const char *extra;
+    int refused = 1;
+    jsize len;
+    int i;
+
+    (void)acked;
+
+    if (env == NULL || g_evasion_game_acked == 0)
+        return;
+    if (!(g_files_dir_fd >= 0 && g_engine_epoch != 0))
+        return;
+
+    if ((*env)->PushLocalFrame(env, 0x80) < 0) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+
+    field_d = (*env)->GetStaticFieldID(env, loader_cls, ROD_LOADER_FIELD_D,
+                                       ROD_LOADER_SIG_D);
+    loader_d = field_d == NULL ? NULL
+        : (*env)->GetStaticObjectField(env, loader_cls, field_d);
+    if (loader_d == NULL || (*env)->ExceptionCheck(env)
+        || (d_cls = (*env)->GetObjectClass(env, loader_d)) == NULL)
+        goto out;
+
+    field_e = (*env)->GetFieldID(env, d_cls, ROD_LOADER_FIELD_E,
+                                 ROD_LOADER_SIG_E);
+    loader_e = field_e == NULL ? NULL
+        : (*env)->GetObjectField(env, loader_d, field_e);
+    (*env)->DeleteLocalRef(env, d_cls);
+    if (loader_e == NULL || (*env)->ExceptionCheck(env)) {
+        stage = "core";
+        goto out;
+    }
+
+    if (!(*env)->ExceptionCheck(env)
+        && (d_cls = (*env)->GetObjectClass(env, loader_e)) != NULL) {
+        field_str = (*env)->GetFieldID(env, d_cls, ROD_SIG_STRING_A,
+                                       "Ljava/lang/String;");
+        phase = field_str == NULL ? NULL
+            : (*env)->GetObjectField(env, loader_e, field_str);
+        (*env)->DeleteLocalRef(env, d_cls);
+    } else {
+        phase = NULL;
+    }
+
+    if (phase == NULL || (*env)->ExceptionCheck(env)) {
+        stage = "core";
+        goto out;
+    }
+
+    len = (*env)->GetStringUTFLength(env, phase);
+    if (len < 0 || len >= 0xa0 || (*env)->ExceptionCheck(env))
+        goto out;
+    utf = (*env)->GetStringUTFChars(env, phase, NULL);
+    if (utf == NULL)
+        goto out;
+    memcpy(phase_buf, utf, (size_t)len);
+    phase_buf[len] = '\0';
+    (*env)->ReleaseStringUTFChars(env, phase, utf);
+
+    if (memcmp(phase_buf, "linking", 8) != 0
+        || (*env)->ExceptionCheck(env))
+        goto out;
+
+    if (!(*env)->ExceptionCheck(env)
+        && (d_cls = (*env)->GetObjectClass(env, loader_e)) != NULL) {
+        field_str = (*env)->GetFieldID(env, d_cls, ROD_SIG_STRING_B,
+                                       "Ljava/lang/String;");
+        str = field_str == NULL ? NULL
+            : (*env)->GetObjectField(env, loader_e, field_str);
+        (*env)->DeleteLocalRef(env, d_cls);
+    } else {
+        str = NULL;
+    }
+
+    if (str == NULL || (*env)->ExceptionCheck(env))
+        goto out;
+
+    len = (*env)->GetStringUTFLength(env, str);
+    if (len < 0 || len >= 0xa0 || (*env)->ExceptionCheck(env))
+        goto out;
+    utf = (*env)->GetStringUTFChars(env, str, NULL);
+    if (utf == NULL)
+        goto out;
+    memcpy(phase_buf, utf, (size_t)len);
+    phase_buf[len] = '\0';
+    (*env)->ReleaseStringUTFChars(env, str, utf);
+
+    if (!(memcmp(phase_buf, "EvasionGame", 12) == 0
+          && !(*env)->ExceptionCheck(env)))
+        goto out;
+
+    if (!(*env)->ExceptionCheck(env)
+        && (d_cls = (*env)->GetObjectClass(env, loader_e)) != NULL) {
+        field_cb = (*env)->GetFieldID(env, d_cls, ROD_CB_FIELD_NAME,
+                                      ROD_CB_FIELD_SIG);
+        if (field_cb != NULL) {
+            if ((*env)->GetBooleanField(env, loader_e, field_cb) == JNI_TRUE
+                && !(*env)->ExceptionCheck(env)
+                && jni_get_boolean_field(env, loader_e, ROD_CB_BOOL_NAME) != 0)
+                goto verified;
+        }
+        (*env)->DeleteLocalRef(env, d_cls);
+    }
+    goto out;
+
+verified:
+    profile = (jstring)(uintptr_t)jni_get_object_field(
+        env, loader_e, "profileSha", "Ljava/lang/String;");
+    if (profile == NULL
+        || jni_string_read(env, profile, profile_buf, 0x41) == 0
+        || memcmp(profile_buf, PROFILE_SHA, 0x41) != 0) {
+        stage = "selected_profile";
+        goto out;
+    }
+
+    if (jni_get_int_field(env, loader_e, "revision", &revision) == 0
+        || revision <= 0
+        || jni_get_boolean_field(env, loader_e, "localAllowed") == 0) {
+        stage = "selected_profile";
+        goto out;
+    }
+
+    if (!jni_string_equals(env, (jstring)(uintptr_t)jni_get_object_field(
+                               env, loader_e, "transport", "Ljava/lang/String;"),
+                           "https_release"))
+        goto out;
+    if (!jni_string_equals(env, (jstring)(uintptr_t)jni_get_object_field(
+                               env, loader_e, "gameSha", "Ljava/lang/String;"),
+                           GAME_SHA))
+        goto out;
+
+    {
+        jobject record = (jobject)(uintptr_t)jni_get_object_field(
+            env, loader_d, ROD_MODULES_NAME, ROD_SIG_MAP);
+        jobject acked_obj = (jobject)(uintptr_t)jni_map_value(env, record);
+        jclass bool_cls;
+        jmethodID bool_mid;
+        jobject modules;
+        jclass list_cls;
+        jmethodID size_mid;
+        jmethodID get_mid;
+        jsize count;
+        int found = 0;
+        int64_t bytes = 0;
+
+        if (acked_obj == NULL || (*env)->ExceptionCheck(env))
+            goto record_fail;
+        bool_cls = (*env)->GetObjectClass(env, acked_obj);
+        if (bool_cls == NULL)
+            goto record_fail;
+        bool_mid = (*env)->GetMethodID(env, bool_cls, "booleanValue",
+                                       "()Ljava/lang/Boolean;");
+        if (bool_mid == NULL
+            || (*env)->CallBooleanMethod(env, acked_obj, bool_mid) != JNI_TRUE
+            || (*env)->ExceptionCheck(env))
+            goto record_fail;
+
+        modules = (jobject)(uintptr_t)jni_get_object_field(
+            env, loader_e, "modules", ROD_SIG_LIST);
+        if (modules == NULL
+            || (*env)->GetObjectClass(env, modules) == NULL)
+            goto record_fail;
+
+        list_cls = (*env)->GetObjectClass(env, modules);
+        size_mid = (*env)->GetMethodID(env, list_cls, "size", "()I");
+        get_mid = (*env)->GetMethodID(env, list_cls, "get",
+                                      "(I)Ljava/lang/Object;");
+        if (size_mid == NULL || get_mid == NULL
+            || (*env)->ExceptionCheck(env))
+            goto record_fail;
+
+        count = (*env)->CallIntMethod(env, modules, size_mid);
+        if ((uint32_t)(count - 0x11) < 0xfffffff0
+            || (*env)->ExceptionCheck(env)) {
+            stage = "selected_module";
+            goto out;
+        }
+
+        for (i = 0; i < count; i++) {
+            jobject module = (*env)->CallObjectMethod(env, modules, get_mid, i);
+            jstring name;
+            jobject cb_str;
+
+            if (module == NULL || (*env)->ExceptionCheck(env))
+                goto out;
+
+            name = (jstring)(uintptr_t)jni_get_object_field(
+                env, module, ROD_MODULE_NAME_FIELD, "Ljava/lang/String;");
+            if (jni_string_equals(env, name, "EvasionGame")) {
+                if (jni_get_boolean_field(env, module, "callback") == 0)
+                    goto out;
+                cb_str = (jstring)(uintptr_t)jni_get_object_field(
+                    env, module, "name", "Ljava/lang/String;");
+                if (!jni_string_equals(env, cb_str, "jni-onload-v1"))
+                    goto out;
+                cb_str = (jstring)(uintptr_t)jni_get_object_field(
+                    env, module, "sha", "Ljava/lang/String;");
+                if (cb_str == NULL
+                    || jni_string_read(env, cb_str, self_sha, 0x41) == 0
+                    || jni_get_int_field(env, module, "bytes", &bytes) == 0)
+                    goto out;
+                found++;
+            }
+            if (name != NULL)
+                (*env)->DeleteLocalRef(env, name);
+            (*env)->DeleteLocalRef(env, module);
+        }
+
+        if (found != 1 || bytes < 0x40 || bytes > 0x100000
+            || (*env)->ExceptionCheck(env)) {
+            stage = "selected_module";
+            goto out;
+        }
+
+        {
+            jobject path_map = (jobject)(uintptr_t)jni_get_object_field(
+                env, loader_d, ROD_MAP_NAME_A, ROD_SIG_MAP);
+            jobject path_obj = (jobject)(uintptr_t)jni_map_value(env, path_map);
+            Dl_info info;
+
+            if (path_obj == NULL
+                || jni_string_read(env, (jstring)path_obj, self_path,
+                                   0x1000) == 0
+                || !sha256_prefix_equal(self_sha, self_path + 0x1000)) {
+                stage = "selected_self_path_sha";
+                goto out;
+            }
+
+            if (dladdr((void *)(uintptr_t)spin_post_callback, &info) == 0
+                || info.dli_fbase == NULL || info.dli_fname == NULL
+                || !file_accessible(self_path)
+                || game_image_sha_verify(self_path, (size_t)bytes,
+                                         (void *)(uintptr_t)0x10ef58) == 0) {
+                stage = "selected_self_path_sha";
+                goto out;
+            }
+        }
+
+        {
+            jfieldID fresh_e;
+            jobject fresh_obj;
+            jlong fresh_rev = 0;
+
+            fresh_e = (*env)->GetFieldID(env, (*env)->GetObjectClass(env, loader_d),
+                                         ROD_LOADER_FIELD_E, ROD_LOADER_SIG_E);
+            fresh_obj = fresh_e == NULL ? NULL
+                : (*env)->GetObjectField(env, loader_d, fresh_e);
+            if (fresh_obj == NULL
+                || !(*env)->IsSameObject(env, loader_e, fresh_obj)
+                || !(*env)->IsSameObject(env, loader_e, fresh_obj)) {
+                stage = "selected_plan_changed";
+                goto out;
+            }
+
+            if (jni_get_int_field(env, fresh_obj, "revision", &fresh_rev) == 0
+                || fresh_rev != revision) {
+                stage = "selected_plan_changed";
+                goto out;
+            }
+
+            if (!jni_string_equals(env,
+                                   (jstring)(uintptr_t)jni_get_object_field(
+                                       env, loader_d, ROD_SIG_STRING_A,
+                                       "Ljava/lang/String;"),
+                                   "linking"))
+                goto out;
+            if (!jni_string_equals(env,
+                                   (jstring)(uintptr_t)jni_get_object_field(
+                                       env, loader_d, ROD_SIG_STRING_B,
+                                       "Ljava/lang/String;"),
+                                   "EvasionGame"))
+                goto out;
+            if ((*env)->ExceptionCheck(env))
+                goto out;
+
+            g_spin_loader_generation = (uint64_t)revision;
+            g_spin_loader_verified = 1;
+            refused = 0;
+            memcpy(g_spin_profile_sha, profile_buf, 8 * 8);
+        }
+        goto out;
+
+record_fail:
+        stage = "callback_record";
+    }
+
+out:
+    if ((*env)->ExceptionCheck(env))
+        (*env)->ExceptionClear(env);
+    (*env)->PopLocalFrame(env, NULL);
+
+    if (refused) {
+        event = "spin_loader_refused";
+        stage = stage != NULL ? stage : "core";
+        extra = ",\"action\":25,\"capability_issued\":false";
+    } else {
+        snprintf(payload, sizeof payload,
+                 ",\"action\":25,\"loader_generation\":%llu,"
+                 "\"profile_sha256\":\"%s\",\"callback_verified\":true,"
+                 "\"self_file_verified\":true,\"paid_state_changed\":false",
+                 (unsigned long long)g_spin_loader_generation, PROFILE_SHA);
+        event = "spin_loader_verified";
+        stage = "actual_signed_release_selection";
+        extra = payload;
+    }
+    runtime_journal_write(event, stage, extra);
+}
+#endif
+
 

@@ -142,7 +142,7 @@ extern uint64_t g_cache_lock;
 extern uint64_t g_cache_flag;
 extern char g_telemetry_cache[0x784];
 
-extern uint32_t g_visual_counter_a;
+extern uint64_t g_spin_stand_latch;
 extern uint32_t g_visual_counter_b;
 extern uint32_t g_visual_flag;
 extern uint32_t g_visual_flag2;
@@ -168,18 +168,18 @@ extern uint64_t g_mod_state_block[7];
 extern uint64_t g_spin_state_flag;
 extern uint64_t g_spin_telemetry[53];
 extern char g_spin_armed;
-extern void (*g_spin_register_fn)(void *);
+extern void *g_spin_register_fn;
 extern uint32_t g_loader_verify_gate_a;
 extern char g_loader_verify_gate_b;
-extern uint32_t g_periodic_counter;
-extern char g_periodic_armed;
-extern uint32_t g_periodic_saved;
-extern uint32_t g_periodic_field_a;
-extern uint32_t g_periodic_field_b;
-extern uint32_t g_periodic_field_c;
-extern uint32_t g_periodic_field_d;
-extern uint32_t g_periodic_field_e;
-extern uint32_t g_periodic_field_f;
+extern uint64_t g_spin_move_count;
+extern char g_spin_move_active;
+extern uint32_t g_spin_move_saved;
+extern uint64_t g_spin_move_entity;
+extern uint32_t g_spin_move_apply_active;
+extern uint64_t g_spin_move_last_apply_tick;
+extern uint64_t g_spin_move_own_static;
+extern uint64_t g_spin_move_last_tick;
+extern float g_spin_move_angle;
 extern char g_event_routes_armed;
 extern uint64_t g_event_routes_state[1];
 
@@ -918,7 +918,7 @@ periodic:
     g_pair_channel_fd = -1;
     observer_state_reset(0, 0, 0xffffffffu);
     gameplay_state_reset(0, 0);
-    g_visual_counter_a = 0;
+    g_spin_stand_latch = 0;
     g_visual_counter_b = 0;
     g_visual_flag = 0;
 
@@ -947,19 +947,19 @@ periodic:
     g_teardown_gen_b = (g_teardown_gen_b & 0xffffffff00000000ull)
                      + 0x100000000ull;
     if (g_spin_armed == 1)
-        g_spin_register_fn(NULL);
+        ((void (*)(void *))g_spin_register_fn)(NULL);
 
-    if (g_periodic_armed == 1)
-        g_periodic_counter++;
-    g_periodic_armed = 0;
-    g_periodic_field_a = 0;
-    g_periodic_field_b = 0;
-    g_periodic_field_c = 0;
-    g_periodic_field_d = 0;
-    g_periodic_field_e = 0;
-    g_periodic_field_f = 0;
+    if (g_spin_move_active == 1)
+        g_spin_move_count++;
+    g_spin_move_active = 0;
+    g_spin_move_entity = 0;
+    g_spin_move_apply_active = 0;
+    g_spin_move_last_apply_tick = 0;
+    g_spin_move_own_static = 0;
+    g_spin_move_last_tick = 0;
+    g_spin_move_angle = 0.0f;
     memset(g_spin_telemetry, 0, sizeof g_spin_telemetry);
-    g_periodic_saved = g_periodic_counter;
+    g_spin_move_saved = (uint32_t)g_spin_move_count;
 
     if (((g_loader_verify_gate_a & 1) != 0 || g_loader_verify_gate_b != 0)
         && game_thread_present() != 0)
