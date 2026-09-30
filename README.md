@@ -85,6 +85,30 @@ native modules. The JS layer is only a thin bridge (`scripts/nexus-own-bridge.js
 | `runtime_core.c` | 773 | — exports: `nexus_script_port_fast_replay_snapshot()`, `nexus_script_port_fast_replay_claim()`, `nexus_script_port_font_body_current()`, `nexus_script_port_font_apply()`, `nexus_visual_gl_publish_v1()`, `nexus_visual_gl_calibrate_v1()` +3 more |
 | `script_bindings.c` | 134 | — exports: `nexus_script_install_bindings_v1()`, `nexus_script_verify_game_v1()`, `nexus_script_game_base_v1()`, `JNI_OnLoad()` |
 
+## scripts/
+
+The JS layer the QuickJS host evaluates after `JNI_OnLoad` (ScriptRuntime).
+There is no obfuscated mega-script: the bridge is embedded in
+`libNexusScriptRuntime69252.so` and the three server scripts are plaintext
+sources ingested over the `nexus-js-source-v1` protocol (name gate → SHA pin →
+`decode_ack`/`strict_utf8_source` → `parse_ack`/`quickjs_compile_only` →
+`eval_ack`/`synchronous_source_and_pending_jobs_completed`, with a 500 ms
+interrupt deadline per evaluation). Everything here is an own port from the
+pinned static contracts in `core/` — no legacy payload is executed.
+
+| file | modules | notes |
+|---|---|---|
+| `nexus-own-bridge.js` | — | **VERBATIM RECOVERED** — the 0x95a-byte (2394) bootstrap source embedded as a string literal in `FUN_00135624` (`core/script_bindings.c`), byte-identical. Installs the frozen `Nexus` API (`define`/`require`/`binding`/`emit`/`assert`, apiVersion 1) over the `__nexusCall`/`__nexusEmit` natives and deletes them from `globalThis`; 512-definition cap, 64-slot module registry keyed by module id, CommonJS cycle semantics, async factory rejection |
+| `support_v1.js` | 10 | **RECONSTRUCTED (own ports)** — support layer. suitcase tree: `ModProperties` (environment/version schema), `BASE64` (decode/encode with the 65-char alphabet), `CustomTextEncoder` (UTF-8 encode/decode with surrogate-pair handling, `toArrayBuffer`), `Json` (formatJSONString + formatLogJSON over the independent log-store adapter), `LogicTime` (timestampToDate dd.mm.yyyy + humanizeTime д/ч/м/с), `DebugRecents` (8-slot MRU with listeners), `DebugSearch` (normalized query matcher). Contract modules: `nexus/runtime-events` (the native event vocabulary `script_port_ready`/`unavailable`/`fonts_ready`/`client_performance`/`options`/`extended_ready`, `battle_proxy_binding`, `branding`; the ack chain; host limits — event ≤ 0x40, value ≤ 0x180 after ToString, 64 emits/consumer, 20 branding events, binding names ≤ 96) and `nexus/script-port` (client-side halves of the native i32 binding surface: 49 evidenced keys of the 55-slot tweak table, NSP69 settings shape with the 0..1000000 clamp, camera ops 1-5 with axis ranges zoom 0-200 / X/Y/Z/tilt ±10000, debug 40-command / editor 20-command apply rules with actionId = 0x27020+slot / 0x28FC0+slot, only command 9 carries extra args and command 4 takes arg ≤ 4, theme commands 0-4 with 'THEM' 0x2534 snapshots of 8×0x128, profile tag codec alphabet `0289PYLQGRJCUV` base 13 ≤ 11 digits with ws/'#' trim and 499 ms reopen cooldown, 'CPRO' 0x1dd0 snapshots paging 32×0xcc, int32 coercion mirroring `FUN_00135d88`) |
+| `pure_ports.js` | 2 | **RECONSTRUCTED (own ports)** — the pure arithmetic contracts from frozen IR functions 946..948 and 2653..2658: `GlobalID` (createGlobalID / getClassID with `Math.round` boundary behavior / getInstanceID, 1e6 packing) and `LogicColor` (argbToIntString percent→AARRGGBB, rgbToInt/intToRGB, generateColorArray b→a gradient starting at t = 1/count, lerp/lerpColor). Deliberately free of any `Nexus.binding`/`Nexus.emit` call so both modules evaluate on a bare QuickJS build |
+| `smoke.js` | — | **OWN LAB FIXTURE** — runtime self-check on a bare host with zero bindings registered: frozen API shape, module execution + the bridge rejection paths (duplicate id, `..` escape, undeclared dependency, non-function factory, binding-name gate), typed arrays, float-int identity, BigInt on the pending-jobs queue, then a single `runtime_fixture` emit (`{api: 1, sourceEvaluated: true, legacyBundleEvaluated: false, gameplayProven: false}`) — acknowledges VM/source execution only, proves no gameplay |
+
+Verification gate: `node --check` on all four files plus a mock-host harness
+that re-implements `__nexusCall`/`__nexusEmit` with the recovered validation
+rules and exercises 46 contract checks across all modules (BASE64/UTF-8
+round-trips, camera/editor/debug command legality, profile tag codec, i32
+coercion, fixture emit) — all green.
+
 ## Key exported entry points
 
 - `nexus_evasion_runtime_aura_route_v1` — aim/aura dispatcher (feature target routing)

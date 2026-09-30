@@ -1,6 +1,22 @@
 /* Own source reimplementations of the recovered arithmetic contracts.
  * Evidence: frozen IR functions 946..948 and 2653..2658. No native APIs,
  * legacy evaluator, startup patches or copied factory bytecode are executed.
+ *
+ * These two modules stay deliberately pure (no Nexus.binding / Nexus.emit
+ * calls, no module side effects) so they can be evaluated by any conforming
+ * QuickJS build without the Nexus host: the recovered IR only encodes plain
+ * arithmetic and string formatting. Boundary behaviours below are part of
+ * the contract and were kept even where they look odd:
+ *  - GlobalID.getClassID uses Math.round, so ids produced by a foreign
+ *    encoder with a negative instance component round towards the nearest
+ *    class instead of truncating.
+ *  - LogicColor.generateColorArray starts its interpolation parameter at
+ *    t = 1/count on the first element and never reaches exact 1; the mix
+ *    direction is b -> a as t grows (first argument is the END color).
+ *  - LogicColor.argbToIntString takes percent components (0..100), clamps
+ *    nothing itself, and emits AARRGGBB upper-case hex.
+ * Module ids keep the original suitcase tree layout because the bridge
+ * normalizer (FUN_001358cc) keys its 64-slot registry by these strings.
  */
 Nexus.define('./src/laser/client/game/utils/GlobalID.ts', [], (module, exports) => {
     'use strict';
