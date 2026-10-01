@@ -167,7 +167,7 @@ int nexus_script_port_fonts_open(void)
  * the live context. A game reload is queued when the snapshot says a choice is
  * committed (status + engageable + reload_pending), its revision differs from
  * the last one reloaded, and at least FONT_RELOAD_DEBOUNCE_FRAMES passed since
- * the previous request. @ LAB_00171bfc
+ * the previous request. @ 00171bfc
  */
 static void chooser_park_and_reload(const font_chooser_snapshot_t *snap,
                                     uint64_t frame)
@@ -197,7 +197,7 @@ static void chooser_park_and_reload(const font_chooser_snapshot_t *snap,
 /*
  * chooser_render — the actual frame paint. Scales the tree so the 640x450
  * design fits the screen (never above 1:1), centers it on the SC anchor,
- * lays out the six font buttons in a 2x3 grid and updates the status line. @ LAB_00171994
+ * lays out the six font buttons in a 2x3 grid and updates the status line. @ 00171994
  */
 static void chooser_render(const font_chooser_snapshot_t *snap,
                            float width, float height)
