@@ -1,3 +1,4 @@
+/* menu_engine chain chunk 1: covers raw lines 1-526 */
 /*
  * menu_engine — UI subsystem
  * Decompiled with Ghidra 11.3.2 (arm64 pseudocode) from: libNexusUI69252.so
@@ -19,7 +20,7 @@
  *   - isSpinEnabled "Spin" [Nexus+ PAID]
  *   - followEnabled "Follow" [Nexus+ PAID]
  *   - followClosestAllyEnabled "Closest ally" [Nexus+ PAID]
- *   - ballAssistEnabled "Ball assist" [Nexus+ PAID]
+ *   - ballAssistEnabled "Ball assist" [free]
  *   - holdToShootEnabled "Hold fire" [free]
  *   - isXrayEnabled "X-Ray" [Nexus+ PAID]
  *   - espEnabled "ESP" [Nexus+ PAID]
@@ -34,8865 +35,9616 @@
  * Notes: Action-id dispatch (TRY_MENU_ACT_*), sections, snapshots, import/export, profile pump.
  */
 
-/* ===== FUN_0014c510 @ 0014c510 ===== */
+/*
+ * Reconstructed: ui/menu_engine.c is rebuilt in part chains (p1..p4); this is
+ * part 1, chunk 1, covering raw dump lines 1-526 (the nominal 400-line
+ * boundary falls inside menu_context_init, which runs raw 336-526 and is
+ * finished here). Contents: the menu-store entry RPC family (sequence ids,
+ * entry register / value read / entry remove through the service session) and
+ * the shared menu context initializer (Mainloop thread gate, module/stage
+ * identity, settings 0x25/0x62/99, the evasion 'autofarmEnabled' snapshot and
+ * the remote stage-graph walk with generation bumping). Later p1 chunks add
+ * the preflight/mainloop pumps, diagnostics, performance, settings save/load,
+ * stage log, evasion backend and backend registration, then the main frame
+ * tick; parts 2-4 complete the file.
+ */
 
-int FUN_0014c510(void)
+#define _GNU_SOURCE
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <dlfcn.h>
+
+/* ===== cross-file functions ===== */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out,
+                         uint32_t len);           /* misc.c @ 0014e7c4 — remote
+                                                        read (pread64 / process_vm_readv);
+                                                        the ctx handle is a pass-through
+                                                        (Ghidra shows different register
+                                                        leftovers at call sites); nonzero
+                                                        on success */
+extern uint64_t remote_read_ptr(uint64_t addr);   /* misc.c @ 00154cf0 — read a remote
+                                                        qword, 0 unless plausible+aligned */
+extern int remote_child_link_valid(uint64_t node,
+                                   uint64_t parent); /* misc.c @ 00154d5c — node->parent
+                                                        == parent and
+                                                        parent->children[node->index]==node */
+extern void protected_plus_resolve_once(void);    /* misc.c @ 001552c0 — pthread_once body:
+                                                        dl_iterate_phdr resolve of the
+                                                        protected-plus query fn */
+extern int64_t bind_state_value_read(void *state); /* misc.c @ 00169574 — current bind
+                                                        value (default 8 when unarmed) */
+
+/* ===== forward declarations (defined later in this file, parts 3/4) ===== */
+bool nexus_menu_server_thread(int tid);           /* @ 00185e94 — true when tid owns the
+                                                        menu (g_theme_menu_id 0x284694) */
+uint64_t nexus_menu_setting_value(unsigned int id, int32_t *value_out); /* @ 001841f0 —
+                                                        1 on success, 3 busy, 4 bad args */
+
+/* ===== shared globals (owned by other files) ===== */
+extern int64_t  g_proc_mem_bias;        /* 0x22d8e0 — misc.c: remote-read bias (libg base) */
+extern uint64_t g_launcher_stage_view;  /* 0x22db60 — renderer.c: stashed stage view (root child) */
+extern uint32_t g_launcher_menu_id;     /* 0x22f038 — renderer.c: owning menu id / Mainloop tid */
+extern int32_t  g_launcher_attached;    /* 0x22f03c — renderer.c: 1 attached, -1 failed, 0 pending */
+extern uint8_t  g_mainloop_armed;       /* 0x22d8d8 — misc.c: 1 once the Mainloop thread is verified */
+extern int64_t  g_stage_generation;     /* 0x1a7c48 — misc.c: stage generation counter (-1 = reset);
+                                           pairs with g_launcher_stage_view */
+extern uint8_t  g_bind_state[];         /* 0x22f040 — misc.c: shared bind state (wake +4,
+                                           value +8, armed +0x124) */
+extern uint64_t g_launcher_stage_root;  /* 0x22f178 — renderer.c: stashed stage root held across waits */
+extern uint64_t g_launcher_view;        /* 0x22f180 — renderer.c: 0x260-byte rich launcher view object */
+extern pthread_once_t g_protected_plus_once; /* 0x22f1d0 — misc.c: once-flag for the
+                                                protected-plus resolver */
+extern int (*g_protected_plus_query)(void); /* 0x22f1d8 — misc.c: resolved
+                                                nexus_protected_plus_active fn */
+
+/* ===== menu_engine part 1 globals ===== */
+
+/* menu-store entry RPC block. The store is reached through the service
+ * locator below; every entry op passes the domain token plus the
+ * operation-specific token to the session slots. */
+int32_t  g_menu_server_seq;       /* 0x22d830 — menu-server sequence counter (cap 0x7fffffff) */
+uint64_t g_menu_store_domain;     /* 0x22d838 — store domain token (non-zero gate) */
+uint64_t g_menu_store_register;   /* 0x22d840 — register-operation token (slot 0x3a8) */
+uint64_t g_menu_store_read;       /* 0x22d848 — read-operation token (slot 0x390) */
+uint64_t g_menu_store_remove;     /* 0x22d850 — remove-operation token (slot 0x468) */
+void    *g_menu_service;          /* 0x22f028 — service locator object (vtable: acquire
+                                     +0x30 flags 0x10006, fallback acquire +0x20,
+                                     release +0x28; sessions carry their own table) */
+uint64_t g_menu_ctx_default_limits; /* 0x10f928 — packed {limit_0x62, limit_99} default pair
+                                       seeded into the shared menu context */
+int (*g_evasion_snapshot_fn)(const char **keys, uint64_t *record, int key_count,
+                             int64_t *value, int *errcode); /* 0x22f188 — dlsym'd
+                                     "nexus_evasion_snapshot_keys_v1" (verified module) */
+void    *g_evasion_dl_handle;     /* 0x22f0c0 — dlsym handle for the evasion provider */
+uint64_t g_evasion_module_base;   /* 0x22f0c8 — dladdr base of the evasion provider module */
+
+/* remote stage-graph cache: refreshed by menu_context_init; a changed identity
+ * (or a shrunken child count) bumps the shared stage generation. */
+uint64_t g_stage_root_obj;        /* 0x22f1a0 — root object at bias+0x1307e20 (survives clears) */
+uint64_t g_stage_widget_obj;      /* 0x22f190 — widget object (root + 0x48) */
+uint64_t g_stage_child_obj;       /* 0x22f198 — child object (widget + 0x28) */
+uint64_t g_stage_child_size;      /* 0x22f1a8 — child count/size (child + 0xb8) */
+
+/* ===== menu-store service veneers =====
+ * The arm64 code calls the locator/session objects through raw function-table
+ * slots; each veneer keeps the slot offset as the plain byte number seen in
+ * the dump (index = slot / 8). Suffix _me1 keeps these chain-local
+ * (menu_engine part 1). */
+static long svc_call0_me1(void *obj, uint32_t slot)
 {
-  int iVar1;
-  int iVar2;
-  
-  gettid();
-  iVar1 = nexus_menu_server_thread();
-  iVar2 = 0;
-  if ((iVar1 != 0) && (DAT_0022d830 != 0x7fffffff)) {
-    DAT_0022d830 = DAT_0022d830 + 1;
-    iVar2 = DAT_0022d830;
-  }
-  return iVar2;
+    long *table = *(long **)obj;
+    long (*fn)(void *) = (long (*)(void *))table[slot / 8];
+    return fn(obj);
 }
 
-/* ===== FUN_0014c550 @ 0014c550 ===== */
-
-bool FUN_0014c550(int param_1,char *param_2,char *param_3,uint param_4,int param_5)
-
+static long svc_call1_me1(void *obj, uint32_t slot, long a)
 {
-  undefined4 uVar1;
-  long lVar2;
-  bool bVar3;
-  long *plVar4;
-  bool bVar5;
-  char cVar6;
-  int iVar7;
-  size_t sVar8;
-  size_t sVar9;
-  undefined4 *puVar10;
-  long lVar11;
-  long lVar12;
-  long *local_70;
-  long local_68;
-  
-  lVar2 = tpidr_el0;
-  bVar5 = false;
-  local_68 = *(long *)(lVar2 + 0x28);
-  if ((((2 < param_4) || (param_1 < 1)) || (param_2 == (char *)0x0)) ||
-     ((param_3 == (char *)0x0 || (param_5 - 0x101U < 0xffffff00)))) goto LAB_0014c6fc;
-  sVar8 = strnlen(param_2,0x181);
-  sVar9 = strnlen(param_3,0x401);
-  bVar5 = false;
-  if ((sVar8 - 0x181 < 0xfffffffffffffe80) || (0x400 < sVar9)) goto LAB_0014c6fc;
-  puVar10 = (undefined4 *)__errno();
-  uVar1 = *puVar10;
-  local_70 = (long *)0x0;
-  if ((DAT_0022f028 == (long *)0x0) || (DAT_0022d838 == 0)) {
-LAB_0014c6f0:
-    bVar5 = false;
-  }
-  else {
-    gettid();
-    iVar7 = nexus_menu_server_thread();
-    if (iVar7 == 0) goto LAB_0014c6f0;
-    iVar7 = (**(code **)(*DAT_0022f028 + 0x30))(DAT_0022f028,&local_70,0x10006);
-    if (iVar7 == 0) {
-      bVar3 = true;
-    }
-    else {
-      if ((iVar7 != -2) ||
-         (iVar7 = (**(code **)(*DAT_0022f028 + 0x20))(DAT_0022f028,&local_70,0), iVar7 != 0))
-      goto LAB_0014c6f0;
-      bVar3 = false;
-    }
-    plVar4 = local_70;
-    if (local_70 == (long *)0x0) goto LAB_0014c6f0;
-    iVar7 = (**(code **)(*local_70 + 0x98))(local_70,4);
-    if (iVar7 != 0) {
-      cVar6 = (**(code **)(*plVar4 + 0x720))(plVar4);
-      if (cVar6 != '\0') {
-        (**(code **)(*plVar4 + 0x88))(plVar4);
-      }
-      if (!bVar3) {
-        (**(code **)(*DAT_0022f028 + 0x28))();
-      }
-      goto LAB_0014c6f0;
-    }
-    lVar11 = (**(code **)(*plVar4 + 0x580))(plVar4,sVar8 & 0xffffffff);
-    if (lVar11 == 0) {
-LAB_0014c760:
-      bVar5 = false;
-    }
-    else {
-      cVar6 = (**(code **)(*plVar4 + 0x720))();
-      if ((cVar6 != '\0') ||
-         (lVar12 = (**(code **)(*plVar4 + 0x580))(plVar4,sVar9 & 0xffffffff), lVar12 == 0))
-      goto LAB_0014c760;
-      cVar6 = (**(code **)(*plVar4 + 0x720))();
-      if (cVar6 != '\0') goto LAB_0014c760;
-      (**(code **)(*plVar4 + 0x680))(plVar4,lVar11,0,sVar8 & 0xffffffff,param_2);
-      if (sVar9 != 0) {
-        (**(code **)(*plVar4 + 0x680))(plVar4,lVar12,0,sVar9 & 0xffffffff,param_3);
-      }
-      cVar6 = (**(code **)(*plVar4 + 0x720))();
-      if (cVar6 != '\0') goto LAB_0014c760;
-      cVar6 = (**(code **)(*plVar4 + 0x3a8))
-                        (plVar4,DAT_0022d838,DAT_0022d840,param_1,lVar11,lVar12,param_4,param_5);
-      bVar5 = cVar6 == '\x01';
-    }
-    cVar6 = (**(code **)(*plVar4 + 0x720))(plVar4);
-    if (cVar6 != '\0') {
-      bVar5 = false;
-    }
-    (**(code **)(*plVar4 + 0xa0))(plVar4,0);
-    cVar6 = (**(code **)(*plVar4 + 0x720))(plVar4);
-    if (cVar6 != '\0') {
-      (**(code **)(*plVar4 + 0x88))(plVar4);
-    }
-    if (!bVar3) {
-      (**(code **)(*DAT_0022f028 + 0x28))();
-    }
-  }
-  *puVar10 = uVar1;
-LAB_0014c6fc:
-  if (*(long *)(lVar2 + 0x28) == local_68) {
-    return bVar5;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    long *table = *(long **)obj;
+    long (*fn)(void *, long) = (long (*)(void *, long))table[slot / 8];
+    return fn(obj, a);
 }
 
-/* ===== FUN_0014c8ac @ 0014c8ac ===== */
-
-ulong FUN_0014c8ac(int param_1,uint *param_2,undefined1 *param_3,ulong param_4)
-
+static long svc_call2_me1(void *obj, uint32_t slot, long a, long b)
 {
-  undefined4 uVar1;
-  uint uVar2;
-  long lVar3;
-  bool bVar4;
-  long *plVar5;
-  char cVar6;
-  int iVar7;
-  undefined4 *puVar8;
-  long lVar9;
-  ulong __n;
-  ulong uVar10;
-  undefined8 local_480;
-  uint local_478;
-  uint local_474;
-  undefined1 auStack_470 [1024];
-  long local_70;
-  
-  lVar3 = tpidr_el0;
-  uVar10 = 0;
-  local_70 = *(long *)(lVar3 + 0x28);
-  if ((((param_1 < 1) || (param_2 == (uint *)0x0)) || (param_3 == (undefined1 *)0x0)) ||
-     (param_4 == 0)) goto LAB_0014c9fc;
-  *param_2 = 3;
-  *param_3 = 0;
-  puVar8 = (undefined4 *)__errno();
-  uVar1 = *puVar8;
-  local_480 = (long *)0x0;
-  if ((DAT_0022f028 == (long *)0x0) || (DAT_0022d838 == 0)) {
-LAB_0014c9f4:
-    uVar10 = 0;
-  }
-  else {
-    gettid();
-    iVar7 = nexus_menu_server_thread();
-    if (iVar7 == 0) goto LAB_0014c9f4;
-    iVar7 = (**(code **)(*DAT_0022f028 + 0x30))(DAT_0022f028,&local_480,0x10006);
-    if (iVar7 == 0) {
-      bVar4 = true;
-    }
-    else {
-      if ((iVar7 != -2) ||
-         (iVar7 = (**(code **)(*DAT_0022f028 + 0x20))(DAT_0022f028,&local_480,0), iVar7 != 0))
-      goto LAB_0014c9f4;
-      bVar4 = false;
-    }
-    plVar5 = local_480;
-    if (local_480 == (long *)0x0) goto LAB_0014c9f4;
-    iVar7 = (**(code **)(*local_480 + 0x98))(local_480,2);
-    if (iVar7 != 0) {
-      cVar6 = (**(code **)(*plVar5 + 0x720))(plVar5);
-      if (cVar6 != '\0') {
-        (**(code **)(*plVar5 + 0x88))(plVar5);
-      }
-      if (!bVar4) {
-        (**(code **)(*DAT_0022f028 + 0x28))();
-      }
-      goto LAB_0014c9f4;
-    }
-    uVar10 = (**(code **)(*plVar5 + 0x390))(plVar5,DAT_0022d838,DAT_0022d848,param_1);
-    memset(&local_480,0,0x410);
-    if (uVar10 == 0) goto LAB_0014cac0;
-    cVar6 = (**(code **)(*plVar5 + 0x720))(plVar5);
-    if (cVar6 == '\0') {
-      iVar7 = (**(code **)(*plVar5 + 0x558))(plVar5,uVar10);
-      uVar2 = iVar7 - 0x10;
-      __n = (ulong)uVar2;
-      if (0x400 < uVar2) goto LAB_0014cabc;
-      cVar6 = (**(code **)(*plVar5 + 0x720))(plVar5);
-      if (cVar6 != '\0') goto LAB_0014cabc;
-      (**(code **)(*plVar5 + 0x640))(plVar5,uVar10,0,iVar7,&local_480);
-      cVar6 = (**(code **)(*plVar5 + 0x720))(plVar5);
-      uVar10 = 0;
-      if (cVar6 == '\0') {
-        if ((int)local_480 != 1) goto LAB_0014cabc;
-        uVar10 = 0;
-        if (((local_480._4_4_ == param_1) && (local_478 < 4)) && (local_474 == uVar2)) {
-          if ((param_4 <= __n) || ((local_478 != 1 && (uVar2 != 0)))) goto LAB_0014cabc;
-          lVar9 = __memchr_chk(auStack_470,0,__n,0x400);
-          uVar10 = 0;
-          if (lVar9 == 0) {
-            memcpy(param_3,auStack_470,__n);
-            uVar10 = 1;
-            param_3[__n] = 0;
-            *param_2 = local_478;
-          }
-        }
-      }
-    }
-    else {
-LAB_0014cabc:
-      uVar10 = 0;
-    }
-LAB_0014cac0:
-    (**(code **)(*plVar5 + 0xa0))(plVar5,0);
-    cVar6 = (**(code **)(*plVar5 + 0x720))(plVar5);
-    if (cVar6 != '\0') {
-      (**(code **)(*plVar5 + 0x88))(plVar5);
-    }
-    if (!bVar4) {
-      (**(code **)(*DAT_0022f028 + 0x28))();
-    }
-  }
-  *puVar8 = uVar1;
-LAB_0014c9fc:
-  if (*(long *)(lVar3 + 0x28) == local_70) {
-    return uVar10 & 0xffffffff;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    long *table = *(long **)obj;
+    long (*fn)(void *, long, long) = (long (*)(void *, long, long))table[slot / 8];
+    return fn(obj, a, b);
 }
 
-/* ===== FUN_0014cc0c @ 0014cc0c ===== */
-
-void FUN_0014cc0c(int param_1)
-
+static long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c)
 {
-  undefined4 uVar1;
-  long lVar2;
-  bool bVar3;
-  long *plVar4;
-  char cVar5;
-  int iVar6;
-  undefined4 *puVar7;
-  long *local_60;
-  long local_58;
-  
-  lVar2 = tpidr_el0;
-  local_58 = *(long *)(lVar2 + 0x28);
-  if (param_1 < 1) goto LAB_0014cd2c;
-  puVar7 = (undefined4 *)__errno();
-  uVar1 = *puVar7;
-  local_60 = (long *)0x0;
-  if ((DAT_0022f028 != (long *)0x0) && (DAT_0022d838 != 0)) {
-    gettid();
-    iVar6 = nexus_menu_server_thread();
-    if (iVar6 != 0) {
-      iVar6 = (**(code **)(*DAT_0022f028 + 0x30))(DAT_0022f028,&local_60,0x10006);
-      if (iVar6 == 0) {
-        bVar3 = true;
-      }
-      else {
-        if ((iVar6 != -2) ||
-           (iVar6 = (**(code **)(*DAT_0022f028 + 0x20))(DAT_0022f028,&local_60,0), iVar6 != 0))
-        goto LAB_0014cd28;
-        bVar3 = false;
-      }
-      plVar4 = local_60;
-      if (local_60 != (long *)0x0) {
-        (**(code **)(*local_60 + 0x468))(local_60,DAT_0022d838,DAT_0022d850,param_1);
-        cVar5 = (**(code **)(*plVar4 + 0x720))(plVar4);
-        if (cVar5 != '\0') {
-          (**(code **)(*plVar4 + 0x88))(plVar4);
-        }
-        if (!bVar3) {
-          (**(code **)(*DAT_0022f028 + 0x28))();
-        }
-      }
-    }
-  }
-LAB_0014cd28:
-  *puVar7 = uVar1;
-LAB_0014cd2c:
-  if (*(long *)(lVar2 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    long *table = *(long **)obj;
+    long (*fn)(void *, long, long, long) =
+        (long (*)(void *, long, long, long))table[slot / 8];
+    return fn(obj, a, b, c);
 }
 
-/* ===== FUN_0014ef90 @ 0014ef90 ===== */
-
-void FUN_0014ef90(undefined8 *param_1,undefined8 param_2)
-
+static long svc_call4_me1(void *obj, uint32_t slot, long a, long b, long c, long d)
 {
-  bool bVar1;
-  uint uVar2;
-  undefined4 uVar3;
-  long lVar4;
-  int iVar5;
-  int iVar6;
-  pthread_t __target_thread;
-  undefined8 uVar7;
-  code *pcVar8;
-  long lVar9;
-  long lVar10;
-  long lVar11;
-  ulong uVar12;
-  undefined4 uVar13;
-  uint uVar14;
-  uint local_a4;
-  int local_a0;
-  int local_9c;
-  long local_98;
-  char *pcStack_90;
-  byte local_88 [4];
-  undefined4 local_84;
-  undefined4 uStack_80;
-  int local_7c;
-  undefined8 local_78;
-  long local_70;
-  long local_58;
-  
-  lVar9 = DAT_001a7c48;
-  lVar4 = tpidr_el0;
-  local_58 = *(long *)(lVar4 + 0x28);
-  param_1[4] = 0;
-  param_1[5] = 0;
-  uVar12 = DAT_0022db60;
-  uVar7 = DAT_0010f928;
-  local_7c = 0;
-  *param_1 = param_2;
-  param_1[1] = lVar9;
-  param_1[2] = uVar12;
-  param_1[3] = 0;
-  param_1[6] = uVar7;
-  iVar6 = DAT_0022f038;
-  local_84 = 2000;
-  uStack_80 = 0xdac;
-  local_88[0] = 1;
-  if (DAT_0022d8d8 != '\x01') goto LAB_0014f040;
-  local_78 = 0;
-  local_70 = 0;
-  if ((DAT_0022f038 < 1) || (iVar5 = gettid(), iVar5 != iVar6)) goto LAB_0014f040;
-  __target_thread = pthread_self();
-  iVar6 = pthread_getname_np(__target_thread,(char *)&local_78,0x10);
-  if ((iVar6 != 0) ||
-     (((local_78 != 0x706f6f6c6e69614d || (char)local_70 != '\0' || (DAT_0022f03c < 1)) ||
-      (uVar7 = FUN_00169574(&DAT_0022f040), (int)uVar7 != 7)))) goto LAB_0014f040;
-  local_78 = 0;
-  uVar7 = FUN_0014e7c4(uVar7,DAT_0022d8e0 + 0x12eb9f0,&local_78,8);
-  uVar12 = local_78;
-  if (((local_78 & 7) != 0 || local_78 < 0x1000) || (int)uVar7 == 0) {
-    uVar12 = 0;
-  }
-  if (uVar12 != DAT_0022f178) goto LAB_0014f040;
-  local_78 = 0;
-  iVar6 = FUN_0014e7c4(uVar7,uVar12 + 0x90,&local_78,8);
-  uVar12 = local_78;
-  if (((local_78 & 7) != 0 || local_78 < 0x1000) || iVar6 == 0) {
-    uVar12 = 0;
-  }
-  if (((uVar12 != DAT_0022db60) || (uVar7 = FUN_00154d5c(DAT_0022f180), (int)uVar7 == 0)) ||
-     (iVar6 = FUN_0014e7c4(uVar7,DAT_0022f178 + 0x19c,local_88,1), iVar6 == 0)) goto LAB_0014f040;
-  *(uint *)((long)param_1 + 0x2c) = (uint)local_88[0];
-  iVar6 = nexus_menu_setting_value(0x25,&local_7c);
-  if ((iVar6 == 1) && (iVar6 = nexus_menu_setting_value(0x62,&uStack_80), iVar6 == 1)) {
-    iVar6 = nexus_menu_setting_value(99,&local_84);
-    uVar14 = (uint)(iVar6 == 1);
-  }
-  else {
-    uVar14 = 0;
-  }
-  pcVar8 = DAT_0022f188;
-  if ((DAT_0022f188 == (code *)0x0) &&
-     (((pcVar8 = (code *)dlsym(DAT_0022f0c0,"nexus_evasion_snapshot_keys_v1"), pcVar8 == (code *)0x0
-       || (iVar6 = dladdr(pcVar8,&local_78), iVar6 == 0)) || (local_70 != DAT_0022f0c8)))) {
-    local_98 = 0;
-    pcStack_90 = "autofarmEnabled";
-    local_9c = -1;
-    pcVar8 = DAT_0022f188;
-    if (DAT_0022f188 != (code *)0x0) goto LAB_0014f228;
-LAB_0014f2b8:
-    uVar13 = 0;
-    uVar14 = 0;
-    *(undefined4 *)(param_1 + 4) = 0;
-  }
-  else {
-LAB_0014f228:
-    DAT_0022f188 = pcVar8;
-    pcStack_90 = "autofarmEnabled";
-    local_98 = 0;
-    local_9c = -1;
-    iVar6 = (*DAT_0022f188)(&pcStack_90,&local_78,1,&local_98,&local_9c);
-    if ((iVar6 != 1) || (local_98 == 0)) goto LAB_0014f2b8;
-    uVar2 = 0;
-    if (local_9c == 0) {
-      uVar2 = uVar14;
-    }
-    *(uint *)(param_1 + 4) = uVar2;
-    if (uVar2 == 1) {
-      iVar6 = pthread_once((pthread_once_t *)&DAT_0022f1d0,FUN_001552c0);
-      if (DAT_0022f1d8 == (code *)0x0) {
-        uVar13 = 1;
-        uVar14 = 0;
-      }
-      else {
-        iVar6 = (*DAT_0022f1d8)(iVar6);
-        uVar14 = 0;
-        uVar13 = 1;
-        if ((iVar6 == 1) && ((int)local_70 == 2)) {
-          uVar14 = (uint)(local_78._4_4_ == 1);
-        }
-      }
-    }
-    else {
-      uVar13 = 0;
-      uVar14 = 0;
-    }
-  }
-  lVar9 = DAT_0022d8e0;
-  uVar3 = 0;
-  if (local_7c == 1) {
-    uVar3 = uVar13;
-  }
-  *(undefined4 *)(param_1 + 6) = uStack_80;
-  *(undefined4 *)((long)param_1 + 0x34) = local_84;
-  *(uint *)((long)param_1 + 0x24) = uVar14;
-  *(undefined4 *)(param_1 + 5) = uVar3;
-  lVar9 = FUN_00154cf0(lVar9 + 0x1307e20);
-  local_a4 = 0xffffffff;
-  local_a0 = -1;
-  if ((((lVar9 == 0) || (iVar6 = FUN_0014e7c4(lVar9,lVar9 + 0x50,&local_a0,4), iVar6 == 0)) ||
-      (local_a0 < 0)) || (0x40 < local_a0)) {
-LAB_0014f3d4:
-    *(undefined4 *)(param_1 + 4) = 0;
-  }
-  else {
-    if (local_a0 == 5) {
-      lVar10 = FUN_00154cf0(lVar9 + 0x48);
-      lVar11 = FUN_00154cf0(lVar10 + 0x28);
-      if (((lVar11 == 0) || (iVar6 = FUN_0014e7c4(lVar11,lVar11 + 0xb8,&local_a4,4), iVar6 == 0)) ||
-         (uVar12 = (ulong)local_a4, (int)local_a4 < 0)) goto LAB_0014f3d4;
-      if (lVar10 == 0) goto LAB_0014f3dc;
-      if (((lVar10 != DAT_0022f190) || (lVar11 != DAT_0022f198)) ||
-         ((lVar9 != DAT_0022f1a0 ||
-          (bVar1 = uVar12 < DAT_0022f1a8, DAT_0022f190 = lVar10, DAT_0022f198 = lVar11,
-          DAT_0022f1a0 = lVar9, DAT_0022f1a8 = uVar12, bVar1)))) {
-        if (DAT_001a7c48 == -1) {
-          *(undefined4 *)(param_1 + 4) = 0;
-          DAT_0022f190 = lVar10;
-          DAT_0022f198 = lVar11;
-          DAT_0022f1a0 = lVar9;
-          DAT_0022f1a8 = uVar12;
-        }
-        else {
-          DAT_001a7c48 = DAT_001a7c48 + 1;
-          DAT_0022f190 = lVar10;
-          DAT_0022f198 = lVar11;
-          DAT_0022f1a0 = lVar9;
-          DAT_0022f1a8 = uVar12;
-        }
-      }
-    }
-    else {
-LAB_0014f3dc:
-      DAT_0022f198 = 0;
-      DAT_0022f190 = 0;
-      DAT_0022f1a8 = 0;
-    }
-    lVar9 = DAT_001a7c48;
-    param_1[3] = DAT_0022f190;
-    param_1[1] = lVar9;
-  }
-LAB_0014f040:
-  if (*(long *)(lVar4 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
+    long *table = *(long **)obj;
+    long (*fn)(void *, long, long, long, long) =
+        (long (*)(void *, long, long, long, long))table[slot / 8];
+    return fn(obj, a, b, c, d);
 }
 
-/* ===== FUN_00150378 @ 00150378 ===== */
-
-void FUN_00150378(undefined8 param_1)
-
+static long svc_call7_me1(void *obj, uint32_t slot, long a, long b, long c,
+                          long d, long e, long f, long g)
 {
-  ulong uVar1;
-  long lVar2;
-  int iVar3;
-  int iVar4;
-  int iVar5;
-  pthread_t __target_thread;
-  ulong uVar6;
-  undefined8 uVar7;
-  int local_68;
-  char local_64 [4];
-  undefined1 auStack_60 [5];
-  char local_5b;
-  ulong local_58;
-  ulong local_50;
-  long local_48;
-  
-  lVar2 = tpidr_el0;
-  local_48 = *(long *)(lVar2 + 0x28);
-  local_68 = -1;
-  local_58 = 0;
-  local_64[0] = '\x01';
-  iVar3 = FUN_0014e7c4(param_1,DAT_0022d8e0 + 0x1307e20,&local_58,8);
-  uVar1 = local_58;
-  iVar5 = DAT_0022f038;
-  if (DAT_0022d890 == 1) {
-    if (-1 < DAT_0022f03c) {
-LAB_00150400:
-      local_58 = 0;
-      local_50 = 0;
-      if ((0 < DAT_0022f038) && (iVar4 = gettid(), iVar4 == iVar5)) {
-        __target_thread = pthread_self();
-        iVar4 = pthread_getname_np(__target_thread,(char *)&local_58,0x10);
-        if ((iVar4 == 0) && (local_58 == 0x706f6f6c6e69614d && (local_50 & 0xff) == 0)) {
-          iVar4 = FUN_0014fac4();
-          uVar6 = 0;
-          if ((((iVar4 == 0) || (iVar3 == 0)) || (uVar1 < 0x1000)) || ((uVar1 & 7) != 0))
-          goto LAB_0015045c;
-          iVar3 = FUN_0014e7c4(0,uVar1 + 0x50,&local_68,4);
-          uVar6 = 0;
-          if ((((iVar3 == 0) || (local_68 < 0)) || (0x40 < local_68)) || (local_68 == 5))
-          goto LAB_0015045c;
-          iVar5 = nexus_menu_ui_state(auStack_60,iVar5);
-          uVar6 = 0;
-          if ((iVar5 != 1) || (local_5b != '\0')) goto LAB_0015045c;
-          local_58 = 0;
-          uVar7 = FUN_0014e7c4(0,DAT_0022d8e0 + 0x12eb9f0,&local_58,8);
-          uVar1 = local_58;
-          if (((local_58 & 7) != 0 || local_58 < 0x1000) || (int)uVar7 == 0) {
-            uVar1 = 0;
-          }
-          if (uVar1 == DAT_0022f178) {
-            local_58 = 0;
-            uVar6 = FUN_0014e7c4(uVar7,uVar1 + 0x90,&local_58,8);
-            uVar1 = local_58;
-            if (((local_58 & 7) != 0 || local_58 < 0x1000) || (int)uVar6 == 0) {
-              uVar1 = 0;
-            }
-            if (uVar1 == DAT_0022db60) {
-              if (((DAT_0022d890 & 1) != 0) || (uVar6 = FUN_00154d5c(DAT_0022f180), (int)uVar6 != 0)
-                 ) {
-                iVar5 = FUN_0014e7c4(uVar6,DAT_0022f178 + 0x19c,local_64,1);
-                uVar6 = 0;
-                if ((iVar5 != 0) && (local_64[0] == '\0')) {
-                  iVar5 = FUN_001554b0(0);
-                  uVar6 = (ulong)(iVar5 != 0);
-                }
-              }
-              goto LAB_0015045c;
-            }
-          }
-        }
-      }
-    }
-  }
-  else if (0 < DAT_0022f03c) goto LAB_00150400;
-  uVar6 = 0;
-LAB_0015045c:
-  if (*(long *)(lVar2 + 0x28) == local_48) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar6);
+    long *table = *(long **)obj;
+    long (*fn)(void *, long, long, long, long, long, long, long) =
+        (long (*)(void *, long, long, long, long, long, long, long))table[slot / 8];
+    return fn(obj, a, b, c, d, e, f, g);
 }
 
-/* ===== FUN_00152b7c @ 00152b7c ===== */
+/* ===== menu-store entry RPC ===== */
 
-/* WARNING: Removing unreachable block (ram,0x00152db8) */
-
-void FUN_00152b7c(void)
-
+/*
+ * menu_server_seq_next — next sequence id for menu-store entries.
+ * Only the menu server thread is served: the counter at 0x22d830 is
+ * incremented unless it already hit its 0x7fffffff cap. Returns the new id,
+ * or 0 on any other thread / at the cap. @ 0014c510
+ */
+int menu_server_seq_next(void)
 {
-  uint uVar1;
-  long lVar2;
-  bool bVar3;
-  char cVar4;
-  int iVar5;
-  uint uVar6;
-  int iVar7;
-  uint *puVar8;
-  DIR *__dirp;
-  dirent *pdVar9;
-  ssize_t sVar10;
-  long lVar11;
-  undefined8 uVar12;
-  long lVar13;
-  char *pcVar14;
-  char *pcVar15;
-  char *__s1;
-  stat sStack_270;
-  undefined8 uStack_1e0;
-  undefined8 uStack_1d8;
-  undefined8 local_1d0;
-  undefined8 uStack_1c8;
-  undefined8 uStack_1c0;
-  undefined8 uStack_1b8;
-  long *local_1b0 [40];
-  long local_70;
-  
-  lVar2 = tpidr_el0;
-  local_70 = *(long *)(lVar2 + 0x28);
-  puVar8 = (uint *)__errno();
-  uVar1 = *puVar8;
-  __dirp = opendir("/proc/self/task");
-  if (__dirp != (DIR *)0x0) {
-    iVar5 = dirfd(__dirp);
-    if (-1 < iVar5) {
-      __s1 = "task_directory_fd";
-LAB_00152bfc:
-      *puVar8 = 0;
-      pdVar9 = readdir(__dirp);
-      if (pdVar9 != (dirent *)0x0) {
-        pcVar14 = pdVar9->d_name;
-        if (*pcVar14 == '.') {
-          iVar7 = 5;
-        }
-        else {
-          sStack_270.__unused[2] = 0;
-          sStack_270.__unused[1] = 0;
-          uStack_1d8 = 0;
-          uStack_1e0 = 0;
-          uStack_1c8 = 0;
-          local_1d0 = 0;
-          uStack_1b8 = 0;
-          uStack_1c0 = 0;
-          uVar6 = FUN_0015540c(local_1b0,0x140,0x140,"/proc/self/task/%s/comm",pcVar14);
-          if (uVar6 < 0x140) {
-            do {
-              iVar7 = __open_2(local_1b0,0x80000);
-              if (-1 < iVar7) goto LAB_00152cb4;
-            } while (*puVar8 == 4);
-            if ((*puVar8 & 0xfffffffe) == 2) {
-              do {
-                iVar7 = fstatat(iVar5,pcVar14,&sStack_270,0x100);
-                if (-1 < iVar7) goto LAB_00152cec;
-              } while (*puVar8 == 4);
-              if (*puVar8 != 2) goto LAB_00152cec;
-              iVar7 = 5;
-            }
-            else {
-LAB_00152cec:
-              iVar7 = 4;
-            }
-            __s1 = "task_comm_open";
-          }
-          else {
-            iVar7 = 4;
-            __s1 = "task_comm_path";
-          }
-        }
-        goto LAB_00152bf4;
-      }
-      bVar3 = *puVar8 == 0;
-      __s1 = "";
-      if (!bVar3) {
-        __s1 = "task_directory_read";
-      }
-      goto LAB_00152df4;
+    int seq = 0;
+
+    if (nexus_menu_server_thread(gettid()) && g_menu_server_seq != 0x7fffffff) {
+        g_menu_server_seq = g_menu_server_seq + 1;
+        seq = g_menu_server_seq;
     }
-    bVar3 = false;
-    __s1 = "task_directory_fd";
-    goto LAB_00152df4;
-  }
-  bVar3 = false;
-  __s1 = "task_directory_open";
-  *puVar8 = uVar1;
-LAB_00152e04:
-  if (__s1 == (char *)0x0) goto LAB_00152e84;
-  iVar5 = strcmp(__s1,"mainloop_live");
-  if ((((iVar5 == 0) && (local_1b0[0] = (long *)0x0, DAT_0022e010 != (long *)0x0)) &&
-      (iVar5 = (**(code **)(*DAT_0022e010 + 0x30))(DAT_0022e010,local_1b0,0x10006), iVar5 == 0)) &&
-     ((local_1b0[0] != (long *)0x0 &&
-      (cVar4 = (**(code **)(*local_1b0[0] + 0x720))(), cVar4 == '\0')))) {
-    iVar5 = (**(code **)(*local_1b0[0] + 0x98))(local_1b0[0],8);
-    if (iVar5 == 0) {
-      lVar11 = (**(code **)(*local_1b0[0] + 0x30))(local_1b0[0],"nexus/loader/NexusLoader");
-      if ((((lVar11 == 0) || (cVar4 = (**(code **)(*local_1b0[0] + 0x720))(), cVar4 != '\0')) ||
-          ((lVar13 = (**(code **)(*local_1b0[0] + 0x388))
-                               (local_1b0[0],lVar11,"statusJson","()Ljava/lang/String;"),
-           lVar13 == 0 ||
-           (((cVar4 = (**(code **)(*local_1b0[0] + 0x720))(), cVar4 != '\0' ||
-             (lVar11 = (**(code **)(*local_1b0[0] + 0x390))(local_1b0[0],lVar11,lVar13), lVar11 == 0
-             )) || (cVar4 = (**(code **)(*local_1b0[0] + 0x720))(), cVar4 != '\0')))))) ||
-         (pcVar14 = (char *)(**(code **)(*local_1b0[0] + 0x548))(local_1b0[0],lVar11,0),
-         pcVar14 == (char *)0x0)) {
-        bVar3 = false;
-      }
-      else {
-        iVar5 = strncmp(pcVar14,
-                        "{\"schema\":1,\"phase\":\"linking\",\"game_jni_boundary_observed\":true,\"synchronous_link_barrier_complete\":false,"
-                        ,0x6a);
-        if (iVar5 == 0) {
-          pcVar15 = strstr(pcVar14,"\"process_restart_required\":false,\"error\":");
-          bVar3 = pcVar15 != (char *)0x0;
-        }
-        else {
-          bVar3 = false;
-        }
-        (**(code **)(*local_1b0[0] + 0x550))(local_1b0[0],lVar11,pcVar14);
-      }
-      cVar4 = (**(code **)(*local_1b0[0] + 0x720))();
-      if (cVar4 != '\0') {
-        (**(code **)(*local_1b0[0] + 0x88))();
-      }
-      (**(code **)(*local_1b0[0] + 0xa0))(local_1b0[0],0);
-    }
-    else {
-      bVar3 = false;
-    }
-    cVar4 = (**(code **)(*local_1b0[0] + 0x720))();
-    if (cVar4 != '\0') {
-      (**(code **)(*local_1b0[0] + 0x88))();
-    }
-    if (!bVar3) goto LAB_00152f34;
-    goto LAB_00152e88;
-  }
-  goto LAB_00152f34;
-  while (uVar6 = *puVar8, uVar6 == 4) {
-LAB_00152cb4:
-    sVar10 = read(iVar7,sStack_270.__unused + 1,0x3f);
-    if (-1 < sVar10) {
-      close(iVar7);
-      if (sVar10 == 0) goto LAB_00152d50;
-      if (sStack_270.__unused[1] == 0x706f6f6c6e69614d && (short)sStack_270.__unused[2] == 10) {
-        iVar7 = 4;
-      }
-      else {
-        iVar7 = (uint)(sStack_270.__unused[1] == 0x706f6f6c6e69614d &&
-                      (char)sStack_270.__unused[2] == '\0') << 2;
-      }
-      __s1 = "mainloop_live";
-      goto LAB_00152bf4;
-    }
-  }
-  close(iVar7);
-  if ((uVar6 & 0xfffffffe) == 2) {
-LAB_00152d50:
-    do {
-      iVar7 = fstatat(iVar5,pcVar14,&sStack_270,0x100);
-      if (-1 < iVar7) goto LAB_00152d84;
-    } while (*puVar8 == 4);
-    if (*puVar8 == 2) {
-      iVar7 = 5;
-      goto LAB_00152d88;
-    }
-  }
-LAB_00152d84:
-  iVar7 = 4;
-LAB_00152d88:
-  __s1 = "task_comm_read";
-LAB_00152bf4:
-  if (iVar7 == 4) goto LAB_00152df0;
-  goto LAB_00152bfc;
-LAB_00152df0:
-  bVar3 = false;
-LAB_00152df4:
-  closedir(__dirp);
-  *puVar8 = uVar1;
-  if (!bVar3) goto LAB_00152e04;
-LAB_00152e84:
-  if (bVar3) {
-LAB_00152e88:
-    uVar12 = 1;
-    goto LAB_00152f40;
-  }
-LAB_00152f34:
-  uVar12 = 0;
-  PTR_s_ui_initialize_001a7c40 = __s1;
-LAB_00152f40:
-  if (*(long *)(lVar2 + 0x28) != local_70) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(uVar12);
-  }
-  return;
+    return seq;
 }
 
-/* ===== FUN_00155e08 @ 00155e08 ===== */
-
-int FUN_00155e08(void)
-
+/*
+ * menu_entry_register — register one menu entry in the store.
+ * Gates: id >= 1, key 1..0x180 chars (raw: key_len - 0x181 <
+ * 0xfffffffffffffe80), desc 0..0x400 chars, type <= 2, screen 1..0x100
+ * (raw: screen - 0x101U >= 0xffffff00). Needs the service locator + domain
+ * token and the menu server thread; acquires a session (flags 0x10006 with a
+ * fallback path), begins a write transaction (slot 0x98, mode 4), stages the
+ * key/desc strings through buffer slots 0x580/0x680 and files the entry via
+ * slot 0x3a8 with the register token. Returns true only when filing
+ * returned 1 with no latched session error. errno is preserved. @ 0014c550
+ */
+bool menu_entry_register(int id, char *key, char *desc, uint32_t type, int screen)
 {
-  int iVar1;
-  int iVar2;
-  
-  iVar2 = nexus_menu_status();
-  iVar1 = iVar2 >> 0x1f;
-  if (iVar2 == 3) {
-    iVar1 = 1;
-  }
-  return iVar1;
+    bool ok = false;
+    void *session = NULL;
+    long name_h = 0;
+    long desc_h = 0;
+    size_t key_len;
+    size_t desc_len;
+    bool fast_acquired;
+    int rc;
+    int saved_errno;
+
+    if (type > 2 || id < 1 || key == NULL || desc == NULL
+        || screen < 1 || screen > 0x100)
+        return false;
+
+    key_len = strnlen(key, 0x181);
+    desc_len = strnlen(desc, 0x401);
+    if (key_len < 1 || key_len > 0x180 || desc_len > 0x400)
+        return false;
+
+    saved_errno = errno;
+    if (g_menu_service == NULL || g_menu_store_domain == 0)
+        goto out;
+    if (!nexus_menu_server_thread(gettid()))
+        goto out;
+
+    rc = (int)svc_call2_me1(g_menu_service, 0x30, (long)&session, 0x10006);
+    if (rc == 0) {
+        fast_acquired = true;
+    } else if (rc != -2
+               || (int)svc_call2_me1(g_menu_service, 0x20, (long)&session, 0) != 0) {
+        goto out;
+    } else {
+        fast_acquired = false;
+    }
+
+    if (session == NULL)
+        goto out;
+
+    if ((int)svc_call1_me1(session, 0x98, 4) != 0) { /* begin write txn */
+        if (svc_call0_me1(session, 0x720) != 0)
+            svc_call0_me1(session, 0x88);
+        if (!fast_acquired)
+            svc_call0_me1(g_menu_service, 0x28);
+        goto out;
+    }
+
+    name_h = svc_call1_me1(session, 0x580, (long)key_len);
+    if (name_h != 0) {
+        if (svc_call0_me1(session, 0x720) == 0
+            && (desc_h = svc_call1_me1(session, 0x580, (long)desc_len)) != 0
+            && svc_call0_me1(session, 0x720) == 0) {
+            svc_call4_me1(session, 0x680, name_h, 0, (long)key_len, (long)key);
+            if (desc_len != 0)
+                svc_call4_me1(session, 0x680, desc_h, 0, (long)desc_len, (long)desc);
+            if (svc_call0_me1(session, 0x720) == 0)
+                ok = svc_call7_me1(session, 0x3a8,
+                                   (long)g_menu_store_domain,
+                                   (long)g_menu_store_register,
+                                   id, name_h, desc_h, (long)type, screen) == 1;
+        }
+    }
+
+    if (svc_call0_me1(session, 0x720) != 0)
+        ok = false;
+    svc_call1_me1(session, 0xa0, 0); /* commit */
+    if (svc_call0_me1(session, 0x720) != 0)
+        svc_call0_me1(session, 0x88);
+    if (!fast_acquired)
+        svc_call0_me1(g_menu_service, 0x28);
+
+out:
+    errno = saved_errno;
+    return ok;
 }
 
-/* ===== FUN_00155e28 @ 00155e28 ===== */
+/* 0x410-byte store record returned by the read op: 0x10-byte header plus a
+ * raw payload (no NUL inside; the reader appends one). */
+typedef struct {
+    int32_t  magic;          /* +0x00 — must be 1 */
+    uint32_t id;             /* +0x04 — must match the requested id */
+    uint32_t kind;           /* +0x08 — entry kind (1 = string), must be < 4 */
+    uint32_t size;           /* +0x0c — payload size, must equal size query - 0x10 */
+    char     payload[0x400]; /* +0x10 */
+} menu_entry_record_t;       /* 0x410 */
 
-void FUN_00155e28(long *param_1)
-
+/*
+ * menu_entry_value_read — read a menu entry's string value by id.
+ * On gate failure (id < 1, null outs, zero cap) the outputs are untouched;
+ * otherwise kind_out is preset to 3 and value_out[0] to NUL. With the
+ * session (read txn, slot 0x98 mode 2) the record is opened via slot 0x390
+ * with the read token, size-queried (slot 0x558, payload = size - 0x10,
+ * cap 0x400) and read (slot 0x640); the header must be {1, id, kind < 4,
+ * payload size} and the payload NUL-free. Returns 1 on success (payload
+ * copied, NUL-terminated, kind_out set), 0 otherwise. errno preserved.
+ * @ 0014c8ac
+ */
+int menu_entry_value_read(int id, uint32_t *kind_out, char *value_out,
+                          size_t value_cap)
 {
-  long lVar1;
-  undefined1 auStack_838 [2048];
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  nexus_menu_diagnostics(auStack_838,0x800);
-  (**(code **)(*param_1 + 0x538))(param_1,auStack_838);
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_001560d8 @ 001560d8 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_001560d8(int *param_1)
-
-{
-  byte *pbVar1;
-  long lVar2;
-  char *pcVar3;
-  char *pcVar4;
-  uint uVar5;
-  long lVar6;
-  bool bVar7;
-  int iVar8;
-  int iVar9;
-  __uid_t _Var10;
-  uint uVar11;
-  __pid_t _Var12;
-  undefined4 uVar13;
-  long lVar14;
-  int *piVar15;
-  undefined4 *puVar16;
-  ulong uVar17;
-  ulong uVar18;
-  byte bVar19;
-  uint uVar20;
-  byte bVar23;
-  byte bVar24;
-  byte bVar25;
-  undefined1 auVar21 [16];
-  undefined1 auVar22 [16];
-  long local_ec;
-  int local_e4;
-  uint local_e0;
-  uint local_dc;
-  timespec local_d8;
-  uint local_c8;
-  int local_c4;
-  __uid_t local_c0;
-  long local_a8;
-  long local_58;
-  
-  lVar6 = tpidr_el0;
-  uVar17 = (ulong)param_1 & 0xffffffff;
-  local_58 = *(long *)(lVar6 + 0x28);
-  if (-1 < (int)param_1) {
-    iVar8 = __openat_2(uVar17,"performance.bin",0x88000);
-    if (iVar8 < 0) {
-      param_1 = (int *)__errno();
-      bVar7 = *param_1 == 2;
-      uVar11 = 0;
-      goto LAB_0015630c;
-    }
-    iVar9 = fstat(iVar8,(stat *)&local_d8);
-    if ((((iVar9 == 0) && ((local_c8 & 0xf000) == 0x8000)) &&
-        (_Var10 = getuid(), local_c0 == _Var10)) &&
-       (((local_c4 == 1 && ((local_c8 & 0x3f) == 0)) && (local_a8 == 0x14)))) {
-      uVar18 = 0;
-      do {
-        lVar14 = __read_chk(iVar8,(long)&local_ec + uVar18,0x14 - uVar18,0xffffffffffffffff);
-        if ((lVar14 < 0) && (piVar15 = (int *)__errno(), *piVar15 == 4)) {
-          iVar9 = 2;
-        }
-        else {
-          lVar2 = 0;
-          if (0 < lVar14) {
-            lVar2 = lVar14;
-          }
-          uVar18 = lVar2 + uVar18;
-          iVar9 = 3;
-          if (0 < lVar14) {
-            iVar9 = 0;
-          }
-        }
-      } while ((iVar9 != 3) && (uVar18 < 0x14));
-      uVar11 = close(iVar8);
-      param_1 = (int *)(ulong)uVar11;
-      if ((uVar18 == 0x14) &&
-         (((local_ec == 0x323532393650584e && (local_e4 == 1)) && (local_e0 < 2)))) {
-        lVar14 = 0;
-        uVar11 = 0xffffffff;
-        do {
-          pbVar1 = (byte *)((long)&local_ec + lVar14);
-          lVar14 = lVar14 + 1;
-          uVar20 = uVar11 ^ *pbVar1;
-          uVar5 = -(uVar20 & 1) & 0xedb88320 ^ uVar20 >> 1;
-          bVar19 = (byte)uVar20;
-          auVar21[0] = bVar19 & (byte)_DAT_0010f9c0;
-          bVar23 = (byte)(uVar11 >> 8);
-          auVar21[1] = bVar23 & (byte)((ulong)_DAT_0010f9c0 >> 8);
-          bVar24 = (byte)(uVar11 >> 0x10);
-          auVar21[2] = bVar24 & (byte)((ulong)_DAT_0010f9c0 >> 0x10);
-          bVar25 = (byte)(uVar11 >> 0x18);
-          auVar21[3] = bVar25 & (byte)((ulong)_DAT_0010f9c0 >> 0x18);
-          auVar21[4] = bVar19 & (byte)((ulong)_DAT_0010f9c0 >> 0x20);
-          auVar21[5] = bVar23 & (byte)((ulong)_DAT_0010f9c0 >> 0x28);
-          auVar21[6] = bVar24 & (byte)((ulong)_DAT_0010f9c0 >> 0x30);
-          auVar21[7] = bVar25 & (byte)((ulong)_DAT_0010f9c0 >> 0x38);
-          auVar21[8] = bVar19 & (byte)_UNK_0010f9c8;
-          auVar21[9] = bVar23 & (byte)((ulong)_UNK_0010f9c8 >> 8);
-          auVar21[10] = bVar24 & (byte)((ulong)_UNK_0010f9c8 >> 0x10);
-          auVar21[0xb] = bVar25 & (byte)((ulong)_UNK_0010f9c8 >> 0x18);
-          auVar21[0xc] = bVar19 & (byte)((ulong)_UNK_0010f9c8 >> 0x20);
-          auVar21[0xd] = bVar23 & (byte)((ulong)_UNK_0010f9c8 >> 0x28);
-          auVar21[0xe] = bVar24 & (byte)((ulong)_UNK_0010f9c8 >> 0x30);
-          auVar21[0xf] = bVar25 & (byte)((ulong)_UNK_0010f9c8 >> 0x38);
-          uVar11 = (int)(uVar20 << 0x1e) >> 0x1f & 0xedb88320U ^ uVar5 >> 1;
-          auVar21 = NEON_cmeq(auVar21,0,2);
-          auVar22[0] = (byte)_DAT_0010fac0 & ~auVar21[0];
-          auVar22[1] = (byte)((ulong)_DAT_0010fac0 >> 8) & ~auVar21[1];
-          auVar22[2] = (byte)((ulong)_DAT_0010fac0 >> 0x10) & ~auVar21[2];
-          auVar22[3] = (byte)((ulong)_DAT_0010fac0 >> 0x18) & ~auVar21[3];
-          auVar22[4] = (byte)((ulong)_DAT_0010fac0 >> 0x20) & ~auVar21[4];
-          auVar22[5] = (byte)((ulong)_DAT_0010fac0 >> 0x28) & ~auVar21[5];
-          auVar22[6] = (byte)((ulong)_DAT_0010fac0 >> 0x30) & ~auVar21[6];
-          auVar22[7] = (byte)((ulong)_DAT_0010fac0 >> 0x38) & ~auVar21[7];
-          auVar22[8] = (byte)_UNK_0010fac8 & ~auVar21[8];
-          auVar22[9] = (byte)((ulong)_UNK_0010fac8 >> 8) & ~auVar21[9];
-          auVar22[10] = (byte)((ulong)_UNK_0010fac8 >> 0x10) & ~auVar21[10];
-          auVar22[0xb] = (byte)((ulong)_UNK_0010fac8 >> 0x18) & ~auVar21[0xb];
-          auVar22[0xc] = (byte)((ulong)_UNK_0010fac8 >> 0x20) & ~auVar21[0xc];
-          auVar22[0xd] = (byte)((ulong)_UNK_0010fac8 >> 0x28) & ~auVar21[0xd];
-          auVar22[0xe] = (byte)((ulong)_UNK_0010fac8 >> 0x30) & ~auVar21[0xe];
-          auVar22[0xf] = (byte)((ulong)_UNK_0010fac8 >> 0x38) & ~auVar21[0xf];
-          auVar21 = NEON_ext(auVar22,auVar22,8,1);
-          uVar11 = (int)(uVar11 << 0x1a) >> 0x1f & 0xedb88320U ^ uVar11 >> 6;
-          param_1 = (int *)(ulong)uVar11;
-          uVar20 = CONCAT13(auVar22[3] ^ auVar21[3],
-                            CONCAT12(auVar22[2] ^ auVar21[2],
-                                     CONCAT11(auVar22[1] ^ auVar21[1],auVar22[0] ^ auVar21[0])));
-          uVar11 = uVar20 ^ (int)(uVar5 << 0x1a) >> 0x1f & 0x76dc4190U ^ uVar11 ^
-                   (uint)(CONCAT17(auVar22[7] ^ auVar21[7],
-                                   CONCAT16(auVar22[6] ^ auVar21[6],
-                                            CONCAT15(auVar22[5] ^ auVar21[5],
-                                                     CONCAT14(auVar22[4] ^ auVar21[4],uVar20)))) >>
-                         0x20);
-        } while (lVar14 != 0x10);
-        bVar7 = local_dc == ~uVar11;
-        uVar11 = local_e0;
-        if (!bVar7) {
-          uVar11 = 0;
-        }
-        goto LAB_0015630c;
-      }
-    }
-    else {
-      uVar11 = close(iVar8);
-      param_1 = (int *)(ulong)uVar11;
-    }
-  }
-  bVar7 = false;
-  uVar11 = 0;
-LAB_0015630c:
-  DAT_0022d880._0_4_ = 0;
-  if (bVar7) {
-    DAT_0022d880._0_4_ = uVar11;
-  }
-  DAT_0022f4b8 = (uint)DAT_0022d880;
-  puVar16 = (undefined4 *)__errno(param_1);
-  uVar13 = *puVar16;
-  local_d8.tv_nsec._0_4_ = 0;
-  local_d8.tv_sec = 0;
-  DAT_0022dfb0 = FUN_00155a40(uVar17,&local_d8);
-  _DAT_0022e000 = local_d8.tv_sec;
-  DAT_0022e004._4_4_ = (undefined4)local_d8.tv_nsec;
-  DAT_0022dfb4 = (uint)(DAT_0022dfb0 != 0 && (int)local_d8.tv_sec != 0);
-  if (DAT_0022dfb0 != 0 && (int)local_d8.tv_sec != 0) {
-    DAT_0022f4b8 = 1;
-  }
-  *puVar16 = uVar13;
-  pcVar3 = "optimization_off";
-  if (uVar11 != 0) {
-    pcVar3 = "optimization_on";
-  }
-  iVar8 = DAT_0022f4bc + 1;
-  pcVar4 = "invalid_or_unreadable_default_off";
-  if (bVar7) {
-    pcVar4 = pcVar3;
-  }
-  bVar7 = DAT_0022f4bc < 0x80;
-  DAT_0022f4bc = iVar8;
-  if (bVar7) {
-    _Var12 = getpid();
-    uVar13 = gettid(_Var12);
-    iVar8 = clock_gettime(0,&local_d8);
-    if (iVar8 == 0) {
-      lVar14 = local_d8.tv_sec * 1000 +
-               CONCAT44(local_d8.tv_nsec._4_4_,(undefined4)local_d8.tv_nsec) / 1000000;
-    }
-    else {
-      lVar14 = 0;
-    }
-    __android_log_print(4,"NexusLab69252",
-                        "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                        ,"performance_settings",pcVar4,0,_Var12,uVar13,lVar14);
-  }
-  if (*(long *)(lVar6 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00156480 @ 00156480 ===== */
-
-void FUN_00156480(undefined8 param_1,long param_2,ulong param_3)
-
-{
-  long lVar1;
-  bool bVar2;
-  __pid_t _Var3;
-  int iVar4;
-  int iVar5;
-  int *piVar6;
-  long lVar7;
-  ulong uVar8;
-  timespec local_98 [5];
-  long local_48;
-  
-  lVar1 = tpidr_el0;
-  bVar2 = false;
-  local_48 = *(long *)(lVar1 + 0x28);
-  if (((param_3 < 0x1001) && (param_2 != 0)) && (-1 < DAT_001a7c50)) {
-    _Var3 = getpid();
-    iVar4 = clock_gettime(1,local_98);
-    if (iVar4 == 0) {
-      lVar7 = local_98[0].tv_sec * 1000 + (ulong)local_98[0].tv_nsec / 1000000;
-    }
-    else {
-      lVar7 = 0;
-    }
-    FUN_0015540c(local_98,0x50,0x50,"settings-%d-%llu.tmp",_Var3,lVar7);
-    iVar4 = openat(DAT_001a7c50,(char *)local_98,0x880c1,0x180);
-    if (-1 < iVar4) {
-      uVar8 = 0;
-      if (param_3 != 0) {
-        do {
-          lVar7 = __write_chk(iVar4,param_2 + uVar8,param_3 - uVar8,0xffffffffffffffff);
-          if (lVar7 < 0) {
-            piVar6 = (int *)__errno();
-            if (*piVar6 != 4) break;
-          }
-          else {
-            uVar8 = lVar7 + uVar8;
-            if (lVar7 == 0) break;
-          }
-        } while (uVar8 < param_3);
-      }
-      if (uVar8 == param_3) {
-        iVar5 = fsync(iVar4);
-        close(iVar4);
-        if ((iVar5 == 0) &&
-           (iVar4 = renameat(DAT_001a7c50,(char *)local_98,DAT_001a7c50,"settings.bin"), iVar4 == 0)
-           ) {
-          iVar4 = fsync(DAT_001a7c50);
-          bVar2 = iVar4 == 0;
-          goto LAB_001565e8;
-        }
-      }
-      else {
-        close(iVar4);
-      }
-    }
-    bVar2 = false;
-  }
-LAB_001565e8:
-  if (*(long *)(lVar1 + 0x28) != local_48) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(bVar2);
-  }
-  return;
-}
-
-/* ===== FUN_00156614 @ 00156614 ===== */
-
-void FUN_00156614(undefined8 param_1,long param_2,ulong param_3,ulong *param_4)
-
-{
-  long lVar1;
-  bool bVar2;
-  int __fd;
-  int iVar3;
-  __uid_t _Var4;
-  int *piVar5;
-  long lVar6;
-  ulong uVar7;
-  uint local_b8;
-  int local_b4;
-  __uid_t local_b0;
-  ulong local_98;
-  long local_48;
-  
-  lVar1 = tpidr_el0;
-  bVar2 = false;
-  local_48 = *(long *)(lVar1 + 0x28);
-  if ((((param_3 < 0x1001) && (param_4 != (ulong *)0x0)) && (param_2 != 0)) && (-1 < DAT_001a7c50))
-  {
-    __fd = __openat_2(DAT_001a7c50,"settings.bin",0x88000);
-    if (-1 < __fd) {
-      iVar3 = fstat(__fd,(stat *)&stack0xffffffffffffff38);
-      if ((((iVar3 == 0) && ((local_b8 & 0xf000) == 0x8000)) &&
-          ((_Var4 = getuid(), local_b0 == _Var4 && ((local_b4 == 1 && (-1 < (long)local_98)))))) &&
-         ((long)local_98 <= (long)param_3)) {
-        uVar7 = 0;
-        if (local_98 != 0) {
-          do {
-            lVar6 = __read_chk(__fd,param_2 + uVar7,local_98 - uVar7,0xffffffffffffffff);
-            if (lVar6 < 0) {
-              piVar5 = (int *)__errno();
-              if (*piVar5 != 4) break;
-            }
-            else {
-              uVar7 = lVar6 + uVar7;
-              if (lVar6 == 0) break;
-            }
-          } while (uVar7 < local_98);
-        }
-        close(__fd);
-        bVar2 = uVar7 == local_98;
-        *param_4 = uVar7;
-        goto LAB_001566e4;
-      }
-      close(__fd);
-    }
-    bVar2 = false;
-  }
-LAB_001566e4:
-  if (*(long *)(lVar1 + 0x28) != local_48) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(bVar2);
-  }
-  return;
-}
-
-/* ===== FUN_00156760 @ 00156760 ===== */
-
-void FUN_00156760(undefined8 param_1,undefined8 param_2,undefined8 param_3,undefined4 param_4)
-
-{
-  bool bVar1;
-  long lVar2;
-  __pid_t _Var3;
-  undefined4 uVar4;
-  int iVar5;
-  long lVar6;
-  timespec local_58;
-  long local_48;
-  
-  lVar2 = tpidr_el0;
-  local_48 = *(long *)(lVar2 + 0x28);
-  iVar5 = DAT_0022f4bc + 1;
-  bVar1 = DAT_0022f4bc < 0x80;
-  DAT_0022f4bc = iVar5;
-  if (bVar1) {
-    _Var3 = getpid();
-    uVar4 = gettid(_Var3);
-    iVar5 = clock_gettime(0,&local_58);
-    if (iVar5 == 0) {
-      lVar6 = local_58.tv_sec * 1000 + (ulong)local_58.tv_nsec / 1000000;
-    }
-    else {
-      lVar6 = 0;
-    }
-    __android_log_print(4,"NexusLab69252",
-                        "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                        ,param_2,param_3,param_4,_Var3,uVar4,lVar6);
-  }
-  if (*(long *)(lVar2 + 0x28) == local_48) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00156850 @ 00156850 ===== */
-
-void FUN_00156850(undefined8 param_1,undefined8 *param_2)
-
-{
-  undefined *puVar1;
-  char *pcVar2;
-  long lVar3;
-  undefined8 uVar4;
-  long lVar5;
-  long lVar6;
-  int iVar7;
-  int iVar8;
-  undefined8 uVar9;
-  long lVar10;
-  long lVar11;
-  long lVar12;
-  ulong uVar13;
-  char *pcVar14;
-  undefined1 auStack_2360 [16];
-  uint local_2350;
-  long local_2348;
-  char local_2340;
-  undefined1 auStack_1340 [16];
-  uint local_1330;
-  long local_1328;
-  char local_1320 [4073];
-  undefined1 auStack_337 [23];
-  undefined8 local_320;
-  undefined8 uStack_318;
-  undefined8 local_310;
-  undefined8 uStack_308;
-  undefined8 local_300;
-  undefined8 uStack_2f8;
-  undefined8 local_2f0;
-  undefined8 uStack_2e8;
-  undefined8 local_2e0;
-  undefined8 uStack_2d8;
-  undefined8 local_2d0;
-  undefined8 uStack_2c8;
-  undefined8 local_2c0;
-  undefined8 uStack_2b8;
-  undefined8 local_2b0;
-  undefined8 uStack_2a8;
-  undefined8 local_2a0;
-  undefined8 uStack_298;
-  undefined8 local_290;
-  undefined8 uStack_288;
-  undefined8 local_280;
-  undefined8 uStack_278;
-  undefined8 local_270;
-  undefined8 uStack_268;
-  undefined8 local_260;
-  undefined8 uStack_258;
-  undefined8 local_250;
-  undefined8 uStack_248;
-  undefined8 local_240;
-  undefined8 uStack_238;
-  undefined8 local_230;
-  undefined8 uStack_228;
-  undefined1 auStack_218 [54];
-  char acStack_1e2 [10];
-  undefined5 local_1d8;
-  undefined3 uStack_1d3;
-  undefined5 local_1d0;
-  undefined3 auStack_1cb [76];
-  char acStack_98 [64];
-  long local_58;
-  
-  lVar3 = tpidr_el0;
-  local_58 = *(long *)(lVar3 + 0x28);
-  memcpy(auStack_1340,&PTR_s_libNexusEvasion69252_so_00198c78,0x1020);
-  memcpy(auStack_2360,&PTR_s_libNexusEvasionRuntime69252_so_00199c98,0x1020);
-  dl_iterate_phdr(FUN_00156d68,auStack_1340);
-  dl_iterate_phdr(FUN_00156d68,auStack_2360);
-  uVar9 = 0xffffffff;
-  if (((((1 < local_1330) || (1 < local_2350)) || (uVar9 = 0, local_1330 == 0)) ||
-      (((local_2350 == 0 || (uVar9 = 0xffffffff, local_1320[0] == '\0')) ||
-       ((local_2340 == '\0' || ((local_1328 == 0 || (local_2348 == 0)))))))) ||
-     ((uVar9 = FUN_00156f1c(auStack_1340,&DAT_00110010,0x1d8f0), (int)uVar9 == 0 ||
-      (uVar9 = FUN_00156f1c(auStack_2360,&DAT_00110030,0xc46e0), (int)uVar9 == 0))))
-  goto LAB_00156bcc;
-  iVar7 = FUN_001574ec(local_1320,auStack_218);
-  if ((iVar7 != 0) && (iVar7 = FUN_00157740(auStack_218,0,0), -1 < iVar7)) {
-    uStack_228 = 0;
-    local_230 = 0;
-    uStack_238 = 0;
-    local_240 = 0;
-    uStack_248 = 0;
-    local_250 = 0;
-    uStack_258 = 0;
-    local_260 = 0;
-    uStack_268 = 0;
-    local_270 = 0;
-    uStack_278 = 0;
-    local_280 = 0;
-    uStack_288 = 0;
-    local_290 = 0;
-    uStack_298 = 0;
-    local_2a0 = 0;
-    uStack_2a8 = 0;
-    local_2b0 = 0;
-    uStack_2b8 = 0;
-    local_2c0 = 0;
-    uStack_2c8 = 0;
-    local_2d0 = 0;
-    uStack_2d8 = 0;
-    local_2e0 = 0;
-    uStack_2e8 = 0;
-    local_2f0 = 0;
-    uStack_2f8 = 0;
-    local_300 = 0;
-    uStack_308 = 0;
-    local_310 = 0;
-    uStack_318 = 0;
-    local_320 = 0;
-    lVar10 = dlopen(auStack_218,6);
-    if (lVar10 != 0) {
-LAB_001569f0:
-      close(iVar7);
-      lVar11 = dlsym(lVar10,"nexus_evasion_menu_backend_v1");
-      lVar12 = dlsym(lVar10,"nexus_evasion_bind_image_v1");
-      lVar5 = local_1328;
-      if (((lVar11 == 0) ||
-          (((iVar7 = dladdr(lVar11,&local_1d8), lVar6 = local_1328, iVar7 == 0 ||
-            (CONCAT35(auStack_1cb[0],local_1d0) != lVar5)) || (lVar12 == 0)))) ||
-         ((iVar7 = dladdr(lVar12,&local_1d8), iVar7 == 0 ||
-          (CONCAT35(auStack_1cb[0],local_1d0) != lVar6)))) {
-        dlclose(lVar10);
-        uVar9 = 0xffffffff;
-      }
-      else {
-        uVar9 = 1;
-        param_2[3] = lVar11;
-        param_2[4] = lVar12;
-        uVar4 = DAT_0010f7d8;
-        param_2[1] = lVar10;
-        param_2[2] = local_1328;
-        *param_2 = uVar4;
-      }
-      goto LAB_00156bcc;
-    }
-    iVar8 = FUN_001574ec(auStack_218,acStack_98);
-    if (((((iVar8 != 0) &&
-          (uVar13 = readlink(acStack_98,(char *)&local_1d8,0x13f),
-          0xfffffffffffffec1 < uVar13 - 0x13f)) &&
-         (*(undefined1 *)((long)&local_1d8 + uVar13) = 0, 0x17 < uVar13)) &&
-        ((CONCAT35(uStack_1d3,local_1d8) == 0x6e3a64666d656d2f &&
-          CONCAT53(local_1d0,uStack_1d3) == 0x2d737578656e3a64 &&
-         (iVar8 = strcmp(acStack_1e2 + uVar13," (deleted)"), iVar8 == 0)))) &&
-       (uVar13 - 0x17 < 0x100)) {
-      __memcpy_chk(&local_320,auStack_1cb,uVar13 - 0x17,0x100);
-      auStack_337[uVar13] = 0;
-      uVar13 = __strlen_chk(&local_320,0x100);
-      if ((0x41 < uVar13) && (lVar10 = dlopen((long)&local_2e0 + 1,6), lVar10 != 0))
-      goto LAB_001569f0;
-    }
-    pcVar14 = (char *)dlerror();
-    uVar13 = __strlen_chk(&local_320,0x100);
-    puVar1 = (undefined *)((long)&local_2e0 + 1);
-    if (uVar13 < 0x42) {
-      puVar1 = &DAT_00134f22;
-    }
-    pcVar2 = "unknown";
-    if (pcVar14 != (char *)0x0) {
-      pcVar2 = pcVar14;
-    }
-    __android_log_print(6,"NexusMem","resident lookup failed descriptor=%s soname=%s error=%s",
-                        auStack_218,puVar1,pcVar2);
-    close(iVar7);
-  }
-  uVar9 = 0;
-LAB_00156bcc:
-  if (*(long *)(lVar3 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar9);
-}
-
-/* ===== FUN_00156c50 @ 00156c50 ===== */
-
-void FUN_00156c50(undefined8 param_1,undefined4 param_2,undefined8 param_3)
-
-{
-  nexus_menu_register_backend(param_2,param_3);
-  return;
-}
-
-/* ===== FUN_00156c5c @ 00156c5c ===== */
-
-bool FUN_00156c5c(void)
-
-{
-  int iVar1;
-  
-  nexus_menu_start();
-  iVar1 = nexus_menu_status();
-  return iVar1 != 0;
-}
-
-/* ===== FUN_00156c7c @ 00156c7c ===== */
-
-void FUN_00156c7c(undefined8 param_1,undefined4 param_2)
-
-{
-  bool bVar1;
-  long lVar2;
-  __pid_t _Var3;
-  undefined4 uVar4;
-  int iVar5;
-  undefined8 uVar6;
-  long lVar7;
-  timespec local_48;
-  long local_38;
-  
-  lVar2 = tpidr_el0;
-  local_38 = *(long *)(lVar2 + 0x28);
-  uVar6 = FUN_00169ab8(param_2);
-  iVar5 = DAT_0022f4bc + 1;
-  bVar1 = DAT_0022f4bc < 0x80;
-  DAT_0022f4bc = iVar5;
-  if (bVar1) {
-    _Var3 = getpid();
-    uVar4 = gettid(_Var3);
-    iVar5 = clock_gettime(0,&local_48);
-    if (iVar5 == 0) {
-      lVar7 = local_48.tv_sec * 1000 + (ulong)local_48.tv_nsec / 1000000;
-    }
-    else {
-      lVar7 = 0;
-    }
-    __android_log_print(4,"NexusLab69252",
-                        "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                        ,"nexus_ui_backend_binding",uVar6,0,_Var3,uVar4,lVar7);
-  }
-  if (*(long *)(lVar2 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_0015d224 @ 0015d224 ===== */
-
-/* WARNING: Removing unreachable block (ram,0x0015dc94) */
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0015d224(long param_1,undefined8 param_2,ulong param_3)
-
-{
-  char *pcVar1;
-  undefined4 uVar2;
-  long lVar3;
-  float fVar4;
-  byte bVar5;
-  long *plVar6;
-  __time_t _Var7;
-  __time_t _Var8;
-  bool bVar9;
-  bool bVar10;
-  char cVar11;
-  char cVar12;
-  char cVar13;
-  int iVar14;
-  int iVar15;
-  int iVar16;
-  __pid_t _Var17;
-  int iVar18;
-  undefined4 *puVar19;
-  ulong uVar20;
-  pthread_t __target_thread;
-  undefined8 uVar21;
-  long lVar22;
-  long lVar23;
-  ulong uVar24;
-  undefined *puVar25;
-  long lVar26;
-  long lVar27;
-  char *pcVar28;
-  char *pcVar29;
-  ulong uVar30;
-  uint uVar31;
-  uint uVar32;
-  undefined4 uVar33;
-  ulong uVar34;
-  undefined8 local_1790;
-  int local_1788;
-  char local_1784 [4];
-  long local_1780;
-  undefined8 local_1778;
-  undefined8 local_1770;
-  undefined1 local_1768;
-  undefined1 uStack_1767;
-  undefined2 uStack_1766;
-  float fStack_1764;
-  char local_1760;
-  undefined7 uStack_175f;
-  int local_1750;
-  int local_174c;
-  int local_1744;
-  timespec local_10e0;
-  code *local_10d0;
-  code *pcStack_10c8;
-  undefined8 local_10c0;
-  code *pcStack_10b8;
-  undefined8 local_10b0;
-  undefined8 uStack_10a8;
-  undefined8 local_10a0;
-  undefined8 uStack_1098;
-  undefined8 local_1090;
-  undefined8 uStack_1088;
-  undefined8 local_1080;
-  long lStack_1078;
-  long local_1070;
-  ulong uStack_1068;
-  undefined8 local_d8;
-  undefined8 local_d0;
-  long local_c8;
-  long lStack_c0;
-  long lStack_b8;
-  long lStack_b0;
-  long local_a8;
-  int local_a0;
-  char local_9c;
-  undefined1 local_9b;
-  undefined1 local_9a;
-  undefined1 local_99;
-  long local_78;
-  
-  lVar3 = tpidr_el0;
-  local_78 = *(long *)(lVar3 + 0x28);
-  puVar19 = (undefined4 *)__errno();
-  uVar2 = *puVar19;
-  if (((int)DAT_0022db78 == 0) || (uVar20 = FUN_00193f80(1,&DAT_0025ca14), (uVar20 & 1) != 0))
-  goto LAB_0015e35c;
-  local_1780 = 0;
-  local_1778 = 0;
-  __target_thread = pthread_self();
-  iVar14 = pthread_getname_np(__target_thread,(char *)&local_1780,0x10);
-  if (iVar14 == 0) {
-    iVar14 = gettid();
-    iVar15 = clock_gettime(1,&local_10e0);
-    if (iVar15 == 0) {
-      uVar20 = local_10e0.tv_sec * 1000 + (ulong)local_10e0.tv_nsec / 1000000;
-    }
-    else {
-      uVar20 = 0;
-    }
-    uVar31 = (uint)param_3;
-    if (((((int)DAT_0022f044 != 0) && (uVar21 = FUN_00169574(&DAT_0022f040), (int)uVar21 < 7)) &&
-        (uVar31 == 0)) &&
-       (((0 < iVar14 && (local_1780 == 0x706f6f6c6e69614d && (char)local_1778 == '\0')) &&
-        ((DAT_0022f038 == 0 || (DAT_0022f038 == iVar14)))))) {
-      local_10e0.tv_sec = 0;
-      iVar15 = FUN_0014e7c4(uVar21,DAT_0022d8e0 + 0x12eb9f0,&local_10e0,8);
-      bVar9 = (local_10e0.tv_sec & 7U) != 0;
-      uVar34 = local_10e0.tv_sec;
-      if ((iVar15 == 0 || (ulong)local_10e0.tv_sec < 0x1000) || bVar9) {
-        uVar34 = 0;
-      }
-      if ((iVar15 != 0 && 0xfff < (ulong)local_10e0.tv_sec) && !bVar9) {
-        lVar22 = FUN_00154cf0(uVar34 + 0x90);
-        local_d8 = CONCAT71(local_d8._1_7_,1);
-        if (((lVar22 != 0) &&
-            (uVar21 = FUN_0014e7c4(lVar22,uVar34 + 0x3c,&local_1770,0x10), (int)uVar21 != 0)) &&
-           ((iVar15 = FUN_0014e7c4(uVar21,uVar34 + 0x19c,&local_d8,1), iVar15 != 0 &&
-            ((char)local_d8 == '\0')))) {
-          if ((ABS((float)local_1770) != INFINITY) && (!NAN(ABS((float)local_1770)))) {
-            if ((ABS(local_1770._4_4_) != INFINITY) && (!NAN(ABS(local_1770._4_4_)))) {
-              fVar4 = (float)CONCAT22(uStack_1766,CONCAT11(uStack_1767,local_1768));
-              if (((((ABS(fVar4) != INFINITY) && (!NAN(ABS(fVar4)))) &&
-                   (ABS(fStack_1764) != INFINITY)) &&
-                  (((!NAN(ABS(fStack_1764)) && ((float)local_1770 == 0.0)) &&
-                   ((local_1770._4_4_ == 0.0 && ((960.0 <= fVar4 && (560.0 <= fStack_1764)))))))) &&
-                 ((fVar4 == 8192.0 || fVar4 < 8192.0 != NAN(fVar4) &&
-                  (((fStack_1764 == 8192.0 || fStack_1764 < 8192.0 != NAN(fStack_1764) &&
-                    (lVar23 = FUN_00154cf0(param_1), lVar23 == DAT_0022d8e0 + 0x11abad8)) &&
-                   (iVar15 = FUN_00155084(param_1,lVar22), iVar15 != 0)))))) {
-                local_10e0.tv_nsec = DAT_0022d8e0;
-                local_10d0 = (code *)0x13667e;
-                local_10c0 = FUN_0014e7c4;
-                pcStack_10c8 = (code *)0x135b30;
-                local_10e0.tv_sec = DAT_0010f748;
-                pcStack_10b8 = (code *)0x0;
-                FUN_00169594(&DAT_0022f040,&local_10e0,uVar20,1);
-              }
-            }
-          }
-        }
-      }
-    }
-    if (param_3 == 3) {
-      if ((uVar20 < DAT_0025ca18) && (DAT_0025ca18 - uVar20 < 0x3e9)) {
-        bVar9 = false;
-      }
-      else {
-        DAT_0025ca18 = uVar20 + 0x10;
-        bVar9 = true;
-      }
-LAB_0015d588:
-      bVar10 = false;
-      if (((DAT_0022f03c == 2) && ((DAT_0022d890 & 1) == 0)) &&
-         (((DAT_0022d880._4_4_ & 1) == 0 && ((DAT_0022d88c & 1) == 0)))) {
-        local_10e0.tv_nsec = 0;
-        local_10e0.tv_sec = 0;
-        if ((((DAT_0022f038 < 1) || (iVar14 != DAT_0022f038)) ||
-            (iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 != 0)) ||
-           (local_10e0.tv_sec != 0x706f6f6c6e69614d || (local_10e0.tv_nsec & 0xffU) != 0)) {
-          bVar10 = false;
-        }
-        else {
-          iVar15 = nexus_menu_ui_state(&local_10e0,iVar14);
-          bVar10 = false;
-          if (((iVar15 == 1) && (local_10e0.tv_sec._4_1_ != '\0')) &&
-             (local_10e0.tv_sec._5_1_ == '\0')) {
-            uVar32 = local_10e0.tv_sec._6_1_ - 0x43;
-            if ((uVar32 < 0x32) && ((1L << ((ulong)uVar32 & 0x3f) & 0x22002000cd001U) != 0)) {
-              bVar10 = true;
-            }
-            else {
-              bVar10 = local_10e0.tv_sec._6_1_ == 0x65;
-            }
-          }
-        }
-      }
-      iVar15 = nexus_rich_main_frame(uVar20,param_3 != 3,bVar10);
-      if (iVar15 != 0) {
-        DAT_0022d898 = 0;
-        _DAT_0022d8a0 = 0;
-      }
-    }
-    else {
-      bVar9 = false;
-      iVar15 = 0;
-      if (param_3 == 1) goto LAB_0015d588;
-    }
-    uVar32 = 0;
-    if (((!bVar9) && (param_3 != 3 || iVar15 == 0)) && (uVar32 = uVar31, uVar31 == 3)) {
-      local_10e0.tv_nsec = 0;
-      local_10e0.tv_sec = 0;
-      if (((DAT_0022f038 < 1) || (iVar14 != DAT_0022f038)) ||
-         ((iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 != 0 ||
-          (local_10e0.tv_sec != 0x706f6f6c6e69614d || (char)local_10e0.tv_nsec != '\0')))) {
-LAB_0015d6c4:
-        uVar32 = 3;
-      }
-      else if (((DAT_0022f03c < 1) || (DAT_0022f178 == 0)) ||
-              ((DAT_0022db60 == 0 || ((DAT_0022f180 == 0 || (DAT_0025ca38 == 0)))))) {
-        uVar32 = 3;
-        DAT_002815b0 = 0;
-        DAT_002815b8 = 0;
-      }
-      else {
-        uVar21 = nexus_menu_ui_state(&local_10e0,iVar14);
-        if ((int)uVar21 != 1) goto LAB_0015d6c4;
-        if ((local_10e0.tv_sec._4_1_ == '\0') || (DAT_0022f03c == 2)) {
-          DAT_002815b0 = 0;
-          DAT_002815b8 = 0;
-        }
-        else {
-          if (uVar20 <= DAT_002815b0 - 1) {
-            DAT_002815b0 = uVar20;
-          }
-          if (((DAT_002815b8 & 1) == 0) && (0x270 < uVar20 - DAT_002815b0 >> 4)) {
-            DAT_002815b8 = 1;
-            FUN_00156760(uVar21,"nexus_menu_open_wait","pending_open_deadline",0);
-          }
-        }
-        uVar32 = 3;
-        if (local_10e0.tv_sec._4_1_ != '\0') {
-          uVar32 = 0;
-        }
-      }
-    }
-    if ((((((DAT_0022d890 & 1) == 0) && ((DAT_0022d880._4_4_ & 1) == 0)) && (-1 < DAT_0022f03c)) &&
-        (((uVar21 = nexus_menu_status(), 0 < iVar14 && (uVar32 < 2)) &&
-         (((int)uVar21 != 0 && (local_1780 == 0x706f6f6c6e69614d && (char)local_1778 == '\0'))))))
-       && ((DAT_0022f038 == 0 || (DAT_0022f038 == iVar14)))) {
-      local_10e0.tv_sec = 0;
-      uVar21 = FUN_0014e7c4(uVar21,DAT_0022d8e0 + 0x12eb9f0,&local_10e0,8);
-      bVar9 = (int)uVar21 != 0;
-      bVar10 = (local_10e0.tv_sec & 7U) != 0;
-      uVar34 = local_10e0.tv_sec;
-      if ((!bVar9 || (ulong)local_10e0.tv_sec < 0x1000) || bVar10) {
-        uVar34 = 0;
-      }
-      if ((bVar9 && 0xfff < (ulong)local_10e0.tv_sec) && !bVar10) {
-        local_10e0.tv_sec = 0;
-        uVar21 = FUN_0014e7c4(uVar21,uVar34 + 0x90,&local_10e0,8);
-        _Var7 = local_10e0.tv_sec;
-        if ((((int)uVar21 != 0) && (0xfff < (ulong)local_10e0.tv_sec)) &&
-           ((local_10e0.tv_sec & 7U) == 0)) {
-          local_1784[0] = '\x01';
-          uVar21 = FUN_0014e7c4(uVar21,uVar34 + 0x3c,&local_d8,0x10);
-          if ((((int)uVar21 != 0) &&
-              (iVar15 = FUN_0014e7c4(uVar21,uVar34 + 0x19c,local_1784,1), iVar15 != 0)) &&
-             (local_1784[0] == '\0')) {
-            if ((ABS((float)local_d8) != INFINITY) && (!NAN(ABS((float)local_d8)))) {
-              if ((ABS(local_d8._4_4_) != INFINITY) && (!NAN(ABS(local_d8._4_4_)))) {
-                if ((ABS((float)local_d0) != INFINITY) && (!NAN(ABS((float)local_d0)))) {
-                  if ((ABS(local_d0._4_4_) != INFINITY) &&
-                     ((((((!NAN(ABS(local_d0._4_4_)) && ((float)local_d8 == 0.0)) &&
-                         (local_d8._4_4_ == 0.0)) &&
-                        ((960.0 <= (float)local_d0 && (560.0 <= local_d0._4_4_)))) &&
-                       ((float)local_d0 == 8192.0 ||
-                        (float)local_d0 < 8192.0 != NAN((float)local_d0))) &&
-                      (local_d0._4_4_ == 8192.0 || local_d0._4_4_ < 8192.0 != NAN(local_d0._4_4_))))
-                     ) {
-                    if (DAT_0022f03c == 0) {
-                      if (((uVar32 == 0) &&
-                          (lVar22 = FUN_00154cf0(param_1), lVar22 == DAT_0022d8e0 + 0x11abad8)) &&
-                         (iVar15 = FUN_00155084(param_1,_Var7), iVar15 != 0)) {
-                        if (DAT_0025ca20 == 0) {
-                          DAT_0025ca20 = uVar20;
-                        }
-                        if (uVar20 - DAT_0025ca20 < 0xea61) {
-                          if (DAT_0025ca28 <= uVar20) {
-                            DAT_0025ca28 = uVar20 + 200;
-                            uVar21 = FUN_001554b0();
-                            if ((int)uVar21 == 0) {
-                              if (DAT_0025ca30 < 4) {
-                                local_10e0.tv_sec = CONCAT71(local_10e0.tv_sec._1_7_,0xff);
-                                local_1770 = (long *)CONCAT71(local_1770._1_7_,0xff);
-                                uVar21 = FUN_0014e7c4(uVar21,DAT_0022d8e0 + 0x12eb0e8,&local_10e0,1)
-                                ;
-                                uVar21 = FUN_0014e7c4(uVar21,DAT_0022d8e0 + 0x12eb170,&local_1770,1)
-                                ;
-                                pcVar29 = "ui_sc_exports_pending";
-                                if ((char)local_1770 != '\0') {
-                                  pcVar29 = "ui_prefetch_active";
-                                }
-                                pcVar28 = "asset_probe_read_failed";
-                                if ((char)local_10e0.tv_sec != -1) {
-                                  pcVar28 = pcVar29;
-                                }
-                                FUN_00156760(uVar21,"nexus_shell_waiting_assets",pcVar28,0);
-                                DAT_0025ca30 = DAT_0025ca30 + 1;
-                              }
-                            }
-                            else {
-                              iVar15 = FUN_001608e0(uVar34,_Var7,iVar14);
-                              if (iVar15 == -1) goto LAB_0015d98c;
-                              if (iVar15 != 0) goto LAB_0015d8c0;
-                            }
-                          }
-                        }
-                        else {
-                          FUN_001607dc("asset_readiness_deadline");
-                        }
-                      }
-                    }
-                    else {
-                      if (uVar32 != 1) {
-LAB_0015d8c0:
-                        if (DAT_0022f03c == 2) {
-                          uVar31 = 0x28;
-                          if ((int)DAT_0022d880 != 0) {
-                            uVar31 = 100;
-                          }
-                          if ((((DAT_0022d8a4 != 0) && (DAT_0022d8a0 == uVar31)) &&
-                              (DAT_0022d898 <= uVar20)) && (uVar20 - DAT_0022d898 < (ulong)uVar31))
-                          goto LAB_0015e280;
-                          _DAT_0022d8a0 = CONCAT44(1,uVar31);
-                          DAT_0022d898 = uVar20;
-                        }
-                      }
-                      if (((uVar34 == DAT_0022f178) && (_Var7 == DAT_0022db60)) &&
-                         (iVar15 = FUN_00154d5c(DAT_0022f180,_Var7), iVar15 != 0)) {
-                        uVar21 = FUN_0015922c();
-                        uVar21 = FUN_00160c3c(uVar21,&local_d8);
-                        if ((int)uVar21 != 0) {
-                          if ((int)uVar21 == -1) {
-LAB_0015d98c:
-                            FUN_001607dc(PTR_s_launcher_initializing_001a7c58);
-                          }
-                          else {
-                            if ((DAT_0025ca34 & 1) == 0) {
-                              local_1770 = (long *)0x0;
-                              DAT_0025ca34 = 1;
-                              iVar15 = FUN_00156614(uVar21,&local_10e0,0x1000,&local_1770);
-                              if (iVar15 != 0) {
-                                uVar21 = nexus_menu_import(&local_10e0,local_1770,iVar14);
-                                pcVar29 = "restored";
-                                if (1 < (int)uVar21 - 1U) {
-                                  pcVar29 = "rejected";
-                                }
-                                FUN_00156760(uVar21,"nexus_ui_settings_restore",pcVar29,0);
-                              }
-                            }
-                            local_1788 = 0;
-                            local_1790 = 0;
-                            iVar15 = FUN_001612c8(&local_1788,(long)&local_1790 + 4,&local_1790);
-                            _Var8 = local_10e0.tv_sec;
-                            if ((uVar32 == 1) || (iVar15 != 0)) {
-                              local_10e0.tv_sec = local_10e0.tv_sec & 0xffffffff00000000;
-                              if (iVar15 == 0) {
-                                if (DAT_0022f180 != param_1) {
-                                  iVar16 = (**(code **)(DAT_0025ca38 + 0x18))(param_1,&local_10e0);
-                                  iVar18 = (uint)local_10e0.tv_sec;
-                                  goto LAB_0015dd00;
-                                }
-                                uVar24 = FUN_001613ac(iVar14);
-                                pcVar29 = "queued";
-                                if (1 < (int)uVar24 - 1U) {
-                                  pcVar29 = "blocked";
-                                }
-                                pcVar28 = "nexus_android_overlay_open";
-                                uVar30 = 1;
-                              }
-                              else {
-                                iVar16 = 1;
-                                local_10e0.tv_sec._4_4_ = SUB84(_Var8,4);
-                                local_10e0.tv_sec = CONCAT44(local_10e0.tv_sec._4_4_,local_1788);
-                                iVar18 = local_1788;
-LAB_0015dd00:
-                                if ((iVar16 == 0) || (iVar18 == 0)) goto LAB_0015e0c8;
-                                if ((int)local_1790 == 0) {
-LAB_0015dd30:
-                                  uVar24 = FUN_0016169c(iVar18,&local_1770);
-                                  if ((int)uVar24 != 0) goto LAB_0015e058;
-                                  uVar24 = local_10e0.tv_sec & 0xffffffff;
-                                  if ((uint)local_10e0.tv_sec == 0x97) {
-                                    if (499 < uVar20 - DAT_0025ca40) goto LAB_0015de20;
-                                    local_1770 = (long *)((ulong)local_1770 & 0xffffffff00000000);
-                                    goto LAB_0015e058;
-                                  }
-                                  if (((uint)local_10e0.tv_sec & 0xfffffffc) == 0x94) {
-LAB_0015de20:
-                                    uVar24 = FUN_00161970();
-LAB_0015e054:
-                                    local_1770 = (long *)CONCAT44(local_1770._4_4_,(int)uVar24);
-                                    goto LAB_0015e058;
-                                  }
-                                  if (((uint)local_10e0.tv_sec & 0xfffffffe) == 0x20000) {
-                                    uVar33 = 1;
-                                    if ((uint)local_10e0.tv_sec == 0x20000) {
-                                      uVar33 = 0xffffffff;
-                                    }
-                                    uVar24 = nexus_menu_scroll_battle(uVar33,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21028) {
-                                    uVar24 = nexus_menu_server_open(iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec - 0x24000 < 0x30) {
-                                    uVar24 = nexus_menu_server_action(uVar24,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x2102f) {
-                                    uVar24 = nexus_menu_theme_open(iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21036) {
-                                    uVar24 = nexus_script_port_fonts_open();
-LAB_0015decc:
-                                    local_1770 = (long *)CONCAT44(local_1770._4_4_,
-                                                                  (uint)((int)uVar24 != 0));
-                                    goto LAB_0015e058;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21031) {
-                                    uVar24 = nexus_script_port_fps_open();
-                                    goto LAB_0015decc;
-                                  }
-                                  if (((uint)local_10e0.tv_sec & 0xffffffc0) == 0x26000) {
-                                    uVar24 = nexus_menu_theme_action(uVar24,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21030) {
-                                    uVar24 = nexus_menu_debug_open(iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec - 0x27000 < 0x120) {
-                                    uVar24 = nexus_menu_debug_action(uVar24,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21033) {
-                                    uVar24 = nexus_menu_profile_open(iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec - 0x28000 < 6) {
-                                    uVar24 = nexus_menu_profile_action(uVar24,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x21035) {
-                                    uVar24 = nexus_menu_editor_open(iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if (((uint)local_10e0.tv_sec & 0xfffffe00) == 0x29000) {
-                                    uVar24 = nexus_menu_editor_action(uVar24,iVar14);
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec - 0x21000 < 0x37) {
-                                    uVar24 = FUN_001924cc();
-                                    goto LAB_0015e054;
-                                  }
-                                  if ((uint)local_10e0.tv_sec == 0x20002) {
-                                    if (iVar15 == 0) {
-                                      uVar24 = FUN_00161b84(uVar20,iVar14);
-                                    }
-                                    else {
-                                      uVar24 = FUN_00161acc(uVar20,iVar14);
-                                    }
-                                    goto LAB_0015e054;
-                                  }
-                                  uVar24 = nexus_menu_dispatch(uVar24,0,0,iVar14);
-                                  uVar30 = local_10e0.tv_sec & 0xffffffff;
-                                  iVar15 = (int)uVar24;
-                                  uVar31 = iVar15 - 1;
-                                  local_1770 = (long *)CONCAT44(local_1770._4_4_,iVar15);
-                                  if (((uint)local_10e0.tv_sec == 0x32) && (uVar31 < 2)) {
-                                    if (((int)DAT_0022d880 == 0) &&
-                                       ((DAT_0022dfbc == 0 && (DAT_0022d894 == 0))))
-                                    goto LAB_0015e058;
-                                    DAT_0022d88c = 0;
-                                    uVar24 = FUN_001645e0(0,uVar20);
-                                    goto LAB_0015e054;
-                                  }
-                                }
-                                else {
-                                  uVar24 = FUN_00161538(iVar18,local_1790._4_4_,iVar14);
-                                  local_1770 = (long *)CONCAT44(local_1770._4_4_,(int)uVar24);
-                                  if ((int)uVar24 == -0x80000000) {
-                                    iVar18 = (uint)local_10e0.tv_sec;
-                                    goto LAB_0015dd30;
-                                  }
-LAB_0015e058:
-                                  uVar30 = local_10e0.tv_sec & 0xffffffff;
-                                  uVar31 = (int)(float)local_1770 - 1;
-                                  iVar15 = (int)(float)local_1770;
-                                }
-                                if (((int)uVar30 == 0x32) && (uVar31 < 2)) {
-                                  uVar24 = FUN_00192228(0);
-                                  uVar30 = local_10e0.tv_sec & 0xffffffff;
-                                  if ((int)uVar24 != 1) {
-                                    iVar15 = (int)uVar24;
-                                  }
-                                }
-                                pcVar1 = "pending";
-                                if (iVar15 != 2) {
-                                  pcVar1 = "blocked";
-                                }
-                                pcVar28 = "nexus_menu_click";
-                                pcVar29 = "acknowledged";
-                                if (iVar15 != 1) {
-                                  pcVar29 = pcVar1;
-                                }
-                              }
-                              DAT_0022d898 = 0;
-                              _DAT_0022d8a0 = 0;
-                              FUN_00156760(uVar24,pcVar28,pcVar29,uVar30);
-                            }
-LAB_0015e0c8:
-                            FUN_00161c58(iVar14);
-                            iVar15 = nexus_menu_ui_state(&local_a0,iVar14);
-                            if (iVar15 == 1) {
-                              memset(&local_10e0,0,0x690);
-                              lVar22 = local_10e0.tv_nsec;
-                              local_10e0.tv_sec = CONCAT44(local_10e0.tv_sec._4_4_,local_a0);
-                              local_10e0.tv_nsec._4_4_ = SUB84(lVar22,4);
-                              local_10e0.tv_nsec._0_4_ =
-                                   CONCAT13(local_99,CONCAT12(local_9b,CONCAT11(local_9c,local_9a)))
-                              ;
-                              if ((local_9c == '\0') ||
-                                 (iVar15 = FUN_0016205c(&local_10e0,iVar14), iVar15 == 1)) {
-                                FUN_00162118(&local_10e0);
-                                FUN_00162260(&local_10e0);
-                                uVar33 = 0x28;
-                                if ((int)DAT_0022d880 != 0) {
-                                  uVar33 = 100;
-                                }
-                                _DAT_0022d8a0 = CONCAT44(1,uVar33);
-                                DAT_0022d898 = uVar20;
-                                FUN_00162390((local_10e0.tv_nsec._1_1_ != '\0' &&
-                                             (char)local_10e0.tv_nsec == 'Y') &&
-                                             local_10e0.tv_nsec._2_1_ == '\0',uVar20);
-                                FUN_0016291c(&local_10e0,iVar14);
-                                memcpy(&local_1770,&local_10e0,0x690);
-                                uStack_1767 = 0;
-                                iVar15 = (**(code **)(DAT_0025ca38 + 0x10))
-                                                   ((ulong)local_d0 & 0xffffffff,local_d0._4_4_,
-                                                    &local_1770,uVar34,_Var7,uVar20);
-                                pcVar29 = "android_overlay_services_waiting";
-                                if ((1 < iVar15 - 2U) && (iVar15 != 0)) {
-                                  if (iVar15 == -1) {
-                                    FUN_001607dc("rich_services_stopped");
-                                    goto LAB_0015e280;
-                                  }
-                                  if (iVar15 != 4) {
-                                    pcVar29 = "android_overlay_bridge_ready";
-                                  }
-                                }
-                                uVar21 = FUN_0015922c();
-                                iVar15 = FUN_00160c3c(uVar21,&local_d8);
-                                if (iVar15 != 0) {
-                                  if (iVar15 == -1) goto LAB_0015d98c;
-                                  if (DAT_0022f03c == 1) {
-                                    DAT_0022f03c = 2;
-                                    uVar21 = FUN_00183cdc(3,iVar14,pcVar29);
-                                    FUN_00156760(uVar21,"nexus_menu_attached",pcVar29,0);
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                      else {
-                        FUN_001607dc("stage_generation_or_launcher_membership");
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-LAB_0015e280:
-    if (param_3 == 3) {
-      if ((int)DAT_0022db78 == 0) {
-LAB_0015e2ec:
-        DAT_0022db70 = 0;
-      }
-      else {
-        local_10e0.tv_nsec = 0;
-        local_10e0.tv_sec = 0;
-        if ((((DAT_0022f038 < 1) || (iVar14 != DAT_0022f038)) ||
-            (iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 != 0)) ||
-           (((local_10e0.tv_sec != 0x706f6f6c6e69614d || (local_10e0.tv_nsec & 0xffU) != 0 ||
-             (iVar15 = FUN_0014fac4(), iVar15 == 0)) || ((DAT_0022d880._4_4_ & 1) != 0))))
-        goto LAB_0015e2ec;
-        if ((DAT_0022f4b8 != 0) && (DAT_0025cb30 == 0)) {
-          DAT_0025cb30 = uVar20;
-        }
-        if ((((DAT_0022f4b8 != 0) && (DAT_0025cb30 != 0)) && (DAT_0025cb30 <= uVar20)) &&
-           (0x752 < uVar20 - DAT_0025cb30 >> 5)) {
-          DAT_0022f4b8 = 0;
-          DAT_0022dfb8 = 1;
-          DAT_0025cb30 = 0;
-          uVar31 = DAT_0022f4bc + 1;
-          DAT_0022d898 = 0;
-          _DAT_0022d8a0 = 0;
-          bVar9 = DAT_0022f4bc < 0x80;
-          DAT_0022f4bc = uVar31;
-          if (bVar9) {
-            _Var17 = getpid();
-            iVar15 = clock_gettime(0,&local_10e0);
-            if (iVar15 == 0) {
-              lVar22 = local_10e0.tv_sec * 1000 + (ulong)local_10e0.tv_nsec / 1000000;
-            }
-            else {
-              lVar22 = 0;
-            }
-            __android_log_print(4,"NexusLab69252",
-                                "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                                ,"performance_graphics","saved_mode_restore_unavailable",0x20002,
-                                _Var17,iVar14,lVar22);
-          }
-        }
-        uVar31 = DAT_0022f4bc;
-        uVar21 = local_1790;
-        bVar5 = DAT_0022d890;
-        if (((DAT_0022f4b8 != 0) && ((DAT_0022d88c & 1) == 0)) &&
-           (((DAT_0022d890 & 1) == 0 && (DAT_0022dfbc == 0)))) {
-          iVar15 = FUN_00150378();
-          if ((iVar15 != 0) &&
-             (iVar15 = nexus_ui_graphics_resources(DAT_0022f178,DAT_0022db60,DAT_0022f180,0),
-             iVar15 == 1)) {
-            DAT_0022f4b8 = 0;
-            DAT_0022d88c = 1;
-            DAT_0025cb30 = 0;
-            uVar31 = DAT_0022f4bc + 1;
-            bVar9 = DAT_0022f4bc < 0x80;
-            DAT_0022d8a8 = uVar20;
-            DAT_0022f4bc = uVar31;
-            if (bVar9) {
-              _Var17 = getpid();
-              iVar15 = clock_gettime(0,&local_10e0);
-              if (iVar15 == 0) {
-                lVar22 = local_10e0.tv_sec * 1000 + (ulong)local_10e0.tv_nsec / 1000000;
-              }
-              else {
-                lVar22 = 0;
-              }
-              __android_log_print(4,"NexusLab69252",
-                                  "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                                  ,"performance_graphics","restoring_saved_mode",0x20002,_Var17,
-                                  iVar14,lVar22);
-            }
-          }
-          uVar31 = DAT_0022f4bc;
-          uVar21 = local_1790;
-          bVar5 = DAT_0022d890 & 1;
-        }
-        DAT_0022f4bc = uVar31;
-        local_1790 = uVar21;
-        if (bVar5 != 0) {
-          if (uVar20 != DAT_00281a20) {
-            if ((uVar20 < DAT_00281a20) || (60000 < uVar20 - DAT_00281a20)) {
-              DAT_0022d890 = 0;
-              DAT_0022dfb8 = 1;
-              DAT_0022d880._5_3_ = (undefined3)(DAT_0022d880._4_4_ >> 8);
-              DAT_0022d880._4_4_ = CONCAT31(DAT_0022d880._5_3_,1);
-              DAT_0022f4bc = uVar31 + 1;
-              DAT_0022d898 = 0;
-              _DAT_0022d8a0 = 0;
-              if (uVar31 < 0x80) {
-                _Var17 = getpid();
-                iVar15 = clock_gettime(0,&local_10e0);
-                if (iVar15 == 0) {
-                  lVar22 = local_10e0.tv_sec * 1000 + (ulong)local_10e0.tv_nsec / 1000000;
-                }
-                else {
-                  lVar22 = 0;
-                }
-                __android_log_print(4,"NexusLab69252",
-                                    "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                                    ,"performance_graphics","texture_reload_unverified",0x20002,
-                                    _Var17,iVar14,lVar22);
-              }
-            }
-            else {
-              local_10e0.tv_nsec = 0;
-              local_10d0 = FUN_0014e7c4;
-              pcStack_10c8 = FUN_001556ec;
-              local_10c0 = FUN_00155848;
-              uVar31 = (uint)local_1788 >> 8;
-              local_1788 = CONCAT31((int3)uVar31,1);
-              local_1790._5_3_ = (undefined3)((ulong)uVar21 >> 0x28);
-              local_1790._0_4_ = (int)uVar21;
-              local_1790._0_5_ = CONCAT14(1,(int)local_1790);
-              local_10e0.tv_sec = DAT_0022d8e0;
-              iVar15 = FUN_00150378();
-              if ((((iVar15 != 0) &&
-                   (uVar21 = FUN_00150710(&local_10e0,&local_1770), (int)uVar21 != 0)) &&
-                  (local_1770 == DAT_0022dfd8)) &&
-                 (((((CONCAT22(uStack_1766,CONCAT11(uStack_1767,local_1768)) == DAT_0022dfe0 &&
-                     (fStack_1764 == DAT_0022dfe4)) &&
-                    ((local_1760 == DAT_0022dfe8 &&
-                     ((uVar21 = FUN_0014e7c4(uVar21,(long)local_1770 + 0x101,&local_1788,1),
-                      (int)uVar21 != 0 && ((char)local_1788 == '\0')))))) &&
-                   (iVar15 = FUN_0014e7c4(uVar21,(long)local_1770 + 0x1cd,(long)&local_1790 + 4,1),
-                   iVar15 != 0)) &&
-                  (((bVar9 = local_1790._4_1_ == '\0', bVar9 &&
-                    (iVar15 = FUN_00167524(&local_a0,&local_d8), iVar15 != 0)) &&
-                   (local_a0 != DAT_00281a28)))))) {
-                iVar15 = 0x800;
-                if (fStack_1764 != 0.0 &&
-                    CONCAT22(uStack_1766,CONCAT11(uStack_1767,local_1768)) != 0) {
-                  iVar15 = 0x1000;
-                }
-                if (((float)local_d8 == (float)iVar15) && (local_d8._4_4_ == (float)iVar15)) {
-                  uVar21 = FUN_001608e0(DAT_0022f178,DAT_0022db60,iVar14);
-                  if ((int)uVar21 != 0) {
-                    if ((int)uVar21 != -1) {
-                      DAT_0022d890 = 0;
-                      DAT_0022dfb8 = 0;
-                      DAT_0022d894 = 0;
-                      DAT_0025cb38 = DAT_00281a2c;
-                      pcVar29 = "stock_atlas_restored";
-                      if (DAT_00281a2c != 0) {
-                        pcVar29 = "lowres_atlas_verified";
-                      }
-                      DAT_0022d898 = 0;
-                      _DAT_0022d8a0 = 0;
-                      FUN_00156760(uVar21,"performance_graphics",pcVar29,0x20002);
-                      goto LAB_0015e888;
-                    }
-                    DAT_0022dfb8 = 1;
-                    DAT_0022d880._4_4_ = CONCAT31(DAT_0022d880._5_3_,1);
-                  }
-                }
-              }
-            }
-          }
-          goto LAB_0015e2ec;
-        }
-LAB_0015e888:
-        bVar9 = false;
-        if ((DAT_0022d88c == 1) && (DAT_0022d8a8 <= uVar20 && uVar20 - DAT_0022d8a8 != 0)) {
-          if (uVar20 - DAT_0022d8a8 >> 5 < 0x271) {
-            local_10e0.tv_nsec = 0;
-            local_10e0.tv_sec = 0;
-            local_d8 = CONCAT44(local_d8._4_4_,0xffffffff);
-            local_a0 = CONCAT31(local_a0._1_3_,1);
-            if (((((DAT_0022f038 < 1) || (iVar14 != DAT_0022f038)) ||
-                 (iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 != 0
-                 )) || ((local_10e0.tv_sec != 0x706f6f6c6e69614d ||
-                         (local_10e0.tv_nsec & 0xffU) != 0 || (iVar15 = FUN_0014fac4(), iVar15 == 0)
-                        ))) ||
-               ((uVar21 = nexus_menu_ui_state(&local_1770,iVar14), (int)uVar21 != 1 ||
-                (local_1770._5_1_ != '\0')))) {
-LAB_0015e920:
-              iVar15 = 0;
-              goto LAB_0015e928;
-            }
-            local_10e0.tv_sec = 0;
-            uVar21 = FUN_0014e7c4(uVar21,DAT_0022d8e0 + 0x12eb9f0,&local_10e0,8);
-            uVar34 = local_10e0.tv_sec;
-            if (((local_10e0.tv_sec & 7U) != 0 || (ulong)local_10e0.tv_sec < 0x1000) ||
-                (int)uVar21 == 0) {
-              uVar34 = 0;
-            }
-            if (uVar34 != DAT_0022f178) goto LAB_0015e920;
-            local_10e0.tv_sec = 0;
-            iVar15 = FUN_0014e7c4(uVar21,uVar34 + 0x90,&local_10e0,8);
-            uVar34 = local_10e0.tv_sec;
-            if (((local_10e0.tv_sec & 7U) != 0 || (ulong)local_10e0.tv_sec < 0x1000) || iVar15 == 0)
-            {
-              uVar34 = 0;
-            }
-            if (((uVar34 != DAT_0022db60) || (uVar21 = FUN_00154d5c(DAT_0022f180), (int)uVar21 == 0)
-                ) || (iVar15 = FUN_0014e7c4(uVar21,DAT_0022f178 + 0x19c,&local_a0,1), iVar15 == 0))
-            goto LAB_0015e920;
-            if ((char)local_a0 == '\0') {
-              lVar22 = FUN_00154cf0(DAT_0022d8e0 + 0x1307e20);
-              if ((((lVar22 == 0) ||
-                   (iVar15 = FUN_0014e7c4(lVar22,lVar22 + 0x50,&local_d8,4), iVar15 == 0)) ||
-                  ((int)(float)local_d8 < 0)) ||
-                 ((0x40 < (int)(float)local_d8 || ((float)local_d8 == 7.00649e-45))))
-              goto LAB_0015e920;
-              local_10e0.tv_sec = DAT_0022d8e0;
-              local_10d0 = FUN_0014e7c4;
-              local_10e0.tv_nsec = 0;
-              pcStack_10c8 = FUN_00167750;
-              local_10c0 = FUN_00167888;
-              pcStack_10b8 = FUN_0016793c;
-              iVar15 = FUN_00167e78(&local_10e0);
-              if (iVar15 != 2) goto LAB_0015e928;
-            }
-          }
-          else {
-            iVar15 = 0;
-LAB_0015e928:
-            if (((iVar15 != 0) || ((DAT_0022dfb8 & 1) != 0)) ||
-               ((uVar20 < DAT_0022d8a8 || (0x270 < uVar20 - DAT_0022d8a8 >> 5)))) {
-              pcVar29 = "game_reload_unverified";
-              if (iVar15 != -1) {
-                pcVar29 = "game_reload_unavailable";
-              }
-              DAT_0022d88c = 0;
-              DAT_0022d894 = (uint)(iVar15 != 1);
-              uVar31 = DAT_0022f4bc + 1;
-              pcVar28 = "game_reload_requested";
-              if (iVar15 != 1) {
-                pcVar28 = pcVar29;
-              }
-              DAT_0022d898 = 0;
-              _DAT_0022d8a0 = 0;
-              bVar9 = DAT_0022f4bc < 0x80;
-              DAT_0022f4bc = uVar31;
-              if (bVar9) {
-                _Var17 = getpid();
-                iVar18 = clock_gettime(0,&local_10e0);
-                if (iVar18 == 0) {
-                  lVar22 = local_10e0.tv_sec * 1000 + (ulong)local_10e0.tv_nsec / 1000000;
-                }
-                else {
-                  lVar22 = 0;
-                }
-                __android_log_print(4,"NexusLab69252",
-                                    "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                                    ,"performance_reload",pcVar28,0x20002,_Var17,iVar14,lVar22);
-              }
-              bVar9 = iVar15 == 1 || iVar15 == -1;
-              goto LAB_0015ea40;
-            }
-          }
-          bVar9 = false;
-        }
-LAB_0015ea40:
-        if ((bVar9) || (DAT_0022f03c < 1)) goto LAB_0015e2ec;
-        FUN_0015f334(3,0,0,uVar20);
-        local_10e0.tv_nsec = 0;
-        local_10e0.tv_sec = 0;
-        if ((((0 < DAT_0022f038) && (iVar14 == DAT_0022f038)) &&
-            (iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 == 0)) &&
-           (local_10e0.tv_sec == 0x706f6f6c6e69614d && (char)local_10e0.tv_nsec == '\0')) {
-          iVar15 = pthread_once((pthread_once_t *)&DAT_0022f1d0,FUN_001552c0);
-          if ((DAT_0022f1d8 == (code *)0x0) || (iVar15 = (*DAT_0022f1d8)(iVar15), iVar15 != 1)) {
-            DAT_0022db68 = 0;
-            DAT_0022db6c = 0;
-          }
-          pthread_mutex_lock((pthread_mutex_t *)((long)&DAT_0025c928 + 4));
-          uStack_10a8 = uRam000000000025c990;
-          local_10b0 = _DAT_0025c988;
-          pcStack_10b8 = pcRam000000000025c980;
-          local_10c0 = _DAT_0025c978;
-          pcStack_10c8 = pcRam000000000025c970;
-          local_10d0 = _DAT_0025c968;
-          local_10e0.tv_nsec = uRam000000000025c960;
-          local_10e0.tv_sec = _DAT_0025c958;
-          uStack_1098 = uRam000000000025c9a0;
-          local_10a0 = _DAT_0025c998;
-          uStack_1088 = uRam000000000025c9b0;
-          local_1090 = _DAT_0025c9a8;
-          lStack_1078 = DAT_0025c9c0;
-          local_1080 = _DAT_0025c9b8;
-          uStack_1068 = DAT_0025c9d0;
-          local_1070 = DAT_0025c9c8;
-          uRam000000000025c960 = 0;
-          _DAT_0025c958 = 0;
-          pcRam000000000025c970 = (code *)0x0;
-          _DAT_0025c968 = (code *)0x0;
-          uRam000000000025c9a0 = 0;
-          _DAT_0025c998 = 0;
-          uRam000000000025c9b0 = 0;
-          _DAT_0025c9a8 = 0;
-          pcRam000000000025c980 = (code *)0x0;
-          _DAT_0025c978 = (code *)0x0;
-          uRam000000000025c990 = 0;
-          _DAT_0025c988 = 0;
-          DAT_0025c9c0 = 0;
-          _DAT_0025c9b8 = 0;
-          DAT_0025c9d0 = 0;
-          DAT_0025c9c8 = 0;
-          pthread_mutex_unlock((pthread_mutex_t *)((long)&DAT_0025c928 + 4));
-          iVar15 = (uint)local_10e0.tv_sec;
-          if ((uint)local_10e0.tv_sec != 0) {
-            FUN_0014ef90(&local_1770,uVar20);
-            iVar18 = FUN_00159ac0();
-            if (((iVar18 == 0) || (local_1750 == 0)) ||
-               ((local_1744 != 0 ||
-                ((((CONCAT71(uStack_175f,local_1760) != lStack_1078 ||
-                   (CONCAT44(fStack_1764,CONCAT22(uStack_1766,CONCAT11(uStack_1767,local_1768))) !=
-                    local_1070)) || (uVar20 < uStack_1068)) || (5000 < uVar20 - uStack_1068)))))) {
-              puVar25 = &DAT_00135c8a;
-LAB_0015ec24:
-              FUN_0015b620(puVar25);
-            }
-            else {
-              uVar34 = (ulong)&local_10e0 | 4;
-              if (iVar15 == 0x7f) {
-                uVar21 = __strlen_chk(uVar34,0x7c);
-                iVar15 = FUN_00159e08(uVar34,uVar21,&local_d8);
-                if (iVar15 != 0) {
-                  puVar25 = &UNK_001349cd;
-                  if ((float)local_d8 != 0.0) {
-                    puVar25 = &DAT_0013b049;
-                  }
-                  DAT_0022db6c = (int)(float)local_d8;
-                  goto LAB_0015ec24;
-                }
-              }
-              else {
-                uVar21 = __strlen_chk(uVar34,0x7c);
-                iVar15 = FUN_00159f20(uVar34,uVar21,&local_a0);
-                if (iVar15 != 0) {
-                  local_d8 = DAT_0022d8e0;
-                  local_d0 = FUN_0014e7c4;
-                  local_a8 = DAT_0022d8e0 + 0x7acd48;
-                  local_c8 = DAT_0022d8e0 + _DAT_0010fad0;
-                  lStack_c0 = DAT_0022d8e0 + _UNK_0010fad8;
-                  lStack_b8 = DAT_0022d8e0 + _DAT_0010f940;
-                  lStack_b0 = DAT_0022d8e0 + _UNK_0010f948;
-                  iVar15 = FUN_00168764(&local_d8,local_10e0.tv_sec & 0xffffffff,&local_a0,
-                                        CONCAT44(DAT_0022db6c,DAT_0022db68));
-                  puVar25 = &UNK_00135ce7;
-                  if (iVar15 != 0) {
-                    puVar25 = &DAT_0013a43d;
-                  }
-                  goto LAB_0015ec24;
-                }
-              }
-            }
-          }
-        }
-        if (DAT_0025c920 != 0) {
-          local_10e0.tv_nsec = 0;
-          local_10e0.tv_sec = 0;
-          if (((0 < DAT_0022f038) && (iVar14 == DAT_0022f038)) &&
-             (((((iVar15 = pthread_getname_np(__target_thread,(char *)&local_10e0,0x10), iVar15 == 0
-                 && ((local_10e0.tv_sec == 0x706f6f6c6e69614d && (char)local_10e0.tv_nsec == '\0' &&
-                     (iVar15 = pthread_once((pthread_once_t *)&DAT_0022f1d0,FUN_001552c0),
-                     DAT_0022f1d8 != (code *)0x0)))) &&
-                (iVar15 = (*DAT_0022f1d8)(iVar15), iVar15 == 1)) &&
-               (((uVar20 <= DAT_00281a30 - 1 || (999 < uVar20 - DAT_00281a30)) &&
-                (DAT_00281a30 = uVar20, FUN_0014ef90(&local_10e0,uVar20), uVar20 != 0)))) &&
-              (((((int)local_10c0 != 0 && (local_10c0._4_4_ != 0)) &&
-                ((uVar20 <= DAT_00281a38 - 1 || (0x270 < uVar20 - DAT_00281a38 >> 3)))) &&
-               ((local_1770 = (long *)0x0, DAT_0022f4c8 != (long *)0x0 && (DAT_0022f4e8 != 0))))))))
-          {
-            iVar15 = (**(code **)(*DAT_0022f4c8 + 0x30))(DAT_0022f4c8,&local_1770,0x10006);
-            if (iVar15 == 0) {
-              bVar9 = true;
-            }
-            else {
-              if ((iVar15 != -2) ||
-                 (iVar15 = (**(code **)(*DAT_0022f4c8 + 0x20))(DAT_0022f4c8,&local_1770,0),
-                 iVar15 != 0)) goto LAB_0015ec7c;
-              bVar9 = false;
-            }
-            plVar6 = local_1770;
-            if (local_1770 != (long *)0x0) {
-              iVar15 = (**(code **)(*local_1770 + 0x98))(local_1770,0xc);
-              if (-1 < iVar15) {
-                lVar22 = (**(code **)(*plVar6 + 0x488))(plVar6,DAT_0025c920,DAT_0025c8e0);
-                cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                if ((cVar11 == '\0') && (lVar22 != 0)) {
-                  lVar23 = (**(code **)(*plVar6 + 0x110))(plVar6,lVar22,DAT_0025c8e8);
-                  cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                  if ((cVar11 == '\0') && (lVar23 != 0)) {
-                    lVar23 = (**(code **)(*plVar6 + 0x110))(plVar6,lVar23,DAT_0025c8f0,0x102001b);
-                    cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                    if ((cVar11 == '\0') && (lVar23 != 0)) {
-                      cVar11 = (**(code **)(*plVar6 + 0x128))(plVar6,lVar23,DAT_0025c910);
-                      cVar12 = (**(code **)(*plVar6 + 0x128))(plVar6,lVar23,DAT_0025c918);
-                      cVar13 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                      if ((cVar13 == '\0') && ((cVar11 != '\0' && (cVar12 != '\0')))) {
-                        lVar26 = (**(code **)(*plVar6 + 0x110))(plVar6,lVar23,DAT_0025c8f8);
-                        cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                        if ((cVar11 == '\0') && (lVar26 != 0)) {
-                          lVar26 = (**(code **)(*plVar6 + 0x110))(plVar6,lVar26,DAT_0025c900);
-                          cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                          if (((cVar11 == '\0') && (lVar26 != 0)) &&
-                             (lVar27 = (**(code **)(*plVar6 + 0x548))(plVar6,lVar26,0), lVar27 != 0)
-                             ) {
-                            iVar18 = FUN_001689f8();
-                            (**(code **)(*plVar6 + 0x550))(plVar6,lVar26,lVar27);
-                            if (iVar18 != 0) {
-                              lVar26 = (**(code **)(*plVar6 + 0x488))
-                                                 (plVar6,DAT_0025c920,DAT_0025c8e0);
-                              FUN_0014cfcc(1);
-                              FUN_0014ef90(&local_1770);
-                              cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-                              if ((((cVar11 == '\0') && (lVar26 != 0)) &&
-                                  ((cVar11 = (**(code **)(*plVar6 + 0xc0))(plVar6,lVar26,lVar22),
-                                   cVar11 != '\0' && ((local_1750 != 0 && (local_174c != 0)))))) &&
-                                 (((code *)CONCAT71(uStack_175f,local_1760) == local_10d0 &&
-                                  (CONCAT44(fStack_1764,
-                                            CONCAT22(uStack_1766,CONCAT11(uStack_1767,local_1768)))
-                                   == local_10e0.tv_nsec)))) {
-                                DAT_00281a38 = uVar20;
-                                (**(code **)(*plVar6 + 0x128))(plVar6,lVar23,DAT_0025c908);
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-              cVar11 = (**(code **)(*plVar6 + 0x720))(plVar6);
-              if (cVar11 != '\0') {
-                (**(code **)(*plVar6 + 0x88))(plVar6);
-              }
-              if (-1 < iVar15) {
-                (**(code **)(*plVar6 + 0xa0))(plVar6,0);
-              }
-              if (!bVar9) {
-                (**(code **)(*DAT_0022f4c8 + 0x28))();
-              }
-            }
-          }
-        }
-LAB_0015ec7c:
-        iVar15 = nexus_menu_ui_state(&local_10e0,iVar14);
-        DAT_0022db70 = 0;
-        if (((iVar15 == 1) && (local_10e0.tv_sec._4_1_ == '\0')) &&
-           (DAT_0022db70 = uVar20, (int)DAT_0025c9d8 != 0)) {
-          DAT_0022db70 = 0;
-        }
-      }
-      nexus_menu_theme_pump(iVar14,uVar20);
-      nexus_menu_debug_pump(iVar14,uVar20);
-      nexus_menu_profile_pump(iVar14,uVar20);
-      nexus_menu_editor_pump(iVar14,uVar20);
-    }
-    else {
-      FUN_0015f334(param_3 & 0xffffffff,param_1,param_2,uVar20);
-    }
-  }
-  DAT_0025ca14 = 0;
-LAB_0015e35c:
-  *puVar19 = uVar2;
-  if (*(long *)(lVar3 + 0x28) == local_78) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_001607dc @ 001607dc ===== */
-
-void FUN_001607dc(undefined8 param_1)
-
-{
-  bool bVar1;
-  long lVar2;
-  __pid_t _Var3;
-  undefined4 uVar4;
-  int iVar5;
-  long lVar6;
-  timespec local_48;
-  long local_38;
-  
-  lVar2 = tpidr_el0;
-  local_38 = *(long *)(lVar2 + 0x28);
-  DAT_0022f03c = 0xffffffff;
-  FUN_00183cdc(0xffffffff,DAT_0022f038,param_1);
-  iVar5 = DAT_0022f4bc + 1;
-  bVar1 = DAT_0022f4bc < 0x80;
-  DAT_0022f4bc = iVar5;
-  if (bVar1) {
-    _Var3 = getpid();
-    uVar4 = gettid(_Var3);
-    iVar5 = clock_gettime(0,&local_48);
-    if (iVar5 == 0) {
-      lVar6 = local_48.tv_sec * 1000 + (ulong)local_48.tv_nsec / 1000000;
-    }
-    else {
-      lVar6 = 0;
-    }
-    __android_log_print(4,"NexusLab69252",
-                        "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                        ,"nexus_shell_stopped",param_1,0,_Var3,uVar4,lVar6);
-  }
-  if (*(long *)(lVar2 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00160c3c @ 00160c3c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_00160c3c(int param_1,long param_2)
-
-{
-  long lVar1;
-  undefined4 uVar2;
-  int iVar3;
-  undefined8 uVar4;
-  long lVar5;
-  long lVar6;
-  long lVar7;
-  short sVar8;
-  uint uVar9;
-  undefined *puVar10;
-  char *pcVar11;
-  ushort uVar12;
-  undefined8 uVar13;
-  undefined1 auVar14 [16];
-  undefined2 uVar15;
-  undefined1 auVar16 [16];
-  undefined1 local_17c [4];
-  undefined1 local_178 [4];
-  short local_174 [2];
-  undefined1 auStack_170 [192];
-  long local_b0;
-  float local_a8;
-  undefined8 local_a0;
-  undefined8 uStack_98;
-  undefined8 local_90;
-  undefined8 local_88;
-  undefined8 local_80;
-  undefined8 uStack_78;
-  undefined8 local_70;
-  undefined8 local_68;
-  long local_58;
-  
-  lVar1 = tpidr_el0;
-  local_58 = *(long *)(lVar1 + 0x28);
-  uStack_98 = 0;
-  local_a0 = 0;
-  local_88 = 0;
-  local_90 = 0;
-  uStack_78 = 0;
-  local_80 = 0;
-  local_68 = 0;
-  local_70 = 0;
-  uVar2 = nexus_menu_setting_value(0x6e,(ulong)&local_a0 | 0xc);
-  local_a0 = CONCAT44(local_a0._4_4_,uVar2);
-  iVar3 = nexus_menu_setting_value(0x70,&local_90);
-  local_a0._4_4_ = iVar3;
-  uVar4 = nexus_menu_setting_value(0x71,(long)&local_90 + 4);
-  iVar3 = (int)uVar4;
-  uStack_98._0_4_ = iVar3;
-  if ((((int)local_a0 == 3) || (local_a0._4_4_ == 3)) || (iVar3 == 3)) {
-    pcVar11 = "settings_busy";
-    goto LAB_00160d10;
-  }
-  if ((((int)local_a0 == 1) && (local_a0._4_4_ == 1)) && (iVar3 == 1)) {
-    if (uStack_98._4_4_ < 6) {
-      puVar10 = (&PTR_s_map_editor_big_exit_button_0019ae20)[uStack_98._4_4_];
-    }
-    else {
-      puVar10 = (undefined *)0x0;
-    }
-    auVar14._8_8_ = local_90;
-    auVar14._0_8_ = local_90;
-    auVar16 = NEON_cmgt(auVar14,_DAT_0010f9a0,4);
-    auVar14 = NEON_cmgt(_DAT_0010f9a0,auVar14,4);
-    uVar12 = NEON_umaxv(CONCAT26(auVar14._12_2_,
-                                 CONCAT24(auVar14._8_2_,CONCAT22(auVar16._4_2_,auVar16._0_2_))),2);
-    if (((uVar12 & 1) == 0) && (puVar10 != (undefined *)0x0)) {
-      uVar4 = FUN_0014e7c4(uVar4,DAT_0022db60 + 0x10,&local_80,0x10);
-      if ((int)uVar4 != 0) {
-        local_68 = local_68 | 0x100000000;
-      }
-      uVar4 = FUN_0014e7c4(uVar4,DAT_0022f178 + 0x178,&local_70,4);
-      if ((int)uVar4 != 0) {
-        local_68 = local_68 | 0x200000000;
-      }
-      uVar4 = FUN_0014e7c4(uVar4,DAT_0022f178 + 0x4c,(long)&local_70 + 4,4);
-      if ((int)uVar4 != 0) {
-        local_68 = local_68 | 0x400000000;
-      }
-      uVar4 = FUN_0014e7c4(uVar4,DAT_0022f178 + 0x54,&local_68,4);
-      if ((int)uVar4 != 0) {
-        local_68 = local_68 | 0x800000000;
-      }
-      iVar3 = FUN_0014e7c4(uVar4,DAT_0022f178 + 0x284,&local_88,8);
-      uVar9 = local_68._4_4_;
-      if (iVar3 != 0) {
-        uVar9 = local_68._4_4_ | 0x10;
-        local_68 = local_68 | 0x1000000000;
-      }
-      if (uVar9 == 0x1f) {
-        auVar16._8_8_ = uStack_78;
-        auVar16._0_8_ = local_80;
-        auVar14 = NEON_fcmeq(auVar16,_DAT_0010fbb0,4);
-        uVar12 = NEON_umaxv(CONCAT26(CONCAT11(~auVar14[0xd],~auVar14[0xc]),
-                                     CONCAT24(CONCAT11(~auVar14[9],~auVar14[8]),
-                                              CONCAT22(CONCAT11(~auVar14[5],~auVar14[4]),
-                                                       CONCAT11(~auVar14[1],~auVar14[0])))),2);
-        if ((uVar12 & 1) == 0) {
-          uVar4 = nexus_rich_launcher_geometry
-                            (*(undefined4 *)(param_2 + 8),(short)*(undefined4 *)(param_2 + 0xc),
-                             (float)local_70,local_70._4_4_,(undefined4)local_68,&local_b0);
-          if ((int)uVar4 == 1) {
-            if (((float)(int)(*(float *)(param_2 + 8) / (float)local_70) == (float)(int)local_88) &&
-               ((float)(int)(*(float *)(param_2 + 0xc) / (float)local_70) == (float)local_88._4_4_))
-            {
-              uVar13 = NEON_scvtf(local_90,4);
-              local_b0 = CONCAT44((float)((ulong)local_b0 >> 0x20) +
-                                  (float)((ulong)uVar13 >> 0x20) * local_a8,
-                                  (float)local_b0 + (float)uVar13 * local_a8);
-              if (uStack_98._4_4_ != DAT_001a7c60) {
-                if (uStack_98._4_4_ < 6) {
-                  puVar10 = (&PTR_s_map_editor_big_exit_button_0019ae20)[uStack_98._4_4_];
-                }
-                else {
-                  puVar10 = (undefined *)0x0;
-                }
-                uVar4 = FUN_00163eb8(uVar4,puVar10);
-                if ((int)uVar4 == 0) {
-                  pcVar11 = "launcher_asset_cache_pending";
-                  goto LAB_00160d10;
-                }
-              }
-              if (DAT_0022f180 != 0) {
-                if (uStack_98._4_4_ != DAT_001a7c60) {
-                  if (uStack_98._4_4_ < 6) {
-                    puVar10 = (&PTR_s_map_editor_big_exit_button_0019ae20)[uStack_98._4_4_];
-                  }
-                  else {
-                    puVar10 = (undefined *)0x0;
-                  }
-                  lVar5 = (*(code *)(DAT_0022d8e0 + 0x51ecec))("sc/ui.sc",puVar10);
-                  local_174[0] = 0;
-                  if (((lVar5 == 0) || (lVar6 = FUN_00154cf0(), lVar6 != DAT_0022d8e0 + 0x11ad208))
-                     || (iVar3 = FUN_0014e7c4(lVar6,lVar5 + 0xbe,local_174,2), iVar3 == 0)) {
-LAB_0016124c:
-                    pcVar11 = "launcher_movie_contract";
-                  }
-                  else {
-                    sVar8 = 1;
-                    if (uStack_98._4_4_ == 5) {
-                      sVar8 = 2;
-                    }
-                    if (sVar8 != local_174[0]) goto LAB_0016124c;
-                    (*(code *)(DAT_0022d8e0 + 0x772a30))(DAT_0022f180,lVar5,1);
-                    (*(code *)(DAT_0022d8e0 + 0x5d7c30))(lVar5,uStack_98._4_4_ == 5);
-                    lVar6 = FUN_00154cf0(DAT_0022f180 + 0x88);
-                    lVar7 = FUN_00154cf0(DAT_0022f180 + 0x80);
-                    if (lVar7 == lVar5) {
-                      lVar7 = FUN_00154cf0(DAT_0022f180 + 0xb0);
-                      pcVar11 = "launcher_binding_contract";
-                      if ((lVar7 == lVar5) && (lVar6 != 0)) {
-                        lVar7 = FUN_00154cf0(lVar6);
-                        if ((lVar7 == DAT_0022d8e0 + 0x11ad208) &&
-                           (iVar3 = FUN_00154d5c(lVar6,DAT_0022f180), iVar3 != 0)) {
-                          uVar4 = (*(code *)(DAT_0022d8e0 + 0x88836c))(DAT_0022f180,&DAT_0025ca50,1)
-                          ;
-                          local_178[0] = 0;
-                          local_17c[0] = 0;
-                          DAT_001a7c60 = uStack_98._4_4_;
-                          uVar4 = FUN_0014e7c4(uVar4,DAT_0022f180 + 0xc,local_178,1);
-                          if (((int)uVar4 == 0) ||
-                             (iVar3 = FUN_0014e7c4(uVar4,lVar5 + 0xc,local_17c,1), iVar3 == 0)) {
-                            pcVar11 = "launcher_alpha_read";
-                            goto LAB_00160e70;
-                          }
-                          if (uStack_98._4_4_ < 6) {
-                            puVar10 = (&PTR_s_map_editor_big_exit_button_0019ae20)[uStack_98._4_4_];
-                          }
-                          else {
-                            puVar10 = (undefined *)0x0;
-                          }
-                          uVar4 = FUN_0015540c(auStack_170,0xc0,0xc0,"asset=%s frame=%d alpha=%u/%u"
-                                               ,puVar10,uStack_98._4_4_ == 5,local_178[0],
-                                               local_17c[0]);
-                          uVar4 = FUN_00156760(uVar4,"nexus_shell_launcher_style",auStack_170,0);
-                          goto LAB_00160f80;
-                        }
-                        goto LAB_00161264;
-                      }
-                    }
-                    else {
-LAB_00161264:
-                      pcVar11 = "launcher_binding_contract";
-                    }
-                  }
-                  uVar4 = 0xffffffff;
-                  PTR_s_launcher_initializing_001a7c58 = pcVar11;
-                  goto LAB_00160e78;
-                }
-LAB_00160f80:
-                if ((local_b0 != DAT_0025ca60 || local_a8 != DAT_0025ca68) ||
-                   (DAT_001a7c64 != param_1)) {
-                  FUN_0016cf00(local_a8,SUB42(local_a8,0),DAT_0022f180);
-                  uVar2 = (undefined4)local_b0;
-                  if (param_1 != 0) {
-                    uVar2 = 0xc61c3c00;
-                  }
-                  uVar15 = (undefined2)((ulong)local_b0 >> 0x20);
-                  if (param_1 != 0) {
-                    uVar15 = 0x3c00;
-                  }
-                  uVar4 = (*(code *)(DAT_0022d8e0 + 0x595314))(uVar2,uVar15,DAT_0022f180);
-                  DAT_0025ca60 = local_b0;
-                  DAT_0025ca68 = local_a8;
-                  DAT_001a7c64 = param_1;
-                }
-                PTR_s_launcher_initializing_001a7c58 = s_launcher_ready_00136742;
-                if (DAT_0025ca6c == '\x01') {
-                  if (DAT_0025ca70 < 8) {
-                    FUN_00156760(uVar4,"nexus_shell_launcher_recovered",
-                                 "root_projection_settings_ready",0);
-                    DAT_0025ca70 = DAT_0025ca70 + 1;
-                  }
-                  uVar4 = 1;
-                  DAT_0025ca6c = '\0';
-                  DAT_0025ca78 = 0;
-                  goto LAB_00160e78;
-                }
-              }
-              uVar4 = 1;
-              goto LAB_00160e78;
-            }
-          }
-          pcVar11 = "projection_not_coherent";
-        }
-        else {
-          pcVar11 = "root_transform_not_identity";
-        }
-      }
-      else {
-        pcVar11 = "projection_read_unavailable";
-      }
-LAB_00160d10:
-      FUN_001641ec(pcVar11,&local_a0,param_2);
-      uVar4 = 0;
-      goto LAB_00160e78;
-    }
-    pcVar11 = "launcher_settings_value_contract";
-  }
-  else {
-    pcVar11 = "launcher_settings_query_contract";
-  }
-LAB_00160e70:
-  uVar4 = 0xffffffff;
-  PTR_s_launcher_initializing_001a7c58 = pcVar11;
-LAB_00160e78:
-  if (*(long *)(lVar1 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar4);
-}
-
-/* ===== FUN_001613ac @ 001613ac ===== */
-
-int FUN_001613ac(undefined4 param_1)
-
-{
-  long lVar1;
-  bool bVar2;
-  long *plVar3;
-  bool bVar4;
-  char cVar5;
-  int iVar6;
-  int iVar7;
-  long *local_50;
-  long local_48;
-  
-  lVar1 = tpidr_el0;
-  local_48 = *(long *)(lVar1 + 0x28);
-  iVar6 = nexus_menu_dispatch(1,0,0,param_1);
-  if (1 < iVar6 - 1U) goto LAB_00161508;
-  local_50 = (long *)0x0;
-  if (((DAT_0022d8b0 == '\x01') && (DAT_0022d8d0 != (long *)0x0)) && (DAT_0022f030 != 0)) {
-    iVar7 = (**(code **)(*DAT_0022d8d0 + 0x30))(DAT_0022d8d0,&local_50,0x10006);
-    if (iVar7 == 0) {
-      bVar2 = true;
-      plVar3 = local_50;
-    }
-    else {
-      if ((iVar7 != -2) ||
-         (iVar7 = (**(code **)(*DAT_0022d8d0 + 0x20))(DAT_0022d8d0,&local_50,0), iVar7 != 0))
-      goto LAB_00161504;
-      bVar2 = false;
-      plVar3 = local_50;
-    }
-    local_50 = plVar3;
-    if (plVar3 != (long *)0x0) {
-      cVar5 = (**(code **)(*plVar3 + 0x3a8))(plVar3,DAT_0022f030,DAT_0022f4f0);
-      if (cVar5 == '\x01') {
-        cVar5 = (**(code **)(*plVar3 + 0x720))(plVar3);
-        bVar4 = cVar5 == '\0';
-      }
-      else {
-        bVar4 = false;
-      }
-      cVar5 = (**(code **)(*plVar3 + 0x720))(plVar3);
-      if (cVar5 != '\0') {
-        (**(code **)(*plVar3 + 0x88))(plVar3);
-      }
-      if (!bVar2) {
-        (**(code **)(*DAT_0022d8d0 + 0x28))();
-      }
-      if (bVar4) goto LAB_00161508;
-    }
-  }
-LAB_00161504:
-  iVar6 = 0;
-LAB_00161508:
-  if (*(long *)(lVar1 + 0x28) == local_48) {
-    return iVar6;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00161538 @ 00161538 ===== */
-
-ulong FUN_00161538(uint param_1,uint param_2,undefined4 param_3)
-
-{
-  bool bVar1;
-  ulong uVar2;
-  uint uVar3;
-  long lVar4;
-  int iVar5;
-  
-  if (param_1 == 0) {
-LAB_001615f0:
-    uVar2 = nexus_menu_set_value(param_1,param_2,param_3);
-    return uVar2;
-  }
-  uVar2 = FUN_00193f80(1,&DAT_0022f500);
-  if ((uVar2 & 1) == 0) {
-    if (DAT_00233ecc != 0) {
-      lVar4 = 0;
-      do {
-        if (*(uint *)((long)&DAT_0022f6cc + lVar4) == param_1) {
-          DAT_0022f500 = 0;
-          if ((*(int *)((long)&DAT_0022f6d0 + lVar4) != 5) &&
-             (*(int *)((long)&DAT_0022f6d0 + lVar4) != 2)) goto LAB_001615a8;
-          if (param_2 < 2) {
-            iVar5 = *(int *)((long)&DAT_0022f6e0 + lVar4);
-            if ((*(int *)((long)&DAT_0022f6dc + lVar4) == 0) &&
-               (iVar5 = *(int *)((long)&DAT_0022f6e4 + lVar4),
-               *(int *)((long)&DAT_0022f6d4 + lVar4) != 0)) {
-              bVar1 = true;
-            }
-            else {
-              bVar1 = iVar5 != 0;
-            }
-            if (*(int *)((long)&DAT_0022f6d8 + lVar4) != 0) {
-              uVar3 = 0x80000000;
-              if ((bool)(param_2 == 0 ^ bVar1)) {
-                uVar3 = 1;
-              }
-              DAT_0022f500 = 0;
-              return (ulong)uVar3;
-            }
-            DAT_0022f500 = 0;
-            return 0;
-          }
-          goto LAB_00161640;
-        }
-        lVar4 = lVar4 + 0x24;
-      } while ((ulong)DAT_00233ecc * 0x24 - lVar4 != 0);
-    }
-    DAT_0022f500 = 0;
-  }
-LAB_001615a8:
-  if (param_1 == 0x2e001) {
-    uVar2 = 4;
-    if ((0xffffff6e < param_2 - 0x92) && (DAT_0025ca80 == 1)) {
-      uVar2 = 1;
-      DAT_0025ca84 = param_2;
-    }
-  }
-  else {
-    if (param_1 < 0xa8) goto LAB_001615f0;
-LAB_00161640:
-    uVar2 = 4;
-  }
-  return uVar2;
-}
-
-/* ===== FUN_00161acc @ 00161acc ===== */
-
-void FUN_00161acc(undefined8 param_1)
-
-{
-  long lVar1;
-  int iVar2;
-  undefined8 uVar3;
-  uint uVar4;
-  undefined1 auStack_30 [4];
-  char local_2c;
-  char local_2b;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  iVar2 = nexus_menu_ui_state(auStack_30);
-  uVar3 = 0;
-  if (((iVar2 == 1) && (local_2c != '\0')) && (local_2b == '\0')) {
-    uVar4 = (uint)DAT_0022d880;
-    if ((DAT_0022dfbc == 0 && DAT_0022d894 == 0) && (DAT_0022dfb8 & 1) == 0) {
-      uVar4 = (uint)(uVar4 == 0);
-    }
-    uVar3 = FUN_001645e0(uVar4,param_1);
-  }
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar3);
-}
-
-/* ===== FUN_00161b84 @ 00161b84 ===== */
-
-void FUN_00161b84(undefined8 param_1)
-
-{
-  long lVar1;
-  int iVar2;
-  undefined8 uVar3;
-  uint uVar4;
-  undefined1 auStack_30 [4];
-  char local_2c;
-  char local_2b;
-  char local_2a;
-  long local_28;
-  
-  lVar1 = tpidr_el0;
-  local_28 = *(long *)(lVar1 + 0x28);
-  iVar2 = nexus_menu_ui_state(auStack_30);
-  uVar3 = 0;
-  if (((iVar2 == 1) && (local_2c != '\0')) && (local_2b == '\0')) {
-    if ((local_2a == 'R') || (local_2a == 'O')) {
-      uVar4 = (uint)DAT_0022d880;
-      if ((DAT_0022dfbc == 0 && DAT_0022d894 == 0) && (DAT_0022dfb8 & 1) == 0) {
-        uVar4 = (uint)(uVar4 == 0);
-      }
-      uVar3 = FUN_001645e0(uVar4,param_1);
-    }
-    else {
-      uVar3 = 0;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_28) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar3);
-}
-
-/* ===== FUN_00161c58 @ 00161c58 ===== */
-
-void FUN_00161c58(undefined4 param_1)
-
-{
-  long lVar1;
-  bool bVar2;
-  undefined8 uVar3;
-  long *plVar4;
-  bool bVar5;
-  char cVar6;
-  int iVar7;
-  ulong uVar8;
-  int iVar9;
-  uint uVar10;
-  long lVar11;
-  char cVar12;
-  undefined8 local_a0;
-  undefined8 local_98;
-  undefined8 uStack_90;
-  long local_88;
-  undefined8 uStack_80;
-  undefined8 local_78;
-  undefined8 local_70;
-  long local_68;
-  
-  uVar3 = DAT_0010f748;
-  lVar1 = tpidr_el0;
-  local_68 = *(long *)(lVar1 + 0x28);
-  local_78 = 0;
-  local_98 = 0;
-  uStack_80 = 0;
-  local_88 = 0;
-  local_a0 = DAT_0010f748;
-  uStack_90 = 0x500000000;
-  iVar7 = FUN_00191ea0(&local_a0);
-  if (iVar7 == 0) {
-    uStack_80 = 0;
-    local_78 = 0;
-    local_88 = 0;
-    local_a0 = uVar3;
-    local_98 = 0;
-    uStack_90 = 0x500000000;
-  }
-  uVar8 = FUN_00193f80(1,&DAT_001a7c08);
-  if ((uVar8 & 1) != 0) goto LAB_00161e94;
-  lVar11 = 0;
-  iVar7 = 0;
-  iVar9 = 5;
-  bVar2 = true;
-  if ((int)local_a0 == 1) {
-    uVar10 = 0;
-    if (local_a0._4_4_ == 0x30) {
-      lVar11 = local_88;
-      iVar9 = uStack_90._4_4_;
-      if ((int)uStack_90 == 0) {
-        uVar10 = 0;
-        iVar7 = 0;
-      }
-      else {
-        bVar2 = false;
-        iVar7 = 1;
-        uVar10 = (uint)(local_98._4_4_ != 0);
-        if ((local_98._4_4_ != 0) && (local_88 == 0)) {
-          iVar7 = 0;
-          uVar10 = 0;
-          bVar2 = true;
-          iVar9 = 4;
-        }
-      }
-    }
-  }
-  else {
-    uVar10 = 0;
-  }
-  if ((((DAT_001a7c10 == uVar10) && (DAT_001a7c14 == iVar7)) && (DAT_001a7c20 == lVar11)) &&
-     (DAT_001a7c18 == iVar9)) {
-    if (bVar2) goto LAB_00161e1c;
-LAB_00161dc8:
-    if (uVar10 == 0) {
-      cVar12 = '\0';
-      if ((DAT_001a7c2c == '\0' || DAT_001a7c2b == '\0') && (DAT_001a7c2a == '\0'))
-      goto LAB_00161e1c;
-    }
-    else {
-      cVar12 = '\x01';
-      if (((DAT_001a7c2b != '\0') && ((DAT_001a7c2c != '\0' && (DAT_001a7c30 == lVar11)))) &&
-         ((bool)DAT_001a7c2a == (DAT_001a7c28 != '\0'))) goto LAB_00161e1c;
-    }
-    bVar2 = false;
-  }
-  else {
-    bVar5 = DAT_001a7c0c == -1;
-    DAT_001a7c0c = DAT_001a7c0c + 1;
-    if (bVar5) {
-      DAT_001a7c0c = 1;
-    }
-    DAT_001a7c10 = uVar10;
-    DAT_001a7c14 = iVar7;
-    DAT_001a7c18 = iVar9;
-    DAT_001a7c20 = lVar11;
-    if (!bVar2) goto LAB_00161dc8;
-LAB_00161e1c:
-    cVar12 = '\0';
-    lVar11 = 0;
-    bVar2 = true;
-  }
-  DAT_001a7c08 = 0;
-  if (((int)uStack_90 != 0) && (iVar7 = nexus_menu_ui_state(&local_70,param_1), iVar7 == 1)) {
-    if ((bool)local_70._5_1_ != (local_98._4_4_ != 0)) {
-      nexus_menu_set_battle(local_98._4_4_ != 0,param_1);
-    }
-  }
-  if ((((!bVar2) && (DAT_0022d8b8 != 0)) && (DAT_0022f4f8 != 0)) &&
-     ((((int)DAT_0022d8c8 != 0 && (local_70 = (long *)0x0, DAT_0022d8b0 == '\x01')) &&
-      ((DAT_0022d8d0 != (long *)0x0 && (DAT_0022f030 != 0)))))) {
-    iVar7 = (**(code **)(*DAT_0022d8d0 + 0x30))(DAT_0022d8d0,&local_70,0x10006);
-    if (iVar7 == 0) {
-      bVar2 = true;
-    }
-    else {
-      if ((iVar7 != -2) ||
-         (iVar7 = (**(code **)(*DAT_0022d8d0 + 0x20))(DAT_0022d8d0,&local_70,0), iVar7 != 0))
-      goto LAB_00161e94;
-      bVar2 = false;
-    }
-    plVar4 = local_70;
-    if (local_70 != (long *)0x0) {
-      cVar6 = (**(code **)(*local_70 + 0x3a8))(local_70,DAT_0022d8b8,DAT_0022f4f8,cVar12,lVar11);
-      if (cVar6 == '\x01') {
-        cVar6 = (**(code **)(*plVar4 + 0x720))(plVar4);
-        bVar5 = cVar6 == '\0';
-      }
-      else {
-        bVar5 = false;
-      }
-      cVar6 = (**(code **)(*plVar4 + 0x720))(plVar4);
-      if (cVar6 != '\0') {
-        (**(code **)(*plVar4 + 0x88))(plVar4);
-      }
-      if (!bVar2) {
-        (**(code **)(*DAT_0022d8d0 + 0x28))();
-      }
-      if ((((bVar5) && (uVar8 = FUN_00193f80(1,&DAT_001a7c08), (uVar8 & 1) == 0)) &&
-          (DAT_001a7c08 = 0, (bool)DAT_001a7c2a == (cVar12 != '\0' && DAT_001a7c28 != '\0'))) &&
-         (uVar8 = FUN_00193f80(1,&DAT_001a7c08), (uVar8 & 1) == 0)) {
-        DAT_001a7c2b = '\x01';
-        DAT_001a7c08 = 0;
-        DAT_001a7c2c = cVar12;
-        DAT_001a7c30 = lVar11;
-      }
-    }
-  }
-LAB_00161e94:
-  if (*(long *)(lVar1 + 0x28) == local_68) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_0016291c @ 0016291c ===== */
-
-/* WARNING: Type propagation algorithm not settling */
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void FUN_0016291c(undefined1 *param_1,undefined4 param_2)
-
-{
-  long lVar1;
-  void *__s;
-  uint uVar2;
-  int iVar3;
-  char *pcVar4;
-  byte bVar5;
-  byte bVar6;
-  byte bVar7;
-  byte bVar8;
-  long lVar9;
-  undefined1 auVar10 [16];
-  undefined8 uVar11;
-  undefined8 uVar12;
-  undefined8 uVar13;
-  undefined8 uVar14;
-  undefined *puVar15;
-  char cVar16;
-  char cVar17;
-  undefined2 uVar18;
-  bool bVar19;
-  bool bVar20;
-  bool bVar21;
-  bool bVar22;
-  bool bVar23;
-  int iVar24;
-  uint uVar25;
-  uint uVar26;
-  long lVar27;
-  int *piVar28;
-  undefined8 *puVar29;
-  long lVar30;
-  uint *puVar31;
-  int iVar32;
-  ulong uVar33;
-  uint uVar34;
-  int iVar35;
-  uint uVar36;
-  ulong uVar37;
-  ulong uVar38;
-  undefined1 *puVar39;
-  byte *pbVar40;
-  ulong uVar41;
-  ushort uVar42;
-  undefined1 auVar43 [16];
-  undefined1 auVar44 [16];
-  undefined1 auStack_8e70 [4];
-  undefined4 local_8e6c;
-  undefined1 local_8e68;
-  undefined1 local_8e67;
-  undefined4 local_8e60;
-  undefined *local_8e58;
-  char *local_8e50;
-  undefined8 local_8e48;
-  undefined4 local_8e40;
-  undefined8 local_8e3c;
-  undefined8 uStack_8e34;
-  undefined1 local_8e2c;
-  undefined2 local_8e2b;
-  undefined1 local_8e29;
-  undefined2 local_8e28;
-  int local_8e20 [2];
-  char *local_8e18 [3];
-  uint local_8e00 [4];
-  undefined8 local_8df0;
-  undefined2 local_8de8;
-  undefined4 local_8de0;
-  undefined *local_8dd8;
-  char *pcStack_8dd0;
-  undefined8 local_8dc8;
-  undefined4 local_8dc0;
-  undefined8 local_8dbc;
-  undefined8 local_8db4;
-  undefined1 local_8dac;
-  undefined4 local_8dab;
-  undefined1 local_8da7;
-  undefined4 local_8da0;
-  char *local_8d98;
-  char *pcStack_8d90;
-  undefined8 local_8d88;
-  undefined4 local_8d80;
-  undefined8 local_8d7c;
-  undefined8 local_8d74;
-  undefined1 local_8d6c;
-  undefined4 local_8d6b;
-  undefined1 local_8d67;
-  int aiStack_89ac [115];
-  undefined8 local_87e0;
-  ulong uStack_87d8;
-  ulong uStack_87d0;
-  undefined8 uStack_87c8;
-  undefined8 uStack_87c0;
-  undefined8 local_87b8;
-  undefined8 uStack_87b0;
-  undefined8 local_87a8;
-  undefined8 uStack_87a0;
-  undefined8 local_8798;
-  undefined8 uStack_8790;
-  undefined8 local_8788;
-  uint local_3fe0;
-  undefined4 uStack_3fdc;
-  uint uStack_3fd8;
-  uint uStack_3fd4;
-  uint local_3fd0;
-  byte bStack_3fcc;
-  byte bStack_3fcb;
-  undefined2 uStack_3fca;
-  undefined1 auStack_3f73 [16123];
-  long local_78;
-  
-  iVar24 = DAT_0025ca80;
-  lVar9 = tpidr_el0;
-  local_78 = *(long *)(lVar9 + 0x28);
-  if (param_1 == (undefined1 *)0x0) goto LAB_00163e80;
-  puVar39 = param_1;
-  if (DAT_0025ca80 != 0) {
-    memset(auStack_8e70,0,0x690);
-    local_8e67 = 1;
-    if (iVar24 == 1) {
-      local_8788 = 0;
-      uStack_8790 = 0;
-      local_8798 = 0;
-      uStack_87a0 = 0;
-      local_87a8 = 0;
-      uStack_87b0 = 0;
-      local_87b8 = 0;
-      uStack_87c0 = 0;
-      uStack_87c8 = 0;
-      uStack_87d0 = 0;
-      uStack_87d8 = 0;
-      local_87e0 = DAT_0010f850;
-      iVar24 = FUN_00191c90(&local_87e0);
-      if ((((iVar24 != 0) && ((uint)local_87e0 == 1)) && (local_87e0._4_4_ == 0x60)) &&
-         ((uStack_87d8 & 1) != 0)) {
-        uRam000000000025cab8 = local_87b8;
-        _DAT_0025cab0 = uStack_87c0;
-        uRam000000000025cac8 = local_87a8;
-        _DAT_0025cac0 = uStack_87b0;
-        uRam000000000025cad8 = local_8798;
-        _DAT_0025cad0 = uStack_87a0;
-        uRam000000000025cae8 = local_8788;
-        _DAT_0025cae0 = uStack_8790;
-        uRam000000000025ca98 = uStack_87d8;
-        _DAT_0025ca90 = local_87e0;
-        uRam000000000025caa8 = uStack_87c8;
-        _DAT_0025caa0 = uStack_87d0;
-      }
-      local_8e68 = 0x4c;
-      local_8e58 = &DAT_00137c9c;
-      local_8e50 = "FPS LIMIT";
-      local_8e18[0] = "FPS LIMIT";
-      local_8e18[1] = "1-144 FPS; 145 MEANS UNLIMITED";
-      local_8e6c = 4;
-      local_8e20[0] = 0x2e001;
-      puVar39 = auStack_8e70;
-      local_8e60 = 0x2e000;
-      local_8e00[0] = 0x18;
-      local_8e00[1] = DAT_0025ca84;
-      local_8dac = DAT_0025ca84 != DAT_0025ca88;
-      local_8e00[2] = DAT_0025ca88;
-      local_8e00[3] = DAT_0025ca84;
-      local_8df0 = 0x10100000000;
-      local_8de0 = 0x2e002;
-      pcStack_8dd0 = "APPLY SELECTED FRAME LIMIT";
-      if (!(bool)local_8dac) {
-        pcStack_8dd0 = "CURRENT LIMIT IS SAVED";
-      }
-      local_8e48 = 0;
-      local_8e40 = 0x18;
-      local_8dd8 = &DAT_00132558;
-      uStack_8e34 = 0;
-      local_8e3c = 0;
-      local_8e2c = 1;
-      local_8da0 = 0x2e003;
-      local_8e2b = 0;
-      local_8e29 = 0;
-      local_8e28 = 1;
-      local_8d98 = "RESET";
-      pcStack_8d90 = "USE THE DEVICE DEFAULT LIMIT";
-      local_8e18[2] = (char *)0x0;
-      local_8de8 = 3;
-      local_8dc8 = 0;
-      local_8dc0 = 0x18;
-      local_8dbc = 0;
-      local_8db4 = 0;
-      local_8dab = 0;
-      local_8da7 = 0;
-      local_8d88 = 0;
-      local_8d80 = 0x18;
-      local_8d7c = 0;
-      local_8d74 = 0;
-      local_8d6c = 1;
-      local_8d6b = 0;
-      local_8d67 = 0;
-    }
-    else if (iVar24 == 2) {
-      local_87b8 = 0;
-      uStack_87c0 = 0;
-      uStack_87c8 = 0;
-      uStack_87d0 = 0;
-      uStack_87d8 = 0;
-      local_87e0 = DAT_0010f748;
-      iVar24 = FUN_00191df8(&local_87e0);
-      if (((iVar24 != 0) && ((uint)local_87e0 == 1)) &&
-         ((local_87e0._4_4_ == 0x30 && (((int)uStack_87d8 != 0 && ((uint)uStack_87d0 < 6)))))) {
-        _DAT_0025caf8 = uStack_87d8;
-        _DAT_0025caf0 = local_87e0;
-        _DAT_0025cb08 = uStack_87c8;
-        _DAT_0025cb00 = uStack_87d0;
-        uRam000000000025cb18 = local_87b8;
-        _DAT_0025cb10 = uStack_87c0;
-      }
-      lVar30 = 0;
-      local_8e60 = 0x2e010;
-      local_8e68 = 0x4e;
-      local_8e6c = 7;
-      local_8e58 = &DAT_00137c9c;
-      local_8e50 = "FONT";
-      local_8e48 = 0;
-      local_8e40 = 0x18;
-      uStack_8e34 = 0;
-      local_8e3c = 0;
-      local_8e2c = 1;
-      local_8e2b = 0;
-      local_8e29 = 0;
-      local_8e28 = 1;
-      lVar27 = 0;
-      do {
-        uVar34 = (uint)lVar30;
-        if (DAT_0025caf8 == 0 || DAT_0025cafc == 0) {
-          uVar36 = 0;
-        }
-        else {
-          uVar36 = DAT_0025cb08 >> (ulong)(uVar34 & 0x1f) & 1;
-        }
-        iVar24 = (&DAT_00131030)[lVar30];
-        bVar19 = (_DAT_0025cb00 & 0xffffffff) * 0x40 - lVar27 == 0;
-        pcVar4 = "CURRENT FONT";
-        if (!bVar19) {
-          pcVar4 = "AVAILABLE";
-        }
-        puVar39 = auStack_8e70;
-        uVar26 = 0;
-        if (DAT_0025cb04 == 0) {
-          uVar26 = (uint)bVar19;
-        }
-        if (uVar36 == 0) {
-          pcVar4 = "FONT ASSET IS NOT LOADED";
-        }
-        lVar1 = lVar27 + 0x40;
-        *(uint *)((long)local_8e00 + lVar27 + 8) = uVar26;
-        *(uint *)((long)local_8e00 + lVar27 + 0xc) = uVar34;
-        lVar30 = lVar30 + 1;
-        *(long *)((long)local_8e18 + lVar27) = (long)&DAT_00131030 + (long)iVar24;
-        *(char **)((long)local_8e18 + lVar27 + 8) = pcVar4;
-        *(uint *)((long)local_8e20 + lVar27) = uVar34 + 0x2e020;
-        *(undefined8 *)((long)local_8e18 + lVar27 + 0x10) = 0;
-        *(undefined4 *)((long)local_8e00 + lVar27) = 0x18;
-        *(uint *)((long)local_8e00 + lVar27 + 4) = (uint)bVar19;
-        *(uint *)((long)&local_8df0 + lVar27) = uVar36 ^ 1;
-        *(char *)((long)&local_8df0 + lVar27 + 4) = (char)uVar36;
-        *(undefined1 *)((long)&local_8df0 + lVar27 + 5) = 1;
-        *(undefined2 *)((long)&local_8df0 + lVar27 + 6) = 0;
-        *(undefined1 *)((long)&local_8de8 + lVar27) = 0;
-        *(bool *)((long)&local_8de8 + lVar27 + 1) = bVar19;
-        lVar27 = lVar1;
-      } while (lVar1 != 0x180);
-    }
-    else {
-      puVar39 = auStack_8e70;
-    }
-  }
-  puVar15 = PTR_DAT_001a36f0;
-  uVar12 = _UNK_00131020;
-  uVar11 = _DAT_00131018;
-  uVar41 = 0;
-  uVar38 = 1;
-  do {
-    local_3fd0 = 0;
-    bStack_3fcc = 0;
-    bStack_3fcb = 0;
-    uStack_3fca = 0;
-    uStack_3fd8 = (uint)uVar12;
-    uVar36 = uStack_3fd8;
-    uStack_3fd4 = (uint)((ulong)uVar12 >> 0x20);
-    uVar26 = uStack_3fd4;
-    local_3fe0 = (uint)uVar11;
-    uVar34 = local_3fe0;
-    uStack_3fdc._0_1_ = (char)((ulong)uVar11 >> 0x20);
-    cVar16 = (char)uStack_3fdc;
-    uStack_3fdc._1_1_ = (char)((ulong)uVar11 >> 0x28);
-    cVar17 = uStack_3fdc._1_1_;
-    uStack_3fdc._2_2_ = (undefined2)((ulong)uVar11 >> 0x30);
-    uVar18 = uStack_3fdc._2_2_;
-    iVar24 = nexus_menu_action_status(uVar38 & 0xffffffff,&local_3fe0,param_2);
-    if (iVar24 == 1) {
-      bVar19 = ((uint)uVar38 & 0xfc) == 0x94;
-      bVar5 = puVar15[uVar38 * 0x48 + 0x44];
-      uVar25 = (uint)bStack_3fcc;
-      if (bVar19) {
-        uVar25 = 1;
-      }
-      uVar2 = 0;
-      if (!bVar19) {
-        uVar2 = local_3fd0;
-      }
-      if (uVar41 != 0) {
-        puVar31 = (uint *)&local_87e0;
-        uVar37 = uVar41;
-        do {
-          uVar33 = uVar41;
-          if (uVar38 == *puVar31) goto LAB_00162d3c;
-          uVar37 = uVar37 - 1;
-          puVar31 = puVar31 + 9;
-        } while (uVar37 != 0);
-        if (0x1ff < uVar41) goto LAB_00162d50;
-      }
-      uVar33 = uVar41 + 1;
-      puVar31 = (uint *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00162d3c:
-      *puVar31 = (uint)uVar38;
-      puVar31[1] = (uint)bVar5;
-      puVar31[2] = 0;
-      puVar31[3] = uVar25;
-      puVar31[4] = (uint)bStack_3fcb;
-      *(ulong *)(puVar31 + 5) =
-           CONCAT44(uStack_3fd8,
-                    CONCAT22(uStack_3fdc._2_2_,CONCAT11(uStack_3fdc._1_1_,(char)uStack_3fdc)));
-      puVar31[7] = uStack_3fd4;
-      puVar31[8] = uVar2;
-      uVar41 = uVar33;
-    }
-LAB_00162d50:
-    uVar38 = uVar38 + 1;
-  } while (uVar38 != 0xa8);
-  if (uVar41 < 0x200) {
-    uVar38 = 0;
-    uVar37 = uVar41;
-    do {
-      local_3fd0 = 0;
-      bStack_3fcc = 0;
-      bStack_3fcb = 0;
-      uStack_3fca = 0;
-      local_3fe0 = uVar34;
-      uStack_3fdc._0_1_ = cVar16;
-      uStack_3fdc._1_1_ = cVar17;
-      uStack_3fdc._2_2_ = uVar18;
-      uStack_3fd8 = uVar36;
-      uStack_3fd4 = uVar26;
-      iVar24 = FUN_00192340((&PTR_s_DisablePinAnimation_0019ae50)[uVar38 * 3],&local_3fe0);
-      bVar5 = bStack_3fcc;
-      uVar41 = uVar37;
-      if (iVar24 == 1) {
-        uVar25 = ((int)(0x29811000000000 >> (uVar38 & 0x3f)) << 1 ^ 0xffffffffU) & 2;
-        if ((0x42020ff0000000U >> (uVar38 & 0x3f) & 1) != 0) {
-          uVar25 = 4;
-        }
-        if (uVar37 != 0) {
-          puVar31 = (uint *)&local_87e0;
-          uVar33 = uVar37;
-          do {
-            if (uVar38 + 0x21000 == (ulong)*puVar31) goto LAB_00162e8c;
-            uVar33 = uVar33 - 1;
-            puVar31 = puVar31 + 9;
-          } while (uVar33 != 0);
-        }
-        uVar41 = uVar37 + 1;
-        puVar31 = (uint *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_00162e8c:
-        *puVar31 = (uint)(uVar38 + 0x21000);
-        bVar6 = bStack_3fcb;
-        puVar31[1] = uVar25;
-        uVar11 = CONCAT44(uStack_3fd8,
-                          CONCAT22(uStack_3fdc._2_2_,CONCAT11(uStack_3fdc._1_1_,(char)uStack_3fdc)))
-        ;
-        auVar44._8_4_ = uStack_3fd4;
-        auVar44._0_8_ = uVar11;
-        auVar44._12_4_ = local_3fd0;
-        puVar31[2] = 0;
-        puVar31[3] = (uint)bVar5;
-        puVar31[4] = (uint)bVar6;
-        *(long *)(puVar31 + 7) = auVar44._8_8_;
-        *(undefined8 *)(puVar31 + 5) = uVar11;
-      }
-    } while ((uVar38 < 0x36) && (uVar38 = uVar38 + 1, uVar37 = uVar41, uVar41 < 0x200));
-    uVar34 = *(uint *)(param_1 + 4);
-    if ((uVar34 != 0) && (uVar41 < 0x200)) {
-      uVar38 = 0;
-      uVar37 = uVar41;
-      do {
-        iVar24 = *(int *)(param_1 + uVar38 * 0x40 + 0x10);
-        uVar41 = uVar37;
-        if (iVar24 != 0) {
-          if (uVar37 != 0) {
-            piVar28 = (int *)&local_87e0;
-            uVar33 = uVar37;
-            do {
-              if (*piVar28 == iVar24) goto LAB_00162f24;
-              uVar33 = uVar33 - 1;
-              piVar28 = piVar28 + 9;
-            } while (uVar33 != 0);
-          }
-          uVar41 = uVar37 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_00162f24:
-          bVar5 = param_1[uVar38 * 0x40 + 0x48];
-          bVar6 = param_1[uVar38 * 0x40 + 0x49];
-          bVar7 = param_1[uVar38 * 0x40 + 0x44];
-          bVar8 = param_1[uVar38 * 0x40 + 0x45];
-          auVar44 = *(undefined1 (*) [16])(param_1 + uVar38 * 0x40 + 0x34);
-          *piVar28 = iVar24;
-          piVar28[1] = (uint)bVar5;
-          piVar28[2] = (uint)bVar6;
-          piVar28[3] = (uint)bVar7;
-          piVar28[4] = (uint)bVar8;
-          *(long *)(piVar28 + 7) = auVar44._8_8_;
-          *(long *)(piVar28 + 5) = auVar44._0_8_;
-        }
-        uVar38 = uVar38 + 1;
-      } while ((uVar38 < uVar34) && (uVar37 = uVar41, uVar41 < 0x200));
-    }
-  }
-  if ((puVar39 != param_1) && ((uVar34 = *(uint *)(puVar39 + 4), uVar34 != 0 && (uVar41 < 0x200))))
-  {
-    uVar38 = 0;
-    uVar37 = uVar41;
-    do {
-      if (uVar37 != 0) {
-        piVar28 = (int *)&local_87e0;
-        uVar33 = uVar37;
-        do {
-          uVar41 = uVar37;
-          if (*piVar28 == *(int *)(puVar39 + uVar38 * 0x40 + 0x10)) goto LAB_00162fc4;
-          uVar33 = uVar33 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar33 != 0);
-      }
-      uVar41 = uVar37 + 1;
-      piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_00162fc4:
-      bVar5 = puVar39[uVar38 * 0x40 + 0x48];
-      bVar6 = puVar39[uVar38 * 0x40 + 0x49];
-      bVar7 = puVar39[uVar38 * 0x40 + 0x44];
-      bVar8 = puVar39[uVar38 * 0x40 + 0x45];
-      auVar44 = *(undefined1 (*) [16])(puVar39 + uVar38 * 0x40 + 0x34);
-      *piVar28 = *(int *)(puVar39 + uVar38 * 0x40 + 0x10);
-      piVar28[1] = (uint)bVar5;
-      piVar28[2] = (uint)bVar6;
-      piVar28[3] = (uint)bVar7;
-      piVar28[4] = (uint)bVar8;
-      *(long *)(piVar28 + 7) = auVar44._8_8_;
-      *(long *)(piVar28 + 5) = auVar44._0_8_;
-    } while ((uVar38 + 1 < (ulong)uVar34) && (uVar38 = uVar38 + 1, uVar37 = uVar41, uVar41 < 0x200))
-    ;
-  }
-  iVar24 = nexus_menu_ui_state(&local_3fe0,param_2);
-  uVar38 = uVar41;
-  if (iVar24 == 1) {
-    uVar34 = 1;
-    if (((DAT_0022d88c & 1) == 0) && ((DAT_0022d890 & 1) == 0)) {
-      uVar34 = (uint)(DAT_0022f4b8 != 0);
-    }
-    bVar5 = DAT_0022d880._4_1_ | DAT_0022d888;
-    bVar6 = bVar5 | (DAT_0022dfbc != 0 || DAT_0022d894 != 0) | DAT_0022dfb8;
-    iVar24 = (int)DAT_0022d880;
-    if (uVar34 == 0 && ((bVar6 ^ 0xff) & 1) == 0) {
-      iVar24 = DAT_0025cb38;
-    }
-    iVar35 = DAT_0025cb38;
-    if (uVar34 == 0 && (bVar6 & 1) == 0) {
-      iVar35 = (int)DAT_0022d880;
-    }
-    iVar32 = 4;
-    if ((bVar5 & 1) == 0) {
-      iVar32 = 1;
-    }
-    uVar34 = (uint)((char)uStack_3fdc != '\0' && uStack_3fdc._1_1_ == '\0') & (bVar5 ^ 0xffffffff) &
-             (uVar34 ^ 1);
-    iVar3 = 0;
-    if (uVar34 == 0) {
-      iVar3 = iVar32;
-    }
-    if (uVar41 != 0) {
-      piVar28 = (int *)&local_87e0;
-      uVar37 = uVar41;
-      do {
-        if (*piVar28 == 0x20002) goto LAB_00163130;
-        uVar37 = uVar37 - 1;
-        piVar28 = piVar28 + 9;
-      } while (uVar37 != 0);
-      if (0x1ff < uVar41) goto LAB_00163150;
-    }
-    uVar38 = uVar41 + 1;
-    piVar28 = (int *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00163130:
-    piVar28[2] = 0;
-    piVar28[3] = uVar34;
-    piVar28[6] = iVar35;
-    piVar28[7] = (int)DAT_0022d880;
-    piVar28[8] = iVar3;
-    piVar28[4] = 1;
-    piVar28[5] = iVar24;
-    *(undefined8 *)piVar28 = DAT_0010f8f8;
-  }
-LAB_00163150:
-  DAT_002815ac = nexus_menu_section_snapshot(0x25cb44,0x24a68,param_2);
-  if (DAT_002815ac == 0) goto LAB_00163e80;
-  uVar41 = FUN_00193f80(1,&DAT_00237e60);
-  if ((uVar41 & 1) == 0) {
-    iVar24 = memcmp(&DAT_00237e64,(void *)((long)&DAT_0025cb40 + 4),0x24a68);
-    DAT_00237e60 = 0;
-    if (iVar24 != 0) goto LAB_001631b4;
-  }
-  else {
-LAB_001631b4:
-    uVar41 = FUN_00193f80(1,&DAT_0022f500);
-    if ((uVar41 & 1) != 0) {
-      DAT_002815ac = 0;
-      goto LAB_00163e80;
-    }
-    DAT_00233ee8 = 1;
-    DAT_0022f500 = 0;
-  }
-  if (DAT_0025cb4c == 0) {
-LAB_00163440:
-    uVar41 = uVar38;
-    if (uVar38 != 0) goto LAB_00163444;
-  }
-  else {
-    if (DAT_0025cb74 != 0) {
-      uVar41 = 0;
-      do {
-        if (uVar38 == 0) {
-LAB_00163208:
-          uVar33 = uVar38 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar38 * 0x24);
-LAB_00163214:
-          uVar36 = (uint)(&DAT_0025cdb4)[uVar41 * 0x92] >> 1 & 1;
-          uVar34 = (&DAT_0025cdb4)[uVar41 * 0x92] & 1;
-          *piVar28 = (&DAT_0025cdac)[uVar41 * 0x92];
-          piVar28[1] = 0;
-          piVar28[2] = uVar36;
-          piVar28[3] = uVar34;
-          piVar28[4] = 0;
-          piVar28[5] = uVar36;
-          piVar28[6] = uVar36;
-          piVar28[7] = uVar36;
-          piVar28[8] = uVar34 ^ 1;
-          uVar38 = uVar33;
-        }
-        else {
-          piVar28 = (int *)&local_87e0;
-          uVar37 = uVar38;
-          do {
-            uVar33 = uVar38;
-            if (*piVar28 == (&DAT_0025cdac)[uVar41 * 0x92]) goto LAB_00163214;
-            uVar37 = uVar37 - 1;
-            piVar28 = piVar28 + 9;
-          } while (uVar37 != 0);
-          if (uVar38 < 0x200) goto LAB_00163208;
-        }
-        uVar41 = uVar41 + 1;
-      } while (uVar41 != DAT_0025cb74);
-    }
-    bVar19 = DAT_0025cb64 != 0 && DAT_0025cb68 == 0;
-    if (DAT_0025cb4c == 1) {
-      if (uVar38 == 0) {
-LAB_0016334c:
-        uVar37 = uVar38 + 1;
-        piVar28 = (int *)((long)&local_87e0 + uVar38 * 0x24);
-LAB_00163360:
-        piVar28[4] = 0;
-        piVar28[5] = 0;
-        piVar28[6] = 0;
-        piVar28[7] = 0;
-        piVar28[8] = 0;
-        *(undefined8 *)(piVar28 + 2) = _UNK_0010fb08;
-        *(undefined8 *)piVar28 = _DAT_0010fb00;
-      }
-      else {
-        piVar28 = (int *)&local_87e0;
-        uVar41 = uVar38;
-        do {
-          uVar37 = uVar38;
-          if (*piVar28 == 0x24001) goto LAB_00163360;
-          uVar41 = uVar41 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar41 != 0);
-        if (uVar38 < 0x200) goto LAB_0016334c;
-      }
-      piVar28 = (int *)&local_87e0;
-      uVar34 = DAT_0025cb7c >> 0x1f;
-      uVar38 = uVar37;
-      do {
-        uVar41 = uVar37;
-        if (*piVar28 == 0x24002) goto LAB_001633c0;
-        uVar38 = uVar38 - 1;
-        piVar28 = piVar28 + 9;
-      } while (uVar38 != 0);
-      if (uVar37 < 0x200) {
-        uVar41 = uVar37 + 1;
-        piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_001633c0:
-        piVar28[2] = uVar34;
-        piVar28[5] = uVar34;
-        piVar28[6] = uVar34;
-        piVar28[7] = uVar34;
-        piVar28[8] = 0;
-        *(undefined8 *)piVar28 = DAT_0010f760;
-        *(undefined8 *)(piVar28 + 3) = DAT_0010f860;
-      }
-      uVar34 = (uint)bVar19;
-      piVar28 = (int *)&local_87e0;
-      uVar37 = uVar41;
-      do {
-        uVar38 = uVar41;
-        if (*piVar28 == 0x24003) goto LAB_00163428;
-        uVar37 = uVar37 - 1;
-        piVar28 = piVar28 + 9;
-      } while (uVar37 != 0);
-      if (uVar41 < 0x200) {
-        uVar38 = uVar41 + 1;
-        piVar28 = (int *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00163428:
-        piVar28[2] = 0;
-        piVar28[3] = uVar34;
-        piVar28[4] = 0;
-        piVar28[5] = 0;
-        piVar28[6] = 0;
-        piVar28[7] = 0;
-        piVar28[8] = uVar34 ^ 1;
-        *(undefined8 *)piVar28 = DAT_0010f8d8;
-        goto LAB_00163440;
-      }
-    }
-    else {
-      if (DAT_0025cb4c == 2) {
-        if (uVar38 == 0) {
-LAB_001638e4:
-          uVar37 = uVar38 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar38 * 0x24);
-LAB_001638f8:
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = 0;
-          *(undefined8 *)(piVar28 + 2) = _UNK_0010fa48;
-          *(undefined8 *)piVar28 = _DAT_0010fa40;
-        }
-        else {
-          piVar28 = (int *)&local_87e0;
-          uVar41 = uVar38;
-          do {
-            uVar37 = uVar38;
-            if (*piVar28 == 0x26001) goto LAB_001638f8;
-            uVar41 = uVar41 - 1;
-            piVar28 = piVar28 + 9;
-          } while (uVar41 != 0);
-          if (uVar38 < 0x200) goto LAB_001638e4;
-        }
-        uVar36 = (uint)bVar19;
-        uVar34 = 0;
-        if (DAT_0025cb60 < 2) {
-          uVar34 = uVar36;
-        }
-        piVar28 = (int *)&local_87e0;
-        uVar26 = 0;
-        if (DAT_0025cb70 != 0) {
-          uVar26 = uVar34;
-        }
-        uVar38 = uVar37;
-        do {
-          uVar41 = uVar37;
-          if (*piVar28 == 0x26002) goto LAB_0016396c;
-          uVar38 = uVar38 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar38 != 0);
-        if (uVar37 < 0x200) {
-          uVar41 = uVar37 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_0016396c:
-          piVar28[2] = 0;
-          piVar28[3] = uVar26;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar26 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f8c0;
-        }
-        if (uVar34 == 0) {
-          uVar34 = 0;
-        }
-        else {
-          uVar34 = (uint)(DAT_0025cb70 + DAT_0025cb74 < DAT_0025cb6c);
-        }
-        if (uVar41 == 0) {
-LAB_00163a44:
-          uVar37 = uVar41 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00163a58:
-          piVar28[2] = 0;
-          piVar28[3] = uVar34;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar34 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f898;
-        }
-        else {
-          piVar28 = (int *)&local_87e0;
-          uVar38 = uVar41;
-          do {
-            uVar37 = uVar41;
-            if (*piVar28 == 0x26003) goto LAB_00163a58;
-            uVar38 = uVar38 - 1;
-            piVar28 = piVar28 + 9;
-          } while (uVar38 != 0);
-          if (uVar41 < 0x200) goto LAB_00163a44;
-        }
-        uVar34 = 0;
-        if (DAT_0025cb60 == 0) {
-          uVar34 = uVar36;
-        }
-        piVar28 = (int *)&local_87e0;
-        uVar38 = uVar37;
-        do {
-          uVar41 = uVar37;
-          if (*piVar28 == 0x26004) goto LAB_00163ac4;
-          uVar38 = uVar38 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar38 != 0);
-        if (uVar37 < 0x200) {
-          uVar41 = uVar37 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_00163ac4:
-          piVar28[2] = 0;
-          piVar28[3] = uVar34;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar34 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f838;
-        }
-        uVar34 = 0;
-        if (DAT_0025cb60 == 1) {
-          uVar34 = uVar36;
-        }
-        uVar26 = 0;
-        if (-1 < DAT_0025cb84) {
-          uVar26 = uVar34;
-        }
-        if (uVar41 == 0) {
-LAB_00163b28:
-          uVar37 = uVar41 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00163b3c:
-          piVar28[2] = 0;
-          piVar28[3] = uVar26;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar26 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f828;
-        }
-        else {
-          piVar28 = (int *)&local_87e0;
-          uVar38 = uVar41;
-          do {
-            uVar37 = uVar41;
-            if (*piVar28 == 0x26006) goto LAB_00163b3c;
-            uVar38 = uVar38 - 1;
-            piVar28 = piVar28 + 9;
-          } while (uVar38 != 0);
-          if (uVar41 < 0x200) goto LAB_00163b28;
-        }
-        uVar26 = 0;
-        uVar34 = 0;
-        if (DAT_0025cb60 == 2) {
-          uVar34 = uVar36;
-        }
-        if ((((uVar34 == 1) && (DAT_0025cb8c == 1)) && (uVar26 = 0, (DAT_0025cb78 & 1) != 0)) &&
-           (-1 < DAT_0025cb84)) {
-          uVar26 = (uint)(-1 < DAT_0025cb88 || DAT_0025cb88 == -2);
-        }
-        piVar28 = (int *)&local_87e0;
-        uVar38 = uVar37;
-        do {
-          uVar41 = uVar37;
-          if (*piVar28 == 0x26007) goto LAB_00163be4;
-          uVar38 = uVar38 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar38 != 0);
-        if (uVar37 < 0x200) {
-          uVar41 = uVar37 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar37 * 0x24);
-LAB_00163be4:
-          piVar28[2] = 0;
-          piVar28[3] = uVar26;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar26 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f7c8;
-        }
-        uVar34 = 0;
-        if (DAT_0025cb60 == 3) {
-          uVar34 = uVar36;
-        }
-        piVar28 = (int *)&local_87e0;
-        uVar37 = uVar41;
-        do {
-          uVar38 = uVar41;
-          if (*piVar28 == 0x26005) goto LAB_00163c50;
-          uVar37 = uVar37 - 1;
-          piVar28 = piVar28 + 9;
-        } while (uVar37 != 0);
-        if (uVar41 < 0x200) {
-          uVar38 = uVar41 + 1;
-          piVar28 = (int *)((long)&local_87e0 + uVar41 * 0x24);
-LAB_00163c50:
-          piVar28[2] = 0;
-          piVar28[3] = uVar34 & DAT_0025cb78;
-          piVar28[4] = 0;
-          piVar28[5] = 0;
-          piVar28[6] = 0;
-          piVar28[7] = 0;
-          piVar28[8] = uVar34 & DAT_0025cb78 ^ 1;
-          *(undefined8 *)piVar28 = DAT_0010f830;
-        }
-        uVar36 = 0;
-        do {
-          if (uVar36 < 3) {
-            uVar26 = 2;
-joined_r0x00163d10:
-            if (uVar36 < 6) {
-                    /* WARNING: Could not recover jumptable at 0x00163d30. Too many branches */
-                    /* WARNING: Treating indirect jump as call */
-              (*(code *)(&UNK_00163d34 + (ulong)(byte)(&DAT_0010fbd0)[uVar36] * 4))();
-              return;
-            }
-            iVar24 = DAT_0025cb98;
-            if (uVar36 != 6) {
-              iVar24 = 0;
-            }
-            if (uVar34 == 0) goto LAB_00163cfc;
-LAB_00163d50:
-            uVar26 = (uint)((uVar26 & DAT_0025cb78) != 0);
-          }
-          else {
-            if (uVar36 != 5) {
-              uVar26 = 8;
-              if (uVar36 != 6) {
-                uVar26 = 1;
-              }
-              goto joined_r0x00163d10;
-            }
-            uVar26 = 4;
-            iVar24 = DAT_0025cb94;
-            if (uVar34 != 0) goto LAB_00163d50;
-LAB_00163cfc:
-            uVar26 = 0;
-          }
-          iVar35 = 2;
-          if (4 < uVar36 == 0) {
-            iVar35 = 0;
-          }
-          if (uVar38 == 0) {
-LAB_00163c9c:
-            uVar37 = uVar38 + 1;
-            piVar28 = (int *)((long)&local_87e0 + uVar38 * 0x24);
-LAB_00163ca8:
-            uVar25 = (uint)(iVar24 != 0);
-            piVar28[2] = uVar25;
-            piVar28[3] = uVar26;
-            *piVar28 = uVar36 + 0x26008;
-            piVar28[1] = iVar35;
-            piVar28[4] = (uint)(4 < uVar36);
-            piVar28[5] = uVar25;
-            uVar25 = (uint)(iVar24 != 0);
-            piVar28[6] = uVar25;
-            piVar28[7] = uVar25;
-            piVar28[8] = uVar26 ^ 1;
-            uVar38 = uVar37;
-          }
-          else {
-            piVar28 = (int *)&local_87e0;
-            uVar41 = uVar38;
-            do {
-              uVar37 = uVar38;
-              if (*piVar28 == uVar36 + 0x26008) goto LAB_00163ca8;
-              uVar41 = uVar41 - 1;
-              piVar28 = piVar28 + 9;
-            } while (uVar41 != 0);
-            if (uVar38 < 0x200) goto LAB_00163c9c;
-          }
-          uVar36 = uVar36 + 1;
-        } while (uVar36 != 7);
-        goto LAB_00163440;
-      }
-      if (DAT_0025cb4c != 3) goto LAB_00163440;
-      if (uVar38 == 0) {
-LAB_001632ec:
-        piVar28 = (int *)((long)&local_87e0 + uVar38 * 0x24);
-        uVar38 = uVar38 + 1;
-LAB_00163300:
-        piVar28[4] = 0;
-        piVar28[5] = 0;
-        piVar28[6] = 0;
-        piVar28[7] = 0;
-        piVar28[8] = 0;
-        *(undefined8 *)(piVar28 + 2) = _UNK_0010fb18;
-        *(undefined8 *)piVar28 = _DAT_0010fb10;
-        goto LAB_00163440;
-      }
-      piVar28 = (int *)&local_87e0;
-      uVar41 = uVar38;
-      do {
-        if (*piVar28 == 0x27000) goto LAB_00163300;
-        uVar41 = uVar41 - 1;
-        piVar28 = piVar28 + 9;
-      } while (uVar41 != 0);
-      uVar41 = uVar38;
-      if (uVar38 < 0x200) goto LAB_001632ec;
-    }
-LAB_00163444:
-    puVar29 = &uStack_87c8;
-    uVar38 = uVar41;
-    do {
-      if (((*(int *)(puVar29 + -3) == 0x79) && (*(int *)((long)puVar29 + -0xc) != 0)) &&
-         (*(int *)(puVar29 + -1) != 0)) {
-        *(undefined4 *)puVar29 = *(undefined4 *)((long)puVar29 + -4);
-      }
-      uVar38 = uVar38 - 1;
-      puVar29 = (undefined8 *)((long)puVar29 + 0x24);
-    } while (uVar38 != 0);
-  }
-  uVar38 = FUN_00193f80(1,&DAT_00233eec);
-  if ((uVar38 & 1) == 0) {
-    memset(&local_3fe0,0,0x3f60);
-    uVar14 = _UNK_0010fa68;
-    uVar13 = _DAT_0010fa60;
-    uVar12 = _UNK_0010f978;
-    uVar11 = _DAT_0010f970;
-    uVar34 = *(uint *)(puVar39 + 4);
-    if (uVar34 == 0) {
-      uVar38 = 0;
-    }
-    else {
-      uVar38 = 0;
-      pbVar40 = puVar39 + 0x49;
-      uVar37 = 1;
-      do {
-        uVar36 = *(uint *)(pbVar40 + -0x39);
-        if (uVar36 != 0) {
-          auVar43._0_4_ = uVar36 + (int)uVar13;
-          auVar43._4_4_ = uVar36 + (int)((ulong)uVar13 >> 0x20);
-          auVar43._8_4_ = uVar36 + (int)uVar14;
-          auVar43._12_4_ = uVar36 + (int)((ulong)uVar14 >> 0x20);
-          auVar10._8_8_ = uVar12;
-          auVar10._0_8_ = uVar11;
-          auVar44 = NEON_cmhi(auVar10,auVar43,4);
-          uVar42 = NEON_umaxv(CONCAT26(auVar44._12_2_,
-                                       CONCAT24(auVar44._8_2_,CONCAT22(auVar44._4_2_,auVar44._0_2_))
-                                      ),2);
-          if ((((uVar42 & 1) != 0) || ((uVar36 & 0xffffffc0) == 0x26000)) ||
-             (((uVar36 & 0xfffffe00) == 0x29000 || ((uVar36 & 0xfffffffc) == 0x2e000)))) {
-            bVar6 = pbVar40[-1];
-            bVar5 = *pbVar40;
-            __s = (void *)((long)&uStack_3fd4 + uVar38 * 0x270);
-            (&local_3fe0)[uVar38 * 0x9c] = uVar36;
-            (&uStack_3fdc)[uVar38 * 0x9c] = (uint)bVar6;
-            (&uStack_3fd8)[uVar38 * 0x9c] = (uint)bVar5;
-            memset(__s,0,0x264);
-            FUN_00158f70(__s,0x61,*(undefined8 *)(pbVar40 + -0x31));
-            FUN_00158f70(auStack_3f73 + uVar38 * 0x270,0x201,*(undefined8 *)(pbVar40 + -0x29));
-            uVar38 = uVar38 + 1;
-          }
-        }
-        if (uVar34 <= uVar37) break;
-        pbVar40 = pbVar40 + 0x40;
-        uVar37 = uVar37 + 1;
-      } while (uVar38 < 0x1a);
-    }
-    uVar34 = DAT_00233ef8;
-    uVar36 = (uint)(byte)puVar39[8];
-    if (DAT_00233ef4 == uVar36) {
-      bVar5 = puVar39[0xb];
-      bVar19 = true;
-      if (DAT_00233ef8 != bVar5) goto LAB_00163648;
-      uVar26 = (uint)bVar5;
-      if (DAT_00233efc == uVar38) {
-        iVar24 = memcmp(&DAT_00233f00,&local_3fe0,uVar38 * 0x270);
-        bVar19 = iVar24 != 0;
-        uVar26 = uVar34;
-      }
-    }
-    else {
-      bVar5 = puVar39[0xb];
-LAB_00163648:
-      uVar26 = (uint)bVar5;
-      bVar19 = true;
-    }
-    DAT_00233efc = (uint)uVar38;
-    DAT_00233ef4 = uVar36;
-    DAT_00233ef8 = uVar26;
-    if (uVar38 != 0) {
-      __memcpy_chk(&DAT_00233f00,&local_3fe0,uVar38 * 0x270,0x3f60);
-    }
-    if (bVar19) {
-      bVar19 = DAT_00233ef0 == -1;
-      DAT_00233ef0 = DAT_00233ef0 + 1;
-      if (bVar19) {
-        DAT_00233ef0 = 1;
-      }
-      DAT_00233eec = 0;
-      DAT_0025cb40._0_4_ = 1;
-    }
-    else {
-      DAT_00233eec = 0;
-    }
-  }
-  if (((int)DAT_0025cb40 != 0) && (uVar38 = FUN_00193f80(1,&DAT_0022f500), (uVar38 & 1) == 0)) {
-    DAT_00233ee8 = 1;
-    DAT_0022f500 = 0;
-  }
-  if (uVar41 < 0x201) {
-    bVar5 = puVar39[9];
-    bVar6 = puVar39[8];
-    bVar7 = puVar39[10];
-    bVar8 = puVar39[0xb];
-    uVar38 = FUN_00193f80(1,&DAT_0022f500);
-    iVar24 = DAT_00233ee4;
-    if ((uVar38 & 1) == 0) {
-      uVar38 = (ulong)DAT_00233ecc;
-      DAT_00233ee4 = 1;
-      bVar19 = DAT_00233ee8 != 0;
-      uVar34 = (uint)bVar5;
-      uVar36 = (uint)bVar6;
-      bVar20 = DAT_00233ed4 != uVar34;
-      bVar21 = DAT_00233ed8 != uVar36;
-      uVar26 = (uint)bVar7;
-      uVar25 = (uint)bVar8;
-      bVar22 = DAT_00233edc != uVar26;
-      bVar23 = DAT_00233ee0 != uVar25;
-      DAT_00233ecc = (uint)uVar41;
-      DAT_00233ed4 = uVar34;
-      DAT_00233ed8 = uVar36;
-      DAT_00233edc = uVar26;
-      DAT_00233ee0 = uVar25;
-      if ((uVar41 == 0) ||
-         ((((((uVar41 != uVar38 || bVar19) || iVar24 == 0) || bVar20) || bVar21) || bVar22) ||
-          bVar23)) {
-        if (uVar41 != 0) {
-          __memcpy_chk(&DAT_0022f6cc,&local_87e0,uVar41 * 0x24,0x4820);
-        }
-        if ((((((uVar41 != uVar38 || bVar19) || iVar24 == 0) || bVar20) || bVar21) || bVar22) ||
-            bVar23) {
-LAB_00163dcc:
-          bVar19 = DAT_00233ed0 == -1;
-          DAT_00233ed0 = DAT_00233ed0 + 1;
-          if (bVar19) {
-            DAT_00233ed0 = 1;
-          }
-        }
-      }
-      else {
-        lVar30 = 0x1cc;
-        uVar38 = uVar41;
-        do {
-          if (((((*(int *)((long)&DAT_0022f500 + lVar30) != *(int *)((long)aiStack_89ac + lVar30))
-                || (*(int *)((long)&DAT_0022f504 + lVar30) !=
-                    *(int *)((long)aiStack_89ac + lVar30 + 4))) ||
-               (*(int *)(lVar30 + 0x22f508) != *(int *)((long)aiStack_89ac + lVar30 + 8))) ||
-              ((*(int *)(lVar30 + 0x22f50c) != *(int *)((long)aiStack_89ac + lVar30 + 0xc) ||
-               (*(int *)(lVar30 + 0x22f510) != *(int *)((long)aiStack_89ac + lVar30 + 0x10))))) ||
-             (((*(int *)(lVar30 + 0x22f514) != *(int *)((long)aiStack_89ac + lVar30 + 0x14) ||
-               ((*(int *)(lVar30 + 0x22f518) != *(int *)((long)aiStack_89ac + lVar30 + 0x18) ||
-                (*(int *)(lVar30 + 0x22f51c) != *(int *)((long)aiStack_89ac + lVar30 + 0x1c))))) ||
-              (*(int *)(lVar30 + 0x22f520) != *(int *)((long)aiStack_89ac + lVar30 + 0x20))))) {
-            __memcpy_chk(&DAT_0022f6cc,&local_87e0,uVar41 * 0x24,0x4820);
-            goto LAB_00163dcc;
-          }
-          uVar38 = uVar38 - 1;
-          lVar30 = lVar30 + 0x24;
-        } while (uVar38 != 0);
-        __memcpy_chk(&DAT_0022f6cc,&local_87e0,uVar41 * 0x24,0x4820);
-      }
-      DAT_00233ee8 = 0;
-      DAT_0022f500 = 0;
-      if ((DAT_002815ac != 0) &&
-         (((DAT_0025cb4c == 0 ||
-           (iVar24 = nexus_menu_section_present(0x25cb44,0x24a68,param_2), iVar24 != 0)) &&
-          (uVar38 = FUN_00193f80(1,&DAT_0022f500), iVar24 = DAT_00233ed0, (uVar38 & 1) == 0)))) {
-        DAT_0022f500 = 0;
-        uVar38 = FUN_00193f80(1,&DAT_00237e60);
-        if ((uVar38 & 1) == 0) {
-          memcpy(&DAT_00237e64,(void *)((long)&DAT_0025cb40 + 4),0x24a68);
-          DAT_0025c8cc = iVar24;
-          DAT_00237e60 = 0;
-        }
-      }
-      DAT_0025cb40._0_4_ = 0;
-    }
-  }
-LAB_00163e80:
-  if (*(long *)(lVar9 + 0x28) == local_78) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_001641ec @ 001641ec ===== */
-
-void FUN_001641ec(undefined *param_1,undefined4 *param_2,long param_3)
-
-{
-  bool bVar1;
-  uint uVar2;
-  long lVar3;
-  __pid_t _Var4;
-  undefined4 uVar5;
-  int iVar6;
-  long lVar7;
-  timespec local_1e8;
-  undefined1 auStack_1d8 [384];
-  long local_58;
-  
-  lVar3 = tpidr_el0;
-  local_58 = *(long *)(lVar3 + 0x28);
-  DAT_0025ca6c = 1;
-  PTR_s_launcher_initializing_001a7c58 = param_1;
-  if ((DAT_0025ca78 != param_1) && (DAT_0025ca70 < 8)) {
-    FUN_0015540c((double)(float)param_2[8],(double)(float)param_2[9],(double)(float)param_2[10],
-                 (double)(float)param_2[0xb],(double)*(float *)(param_3 + 8),
-                 (double)*(float *)(param_3 + 0xc),(double)(float)param_2[0xc],
-                 (double)(float)param_2[0xd],auStack_1d8,0x180,0x180,
-                 "%s q=%d,%d,%d reads=%x root=%.9g,%.9g,%.9g,%.9g viewport=%.9gx%.9g scale=%.9g offset=%.9g,%.9g dims=%d,%d"
-                 ,param_1,*param_2,param_2[1],param_2[2],param_2[0xf],(double)(float)param_2[0xe],
-                 param_2[6],param_2[7]);
-    uVar2 = DAT_0022f4bc + 1;
-    bVar1 = DAT_0022f4bc < 0x80;
-    DAT_0022f4bc = uVar2;
-    if (bVar1) {
-      _Var4 = getpid();
-      uVar5 = gettid(_Var4);
-      iVar6 = clock_gettime(0,&local_1e8);
-      if (iVar6 == 0) {
-        lVar7 = local_1e8.tv_sec * 1000 + (ulong)local_1e8.tv_nsec / 1000000;
-      }
-      else {
-        lVar7 = 0;
-      }
-      __android_log_print(4,"NexusLab69252",
-                          "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}"
-                          ,"nexus_shell_launcher_waiting",auStack_1d8,0,_Var4,uVar5,lVar7);
-    }
-    DAT_0025ca70 = DAT_0025ca70 + 1;
-  }
-  DAT_0025ca78 = param_1;
-  if (*(long *)(lVar3 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
-
-/* ===== FUN_00176418 @ 00176418 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 FUN_00176418(long param_1,int param_2)
-
-{
-  int *piVar1;
-  ulong uVar2;
-  uint uVar3;
-  long lVar4;
-  long lVar5;
-  bool bVar6;
-  int iVar7;
-  undefined8 uVar8;
-  long *plVar9;
-  ulong uVar10;
-  ulong uVar11;
-  ulong uVar12;
-  double dVar13;
-  
-  uVar8 = FUN_00179448();
-  if ((int)uVar8 == 0) {
-    return uVar8;
-  }
-  if (DAT_0022d798 == 0) {
-    return 1;
-  }
-  iVar7 = nexus_menu_main_count();
-  lVar5 = DAT_0022d7b8;
-  lVar4 = DAT_0022d7b0;
-  uVar3 = DAT_0022d790;
-  plVar9 = &DAT_0022d7d8;
-  if (DAT_0022d794 == 0) {
-    uVar8 = 0;
-    goto LAB_001767ac;
-  }
-  uVar11 = (ulong)(iVar7 + 4) / 5;
-  uVar12 = (ulong)DAT_0022d790;
-  uVar8 = FUN_001830b0(DAT_0022d7b8,1,DAT_0022d7a8,uVar11);
-  if ((int)uVar8 == 0) {
-    plVar9 = &DAT_0022d7d8;
-    goto LAB_001767ac;
-  }
-  if (uVar3 < 0xb) {
-    if (uVar3 == 0) {
-      bVar6 = true;
-    }
-    else {
-      uVar10 = 0;
-      bVar6 = false;
-      do {
-        if ((((((&DAT_0022d600)[uVar10 * 10] < 0) || (ABS((&DAT_0022d604)[uVar10 * 10]) == INFINITY)
-              ) || (NAN(ABS((&DAT_0022d604)[uVar10 * 10])))) ||
-            ((ABS((&DAT_0022d608)[uVar10 * 10]) == INFINITY ||
-             (NAN(ABS((&DAT_0022d608)[uVar10 * 10])))))) ||
-           ((1 < (uint)(&DAT_0022d60c)[uVar10 * 10] ||
-            ((1 < (uint)(&DAT_0022d610)[uVar10 * 10] ||
-             (piVar1 = &DAT_0022d600, uVar2 = uVar10,
-             (&DAT_0022d60c)[uVar10 * 10] == (&DAT_0022d610)[uVar10 * 10])))))) break;
-        for (; uVar2 != 0; uVar2 = uVar2 - 1) {
-          if (*piVar1 == (&DAT_0022d600)[uVar10 * 10]) goto LAB_0017658c;
-          piVar1 = piVar1 + 10;
-        }
-        uVar10 = uVar10 + 1;
-        bVar6 = uVar12 <= uVar10;
-      } while (uVar10 != uVar12);
-    }
-LAB_0017658c:
-    if ((uVar3 < 2) && (bVar6)) {
-      if (DAT_0022d574 != 0) {
-        uVar8 = 0;
-        plVar9 = &DAT_0022d7d8;
-        goto LAB_001767ac;
-      }
-      if (DAT_0022d564 != 0) {
-        if (uVar3 != 1) {
-          uVar8 = 0;
-          plVar9 = &DAT_0022d7d8;
-          goto LAB_001767ac;
-        }
-        uVar8 = 0;
-        plVar9 = &DAT_0022d7d8;
-        if ((DAT_0022d600 != DAT_0022d5b0) || (DAT_0022d610 == 0)) goto LAB_001767ac;
-        FUN_00183658(lVar5,&DAT_0022d600,uVar11,1);
-      }
-      uVar8 = 0;
-      plVar9 = &DAT_0022d7d8;
-      if ((DAT_0022d578 == 0) || (DAT_0022d57c != 0)) goto LAB_001767ac;
-      if (500 < (ulong)(lVar5 - DAT_0022d5a0)) {
-        uVar8 = 0;
-        plVar9 = &DAT_0022d7d8;
-        goto LAB_001767ac;
-      }
-      if (uVar3 != 0) {
-        if (DAT_0022d60c != 0) {
-          uVar8 = 0;
-          plVar9 = &DAT_0022d7d8;
-          goto LAB_001767ac;
-        }
-        if (DAT_0022d600 != DAT_0022d5b0) {
-          uVar8 = 0;
-          plVar9 = &DAT_0022d7d8;
-          goto LAB_001767ac;
-        }
-        dVar13 = (double)NEON_fmadd((double)DAT_0022d604 - (double)DAT_0022d5b4,
-                                    (double)DAT_0022d604 - (double)DAT_0022d5b4,
-                                    ((double)DAT_0022d608 - (double)DAT_0022d5b8) *
-                                    ((double)DAT_0022d608 - (double)DAT_0022d5b8));
-        if ((((dVar13 < 64.0 == NAN(dVar13)) || (DAT_0022d5c4 == 0)) || (DAT_0022d5c8 == 0)) ||
-           (((DAT_0022d5d0 == 0 || (DAT_0022d5c4 != DAT_0022d614)) ||
-            ((DAT_0022d5c8 != DAT_0022d618 || (DAT_0022d5d0 != DAT_0022d620)))))) goto LAB_00176768;
-      }
-      uVar8 = 0;
-      plVar9 = &DAT_0022d7d8;
-      if (((DAT_0022d5c8 == param_1) && (DAT_0022d5c4 == param_2)) && (DAT_0022d5d0 == lVar4)) {
-        plVar9 = &DAT_0022d7e0;
-        uVar8 = 1;
-        _DAT_0022d578 = 0;
-      }
-      goto LAB_001767ac;
-    }
-  }
-LAB_00176768:
-  DAT_0022d564 = 0;
-  _DAT_0022d578 = _UNK_0010fa98;
-  _DAT_0022d570 = _DAT_0010fa90;
-  FUN_00183230(0,0,&DAT_0022d518,lVar5,0,4,0xffffffff,uVar11);
-  uVar8 = 0;
-  plVar9 = &DAT_0022d7d8;
-LAB_001767ac:
-  *plVar9 = *plVar9 + 1;
-  return uVar8;
-}
-
-/* ===== nexus_rich_main_row @ 00178b1c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-uint nexus_rich_main_row(void)
-
-{
-  uint uVar1;
-  float fVar2;
-  int iVar3;
-  uint uVar4;
-  
-  iVar3 = nexus_menu_editor_scroll_revision();
-  if ((iVar3 != DAT_0028467c) && (DAT_0028467c = iVar3, iVar3 != 0)) {
-    DAT_0022d5f8 = 0;
-    DAT_0022d794 = 0;
-    DAT_0022d7a8 = DAT_0022d7a8 + 1;
-    DAT_0022d7b0 = DAT_0022d7b0 + 1;
-    ram0x0022d520 = 0;
-    _DAT_0022d518 = 0;
-    _DAT_0022d530 = 0;
-    _DAT_0022d528 = 0;
-    uRam000000000022d540 = 0;
-    _DAT_0022d538 = 0;
-    uRam000000000022d550 = 0;
-    _DAT_0022d548 = 0;
-    _DAT_0022d560 = 0;
-    DAT_0022d558 = 0;
-    _DAT_0022d570 = 0;
-    _DAT_0022d568 = 0;
-    _DAT_0022d580 = 0;
-    _DAT_0022d578 = 0;
-    DAT_0022d590 = 0;
-    DAT_0022d588 = 0;
-    DAT_0022d5a0 = 0;
-    DAT_0022d598 = 0;
-    _DAT_0022d5b0 = 0;
-    DAT_0022d5a8 = 0;
-    _DAT_0022d5c0 = 0;
-    _DAT_0022d5b8 = 0;
-    DAT_0022d5d0 = 0;
-    DAT_0022d5c8 = 0;
-    _DAT_0022d5e0 = 0;
-    _DAT_0022d5d8 = 0;
-    _DAT_0022d5f0 = 0;
-    _DAT_0022d5e8 = 0;
-    DAT_0022d79c = 0xffffffff;
-  }
-  iVar3 = nexus_menu_theme_scroll_revision();
-  if ((iVar3 != DAT_00284680) && (DAT_00284680 = iVar3, iVar3 != 0)) {
-    DAT_0022d5f8 = 0;
-    DAT_0022d794 = 0;
-    DAT_0022d7a8 = DAT_0022d7a8 + 1;
-    DAT_0022d7b0 = DAT_0022d7b0 + 1;
-    ram0x0022d520 = 0;
-    _DAT_0022d518 = 0;
-    _DAT_0022d530 = 0;
-    _DAT_0022d528 = 0;
-    uRam000000000022d540 = 0;
-    _DAT_0022d538 = 0;
-    uRam000000000022d550 = 0;
-    _DAT_0022d548 = 0;
-    _DAT_0022d560 = 0;
-    DAT_0022d558 = 0;
-    _DAT_0022d570 = 0;
-    _DAT_0022d568 = 0;
-    _DAT_0022d580 = 0;
-    _DAT_0022d578 = 0;
-    DAT_0022d590 = 0;
-    DAT_0022d588 = 0;
-    DAT_0022d5a0 = 0;
-    DAT_0022d598 = 0;
-    _DAT_0022d5b0 = 0;
-    DAT_0022d5a8 = 0;
-    _DAT_0022d5c0 = 0;
-    _DAT_0022d5b8 = 0;
-    DAT_0022d5d0 = 0;
-    DAT_0022d5c8 = 0;
-    _DAT_0022d5e0 = 0;
-    _DAT_0022d5d8 = 0;
-    _DAT_0022d5f0 = 0;
-    _DAT_0022d5e8 = 0;
-    DAT_0022d79c = 0xffffffff;
-  }
-  fVar2 = DAT_0022d518;
-  iVar3 = nexus_menu_main_count();
-  uVar4 = 0;
-  if ((((ABS(fVar2) != INFINITY) && (!NAN(ABS(fVar2)))) && (0.0 <= fVar2)) &&
-     (uVar1 = iVar3 + 4, 4 < uVar1)) {
-    uVar4 = (uint)((fVar2 + 32.0) / 110.0);
-    if (uVar1 / 5 < uVar4 || uVar1 / 5 == uVar4) {
-      uVar4 = uVar1 / 5 - 1;
-    }
-  }
-  return uVar4;
-}
-
-/* ===== FUN_0017fbc8 @ 0017fbc8 ===== */
-
-void FUN_0017fbc8(undefined8 param_1,undefined8 param_2)
-
-{
-  bool bVar1;
-  int iVar2;
-  undefined4 uVar3;
-  undefined4 *puVar4;
-  
-  puVar4 = (undefined4 *)__errno();
-  uVar3 = *puVar4;
-  iVar2 = DAT_001a7d20 + 1;
-  bVar1 = DAT_001a7d20 < 0x40;
-  DAT_001a7d20 = iVar2;
-  if ((bVar1) && (DAT_001a7d00 != (code *)0x0)) {
-    (*DAT_001a7d00)(DAT_001a7cc8,"nexus_menu_probe",param_2,0);
-  }
-  *puVar4 = uVar3;
-  return;
-}
-
-/* ===== FUN_00180034 @ 00180034 ===== */
-
-void FUN_00180034(undefined8 param_1,ulong param_2,long param_3)
-
-{
-  bool bVar1;
-  bool bVar2;
-  uint uVar3;
-  ulong uVar4;
-  long lVar5;
-  int iVar6;
-  FILE *__stream;
-  char *pcVar7;
-  undefined8 uVar8;
-  undefined4 *puVar9;
-  undefined4 uVar10;
-  ulong local_270;
-  ulong uStack_268;
-  char local_260;
-  char local_25f;
-  char local_25e;
-  char local_25d;
-  char acStack_258 [512];
-  long local_58;
-  
-  lVar5 = tpidr_el0;
-  param_2 = param_2 & 0xffffffffffffff;
-  local_58 = *(long *)(lVar5 + 0x28);
-  if ((param_2 < 0x1000) || ((param_2 ^ 0xffffffffffffff) <= param_3 - 1U)) {
-    puVar9 = (undefined4 *)__errno();
-    uVar10 = *puVar9;
-    uVar3 = DAT_001a7d20 + 1;
-    bVar2 = DAT_001a7d20 < 0x40;
-    DAT_001a7d20 = uVar3;
-    if ((bVar2) && (DAT_001a7d00 != (code *)0x0)) {
-      pcVar7 = "clip_writable_invalid";
-LAB_00180270:
-      (*DAT_001a7d00)(DAT_001a7cc8,"nexus_menu_probe",pcVar7,0);
-    }
-  }
-  else {
-    __stream = fopen("/proc/self/maps","r");
-    if (__stream != (FILE *)0x0) {
-      pcVar7 = fgets(acStack_258,0x200,__stream);
-      if (pcVar7 != (char *)0x0) {
-        uVar4 = param_2 + param_3;
-        do {
-          iVar6 = sscanf(acStack_258,"%lx-%lx %4s",&uStack_268,&local_270,&local_260);
-          if ((((iVar6 == 3) && (local_270 >> 0x38 == 0)) &&
-              (uStack_268 < local_270 && (param_2 < uVar4 && uVar4 >> 0x38 == 0))) &&
-             ((uStack_268 <= param_2 && (uVar4 <= local_270)))) {
-            bVar2 = false;
-            if ((local_260 != 'r') || ((local_25f != 'w' || (local_25e != '-')))) goto LAB_001801b8;
-            iVar6 = fclose(__stream);
-            if (local_25d == 'p') {
-              uVar8 = 1;
-              goto LAB_00180284;
-            }
-            bVar2 = false;
-            goto LAB_001801c0;
-          }
-          pcVar7 = fgets(acStack_258,0x200,__stream);
-        } while (pcVar7 != (char *)0x0);
-      }
-      bVar2 = true;
-LAB_001801b8:
-      iVar6 = fclose(__stream);
-LAB_001801c0:
-      puVar9 = (undefined4 *)__errno(iVar6);
-      uVar10 = *puVar9;
-      uVar3 = DAT_001a7d20 + 1;
-      bVar1 = DAT_001a7d20 < 0x40;
-      DAT_001a7d20 = uVar3;
-      if ((bVar1) && (DAT_001a7d00 != (code *)0x0)) {
-        pcVar7 = "clip_writable_mapping_missing";
-        if (!bVar2) {
-          pcVar7 = "clip_writable_permissions";
-        }
-        (*DAT_001a7d00)(DAT_001a7cc8,"nexus_menu_probe",pcVar7,0);
-      }
-      uVar8 = 0;
-      *puVar9 = uVar10;
-      goto LAB_00180284;
-    }
-    puVar9 = (undefined4 *)__errno();
-    uVar10 = *puVar9;
-    uVar3 = DAT_001a7d20 + 1;
-    bVar2 = DAT_001a7d20 < 0x40;
-    DAT_001a7d20 = uVar3;
-    if ((bVar2) && (DAT_001a7d00 != (code *)0x0)) {
-      pcVar7 = "clip_writable_maps_unavailable";
-      goto LAB_00180270;
-    }
-  }
-  uVar8 = 0;
-  *puVar9 = uVar10;
-LAB_00180284:
-  if (*(long *)(lVar5 + 0x28) == local_58) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar8);
-}
-
-/* ===== nexus_menu_init @ 00183a08 ===== */
-
-undefined8 nexus_menu_init(void)
-
-{
-  undefined4 *puVar1;
-  undefined *puVar2;
-  ulong uVar3;
-  undefined8 uVar4;
-  undefined4 *puVar5;
-  long lVar6;
-  undefined4 uVar7;
-  
-  uVar3 = FUN_00193f80(1,&DAT_00284688);
-  puVar2 = PTR_PTR_s_nexus_sx_spin_001a36f8;
-  if ((uVar3 & 1) == 0) {
-    if (DAT_0028468c == 0) {
-      lVar6 = 0x28;
-      puVar5 = (undefined4 *)(PTR_PTR_s_nexus_sx_spin_001a36f8 + 0x28);
-      do {
-        puVar1 = puVar5 + -6;
-        uVar7 = *puVar5;
-        puVar5 = puVar5 + 0xc;
-        *(ulong *)((long)&DAT_00284688 + lVar6) = CONCAT44(uVar7,*puVar1);
-        lVar6 = lVar6 + 8;
-      } while (lVar6 != 0x1f8);
-      DAT_00284880 = *(undefined4 *)(puVar2 + 0xaf0);
-      DAT_00284884 = *(undefined4 *)(puVar2 + 0xb08);
-      DAT_0028469d = 0x52;
-      DAT_0028468c = 1;
-      DAT_002846a0 = 1;
-      FUN_00183ac8(&DAT_00284aa8,0x40,0x40,"host_not_registered");
-    }
-    uVar4 = 1;
-    DAT_00284688 = 0;
-  }
-  else {
-    uVar4 = 3;
-  }
-  return uVar4;
-}
-
-/* ===== nexus_menu_start @ 00183b6c ===== */
-
-void nexus_menu_start(void)
-
-{
-  undefined4 *puVar1;
-  undefined *puVar2;
-  ulong uVar3;
-  undefined4 *puVar4;
-  long lVar5;
-  undefined4 uVar6;
-  
-  uVar3 = FUN_00193f80(1,&DAT_00284688);
-  puVar2 = PTR_PTR_s_nexus_sx_spin_001a36f8;
-  if ((uVar3 & 1) == 0) {
-    if (DAT_0028468c == 0) {
-      lVar5 = 0x28;
-      puVar4 = (undefined4 *)(PTR_PTR_s_nexus_sx_spin_001a36f8 + 0x28);
-      do {
-        puVar1 = puVar4 + -6;
-        uVar6 = *puVar4;
-        puVar4 = puVar4 + 0xc;
-        *(ulong *)((long)&DAT_00284688 + lVar5) = CONCAT44(uVar6,*puVar1);
-        lVar5 = lVar5 + 8;
-      } while (lVar5 != 0x1f8);
-      DAT_00284880 = *(undefined4 *)(puVar2 + 0xaf0);
-      DAT_00284884 = *(undefined4 *)(puVar2 + 0xb08);
-      DAT_0028469d = 0x52;
-      DAT_0028468c = 1;
-      DAT_002846a0 = 1;
-      FUN_00183ac8(&DAT_00284aa8,0x40,0x40,"host_not_registered");
-    }
-    DAT_00284688 = 0;
-    DAT_00284ae8 = 1;
-    FUN_001939e0(0,1,&DAT_00284aec);
-    uVar3 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar3 & 1) == 0) {
-      DAT_00284690 = 1;
-      if (DAT_00284698 == 0) {
-        DAT_00284698 = 1;
-      }
-      DAT_00284688 = 0;
-    }
-  }
-  return;
-}
-
-/* ===== nexus_menu_status @ 00183d70 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_status(void)
-
-{
-  if (DAT_00284ae8 != 0) {
-    return CONCAT44(DAT_00284af0,_DAT_00284aec);
-  }
-  return 0;
-}
-
-/* ===== nexus_menu_register_backend @ 00183e8c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_register_backend(uint param_1,int *param_2)
-
-{
-  ulong uVar1;
-  undefined8 uVar2;
-  
-  if (7 < param_1) {
-    return 4;
-  }
-  if (param_2 == (int *)0x0) {
-    return 4;
-  }
-  if (*param_2 != 1) {
-    return 4;
-  }
-  if (param_2[1] != 0x40) {
-    return 4;
-  }
-  if (*(long *)(param_2 + 10) == 0) {
-    return 4;
-  }
-  if (*(long *)(param_2 + 0xc) == 0) {
-    return 4;
-  }
-  if (*(ulong *)(param_2 + 8) >> 0x28 != 0) {
-    return 4;
-  }
-  uVar1 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar1 & 1) != 0) {
-    return 3;
-  }
-  if (param_1 == 0) {
-LAB_00183f48:
-    if ((*(ulong *)(param_2 + 4) & DAT_002848d8) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_002848e0) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_002848e8) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (param_1 != 2) goto LAB_0018405c;
-LAB_00183f8c:
-    if ((*(ulong *)(param_2 + 4) & DAT_00284958) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_00284960) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_00284968) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (param_1 == 4) goto LAB_00183fd0;
-  }
-  else {
-    if ((*(ulong *)(param_2 + 4) & DAT_00284898) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_002848a0) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_002848a8) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (param_1 != 1) goto LAB_00183f48;
-LAB_0018405c:
-    if ((*(ulong *)(param_2 + 4) & DAT_00284918) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_00284920) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_00284928) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (param_1 != 3) goto LAB_00183f8c;
-  }
-  if ((*(ulong *)(param_2 + 4) & DAT_00284998) != 0) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if ((*(ulong *)(param_2 + 6) & DAT_002849a0) != 0) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if ((*(ulong *)(param_2 + 8) & DAT_002849a8) != 0) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (param_1 == 5) {
-    if ((*(ulong *)(param_2 + 4) & DAT_00284a18) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_00284a20) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_00284a28) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 4) & DAT_00284a58) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 6) & DAT_00284a60) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((*(ulong *)(param_2 + 8) & DAT_00284a68) != 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    DAT_00284688 = 0;
-    DAT_002846a0 = DAT_002846a0 + 1;
-    DAT_002849d8 = *(undefined8 *)(param_2 + 4);
-    DAT_002849e0 = *(undefined8 *)(param_2 + 6);
-    _DAT_002849c8 = *(undefined8 *)param_2;
-    DAT_002849d0 = *(undefined8 *)(param_2 + 2);
-    uRam00000000002849e8 = *(undefined8 *)(param_2 + 8);
-    DAT_002849f0 = *(undefined8 *)(param_2 + 10);
-    uRam00000000002849f8 = *(undefined8 *)(param_2 + 0xc);
-    DAT_00284a00 = *(undefined8 *)(param_2 + 0xe);
-    return 1;
-  }
-LAB_00183fd0:
-  if (((*(ulong *)(param_2 + 4) & DAT_002849d8) == 0) &&
-     ((*(ulong *)(param_2 + 6) & DAT_002849e0) == 0)) {
-    uVar2 = FUN_00194040(0x284000);
-    return uVar2;
-  }
-  DAT_00284688 = 0;
-  return 4;
-}
-
-/* ===== nexus_menu_register_storage @ 0018416c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_register_storage(int *param_1)
-
-{
-  ulong uVar1;
-  undefined8 uVar2;
-  
-  if ((((param_1 == (int *)0x0) || (*param_1 != 1)) || (param_1[1] != 0x20)) ||
-     ((*(long *)(param_1 + 4) == 0 || (*(long *)(param_1 + 6) == 0)))) {
-    uVar2 = 4;
-  }
-  else {
-    uVar1 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar1 & 1) == 0) {
-      DAT_00284a90 = *(undefined8 *)(param_1 + 2);
-      _DAT_00284a88 = *(undefined8 *)param_1;
-      DAT_00284aa0 = *(undefined8 *)(param_1 + 6);
-      DAT_00284a98 = *(undefined8 *)(param_1 + 4);
-      uVar2 = 1;
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar2 = 3;
-    }
-  }
-  return uVar2;
-}
-
-/* ===== nexus_menu_setting_value @ 001841f0 ===== */
-
-undefined8 nexus_menu_setting_value(uint param_1,undefined4 *param_2)
-
-{
-  undefined8 uVar1;
-  ulong uVar2;
-  
-  uVar1 = 4;
-  if ((param_1 < 0x76) && (param_2 != (undefined4 *)0x0)) {
-    uVar2 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar2 & 1) == 0) {
-      uVar1 = 1;
-      *param_2 = *(undefined4 *)((long)&DAT_002846b0 + (ulong)param_1 * 4);
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar1 = 3;
-    }
-  }
-  return uVar1;
-}
-
-/* ===== nexus_menu_export @ 0018425c ===== */
-
-undefined8 nexus_menu_export(long param_1,ulong param_2,undefined8 *param_3)
-
-{
-  undefined8 uVar1;
-  ulong uVar2;
-  
-  uVar1 = 4;
-  if (((param_1 != 0) && (0x3c3 < param_2)) && (param_3 != (undefined8 *)0x0)) {
-    uVar2 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar2 & 1) == 0) {
-      FUN_001842d0(param_1);
-      uVar1 = 1;
-      *param_3 = 0x3c4;
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar1 = 3;
-    }
-  }
-  return uVar1;
-}
-
-/* ===== nexus_menu_import @ 001843dc ===== */
-
-void nexus_menu_import(undefined8 param_1,undefined8 param_2,int param_3)
-
-{
-  long lVar1;
-  undefined8 uVar2;
-  ulong uVar3;
-  undefined1 auStack_210 [472];
-  long local_38;
-  
-  lVar1 = tpidr_el0;
-  local_38 = *(long *)(lVar1 + 0x28);
-  uVar2 = FUN_0018447c(param_1,param_2,auStack_210);
-  if ((int)uVar2 == 1) {
-    uVar3 = FUN_00193f80(uVar2,&DAT_00284688);
-    if ((uVar3 & 1) == 0) {
-      uVar2 = 4;
-      if ((0 < param_3) && (DAT_00284694 == param_3)) {
-        uVar2 = FUN_001846b8(auStack_210);
-      }
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar2 = 3;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_38) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar2);
-}
-
-/* ===== FUN_0018447c @ 0018447c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 FUN_0018447c(long *param_1,long param_2,long param_3)
-
-{
-  byte *pbVar1;
-  uint uVar2;
-  long lVar3;
-  int iVar4;
-  long lVar5;
-  uint uVar6;
-  int iVar7;
-  int *piVar8;
-  char *__s1;
-  ulong uVar9;
-  byte bVar10;
-  uint uVar11;
-  byte bVar14;
-  byte bVar15;
-  byte bVar16;
-  undefined1 auVar12 [16];
-  undefined1 auVar13 [16];
-  
-  if ((((param_1 != (long *)0x0) && (param_2 == 0x3c4)) && (*param_1 == 0x32353239364d4e)) &&
-     ((lVar3 = param_1[1], (int)lVar3 - 1U < 2 && (*(int *)((long)param_1 + 0xc) == 0x76)))) {
-    lVar5 = 0;
-    uVar6 = 0xffffffff;
-    do {
-      pbVar1 = (byte *)((long)param_1 + lVar5);
-      lVar5 = lVar5 + 1;
-      uVar11 = uVar6 ^ *pbVar1;
-      uVar2 = -(uVar11 & 1) & 0xedb88320 ^ uVar11 >> 1;
-      bVar10 = (byte)uVar11;
-      auVar12[0] = bVar10 & (byte)_DAT_0010f9c0;
-      bVar14 = (byte)(uVar6 >> 8);
-      auVar12[1] = bVar14 & (byte)((ulong)_DAT_0010f9c0 >> 8);
-      bVar15 = (byte)(uVar6 >> 0x10);
-      auVar12[2] = bVar15 & (byte)((ulong)_DAT_0010f9c0 >> 0x10);
-      bVar16 = (byte)(uVar6 >> 0x18);
-      auVar12[3] = bVar16 & (byte)((ulong)_DAT_0010f9c0 >> 0x18);
-      auVar12[4] = bVar10 & (byte)((ulong)_DAT_0010f9c0 >> 0x20);
-      auVar12[5] = bVar14 & (byte)((ulong)_DAT_0010f9c0 >> 0x28);
-      auVar12[6] = bVar15 & (byte)((ulong)_DAT_0010f9c0 >> 0x30);
-      auVar12[7] = bVar16 & (byte)((ulong)_DAT_0010f9c0 >> 0x38);
-      auVar12[8] = bVar10 & (byte)_UNK_0010f9c8;
-      auVar12[9] = bVar14 & (byte)((ulong)_UNK_0010f9c8 >> 8);
-      auVar12[10] = bVar15 & (byte)((ulong)_UNK_0010f9c8 >> 0x10);
-      auVar12[0xb] = bVar16 & (byte)((ulong)_UNK_0010f9c8 >> 0x18);
-      auVar12[0xc] = bVar10 & (byte)((ulong)_UNK_0010f9c8 >> 0x20);
-      auVar12[0xd] = bVar14 & (byte)((ulong)_UNK_0010f9c8 >> 0x28);
-      auVar12[0xe] = bVar15 & (byte)((ulong)_UNK_0010f9c8 >> 0x30);
-      auVar12[0xf] = bVar16 & (byte)((ulong)_UNK_0010f9c8 >> 0x38);
-      uVar6 = (int)(uVar11 << 0x1e) >> 0x1f & 0xedb88320U ^ uVar2 >> 1;
-      auVar12 = NEON_cmeq(auVar12,0,2);
-      auVar13[0] = (byte)_DAT_0010fac0 & ~auVar12[0];
-      auVar13[1] = (byte)((ulong)_DAT_0010fac0 >> 8) & ~auVar12[1];
-      auVar13[2] = (byte)((ulong)_DAT_0010fac0 >> 0x10) & ~auVar12[2];
-      auVar13[3] = (byte)((ulong)_DAT_0010fac0 >> 0x18) & ~auVar12[3];
-      auVar13[4] = (byte)((ulong)_DAT_0010fac0 >> 0x20) & ~auVar12[4];
-      auVar13[5] = (byte)((ulong)_DAT_0010fac0 >> 0x28) & ~auVar12[5];
-      auVar13[6] = (byte)((ulong)_DAT_0010fac0 >> 0x30) & ~auVar12[6];
-      auVar13[7] = (byte)((ulong)_DAT_0010fac0 >> 0x38) & ~auVar12[7];
-      auVar13[8] = (byte)_UNK_0010fac8 & ~auVar12[8];
-      auVar13[9] = (byte)((ulong)_UNK_0010fac8 >> 8) & ~auVar12[9];
-      auVar13[10] = (byte)((ulong)_UNK_0010fac8 >> 0x10) & ~auVar12[10];
-      auVar13[0xb] = (byte)((ulong)_UNK_0010fac8 >> 0x18) & ~auVar12[0xb];
-      auVar13[0xc] = (byte)((ulong)_UNK_0010fac8 >> 0x20) & ~auVar12[0xc];
-      auVar13[0xd] = (byte)((ulong)_UNK_0010fac8 >> 0x28) & ~auVar12[0xd];
-      auVar13[0xe] = (byte)((ulong)_UNK_0010fac8 >> 0x30) & ~auVar12[0xe];
-      auVar13[0xf] = (byte)((ulong)_UNK_0010fac8 >> 0x38) & ~auVar12[0xf];
-      auVar12 = NEON_ext(auVar13,auVar13,8,1);
-      uVar11 = CONCAT13(auVar13[3] ^ auVar12[3],
-                        CONCAT12(auVar13[2] ^ auVar12[2],
-                                 CONCAT11(auVar13[1] ^ auVar12[1],auVar13[0] ^ auVar12[0])));
-      uVar6 = uVar11 ^ (int)(uVar2 << 0x1a) >> 0x1f & 0x76dc4190U ^
-              (int)(uVar6 << 0x1a) >> 0x1f & 0xedb88320U ^ uVar6 >> 6 ^
-              (uint)(CONCAT17(auVar13[7] ^ auVar12[7],
-                              CONCAT16(auVar13[6] ^ auVar12[6],
-                                       CONCAT15(auVar13[5] ^ auVar12[5],
-                                                CONCAT14(auVar13[4] ^ auVar12[4],uVar11)))) >> 0x20)
-      ;
-    } while (lVar5 != 0x3c0);
-    if (((uint)*(ushort *)(param_1 + 0x78) |
-        (uint)*(byte *)((long)param_1 + 0x3c2) << 0x10 |
-        (uint)*(byte *)((long)param_1 + 0x3c3) << 0x18) == ~uVar6) {
-      uVar9 = 0;
-      lVar5 = (long)param_1 + 0x17;
-      piVar8 = (int *)(PTR_PTR_s_nexus_sx_spin_001a36f8 + 0xc);
-      while (((uVar9 == *(uint *)(lVar5 + -7) && (iVar7 = *(int *)(lVar5 + -3), piVar8[-1] <= iVar7)
-              ) && (iVar7 <= *piVar8))) {
-        if (((int)lVar3 == 1) && (iVar7 == 100)) {
-          __s1 = *(char **)(piVar8 + -3);
-          iVar4 = strcmp(__s1,"nexus_dodge_reaction_pct");
-          if (((iVar4 == 0) ||
-              (((iVar4 = strcmp(__s1,"nexus_v2_dodge_reaction_pct"), iVar4 == 0 ||
-                (iVar4 = strcmp(__s1,"nexus_v3_dodge_reaction_pct"), iVar4 == 0)) ||
-               (iVar4 = strcmp(__s1,"nexus_v4_dodge_reaction_pct"), iVar4 == 0)))) ||
-             (iVar4 = strcmp(__s1,"nexus_v5_dodge_reaction_pct"), iVar4 == 0)) {
-            iVar7 = 0xb4;
-          }
-        }
-        *(int *)(param_3 + uVar9 * 4) = iVar7;
-        uVar9 = uVar9 + 1;
-        piVar8 = piVar8 + 6;
-        lVar5 = lVar5 + 8;
-        if (uVar9 == 0x76) {
-          return 1;
-        }
-      }
-    }
-  }
-  return 4;
-}
-
-/* ===== nexus_menu_set_battle @ 00184858 ===== */
-
-undefined8 nexus_menu_set_battle(int param_1,int param_2)
-
-{
-  ulong uVar1;
-  undefined8 uVar2;
-  
-  uVar1 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar1 & 1) == 0) {
-    uVar2 = 4;
-    if ((0 < param_2) && (DAT_00284694 == param_2)) {
-      if ((bool)DAT_0028469e == (param_1 != 0)) {
-        uVar2 = 1;
-      }
-      else {
-        uVar2 = 1;
-        DAT_0028469f = 0;
-        DAT_002846a0 = DAT_002846a0 + 1;
-        DAT_0028469e = param_1 != 0;
-      }
-    }
-    DAT_00284688 = 0;
-  }
-  else {
-    uVar2 = 3;
-  }
-  return uVar2;
-}
-
-/* ===== nexus_menu_scroll_battle @ 00184900 ===== */
-
-undefined8 nexus_menu_scroll_battle(int param_1,int param_2)
-
-{
-  uint uVar1;
-  ulong uVar2;
-  undefined8 uVar3;
-  int iVar4;
-  
-  uVar2 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar2 & 1) == 0) {
-    uVar3 = 4;
-    if (((0 < param_2) && (DAT_00284694 == param_2)) && (DAT_0028469e != '\0')) {
-      uVar3 = 1;
-      uVar1 = (uint)DAT_0028469f + param_1;
-      iVar4 = (int)(*(long *)PTR_DAT_001a3700 + 1U >> 1);
-      if (iVar4 < 5) {
-        iVar4 = 4;
-      }
-      if ((int)uVar1 < 1) {
-        uVar1 = 0;
-      }
-      if (iVar4 - 4U <= uVar1) {
-        uVar1 = iVar4 - 4U;
-      }
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_0028469f = (byte)uVar1;
-    }
-    DAT_00284688 = 0;
-  }
-  else {
-    uVar3 = 3;
-  }
-  return uVar3;
-}
-
-/* ===== nexus_menu_action_status @ 00184d4c ===== */
-
-void nexus_menu_action_status(uint param_1,undefined8 *param_2,int param_3)
-
-{
-  long lVar1;
-  undefined8 uVar2;
-  ulong uVar3;
-  undefined8 local_60;
-  undefined8 uStack_58;
-  undefined8 local_50;
-  long local_48;
-  
-  lVar1 = tpidr_el0;
-  local_48 = *(long *)(lVar1 + 0x28);
-  uVar2 = 4;
-  if ((param_1 < 0xa8) && (param_2 != (undefined8 *)0x0)) {
-    uVar3 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar3 & 1) == 0) {
-      uVar2 = 4;
-      if ((0 < param_3) && (DAT_00284694 == param_3)) {
-        FUN_00184e28(&local_60,PTR_DAT_001a36f0 + (ulong)param_1 * 0x48);
-        uVar2 = 1;
-        param_2[1] = uStack_58;
-        *param_2 = local_60;
-        param_2[2] = local_50;
-      }
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar2 = 3;
-    }
-  }
-  if (*(long *)(lVar1 + 0x28) == local_48) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar2);
-}
-
-/* ===== nexus_menu_ui_state @ 00185650 ===== */
-
-undefined8 nexus_menu_ui_state(undefined4 *param_1,int param_2)
-
-{
-  undefined1 uVar1;
-  undefined1 uVar2;
-  undefined1 uVar3;
-  undefined1 uVar4;
-  ulong uVar5;
-  undefined8 uVar6;
-  
-  if (param_1 == (undefined4 *)0x0) {
-    uVar6 = 4;
-  }
-  else {
-    uVar5 = FUN_00193f80(1,&DAT_00284688);
-    uVar4 = DAT_0028469f;
-    uVar3 = DAT_0028469e;
-    uVar2 = DAT_0028469d;
-    uVar1 = DAT_0028469c;
-    if ((uVar5 & 1) == 0) {
-      uVar6 = 4;
-      if ((0 < param_2) && (DAT_00284694 == param_2)) {
-        uVar6 = 1;
-        *param_1 = DAT_002846a0;
-        *(undefined1 *)(param_1 + 1) = uVar1;
-        *(undefined1 *)((long)param_1 + 5) = uVar3;
-        *(undefined1 *)((long)param_1 + 6) = uVar2;
-        *(undefined1 *)((long)param_1 + 7) = uVar4;
-      }
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar6 = 3;
-    }
-  }
-  return uVar6;
-}
-
-/* ===== nexus_menu_view @ 001856f8 ===== */
-
-/* WARNING: Removing unreachable block (ram,0x00185a54) */
-
-void nexus_menu_view(undefined4 *param_1,int param_2)
-
-{
-  undefined4 *puVar1;
-  undefined4 *puVar2;
-  ulong uVar3;
-  uint uVar4;
-  uint uVar5;
-  byte bVar6;
-  ushort uVar7;
-  long lVar8;
-  bool bVar9;
-  int iVar10;
-  int iVar11;
-  ulong uVar12;
-  undefined8 uVar13;
-  uint uVar14;
-  char cVar15;
-  uint uVar16;
-  undefined *puVar17;
-  long lVar18;
-  ulong uVar19;
-  undefined8 *puVar20;
-  long lVar21;
-  ushort *puVar22;
-  char *pcVar23;
-  undefined4 uVar24;
-  undefined4 uVar25;
-  undefined8 local_80;
-  undefined8 uStack_78;
-  undefined8 local_70;
-  long local_68;
-  
-  lVar8 = tpidr_el0;
-  local_68 = *(long *)(lVar8 + 0x28);
-  if (param_1 == (undefined4 *)0x0) {
-    uVar13 = 4;
-  }
-  else {
-    uVar12 = FUN_00193f80(1,&DAT_00284688);
-    if ((uVar12 & 1) == 0) {
-      uVar13 = 4;
-      if ((0 < param_2) && (DAT_00284694 == param_2)) {
-        FUN_00185d10(4);
-        memset(param_1,0,0x690);
-        *param_1 = DAT_002846a0;
-        *(undefined1 *)((long)param_1 + 9) = DAT_0028469c;
-        *(char *)(param_1 + 2) = DAT_0028469d;
-        cVar15 = DAT_0028469e;
-        *(char *)((long)param_1 + 10) = DAT_0028469e;
-        uVar12 = (ulong)DAT_0028469f;
-        *(byte *)((long)param_1 + 0xb) = DAT_0028469f;
-        if (cVar15 != '\0') {
-          uVar19 = 0;
-          puVar20 = (undefined8 *)(PTR_DAT_001a3708 + uVar12 * 0x20 + 8);
-          uVar3 = 0;
-          if (uVar12 * 2 <= *(ulong *)PTR_DAT_001a3700) {
-            uVar3 = *(ulong *)PTR_DAT_001a3700 + uVar12 * -2;
-          }
-          do {
-            if (uVar3 == uVar19) break;
-            uVar4 = param_1[1];
-            uVar7 = *(ushort *)((long)puVar20 + -6);
-            uVar24 = 0xc3dc0000;
-            if ((uVar19 & 1) != 0) {
-              uVar24 = 0xc2b40000;
-            }
-            param_1[1] = uVar4 + 1;
-            puVar17 = PTR_DAT_001a36f0;
-            uVar16 = (uint)uVar7;
-            param_1[(ulong)uVar4 * 0x10 + 4] = uVar16;
-            uVar25 = NEON_fmadd((float)(uVar19 >> 1 & 0x7fffffff),0x42900000,0x43320000);
-            *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 6) = *puVar20;
-            uVar13 = *(undefined8 *)(puVar17 + (ulong)uVar16 * 0x48 + 0x18);
-            param_1[(ulong)uVar4 * 0x10 + 10] = uVar24;
-            param_1[(ulong)uVar4 * 0x10 + 0xb] = uVar25;
-            *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 8) = uVar13;
-            *(undefined *)(param_1 + (ulong)uVar4 * 0x10 + 0x12) =
-                 puVar17[(ulong)uVar16 * 0x48 + 0x44];
-            FUN_00184e28(&local_80);
-            uVar19 = uVar19 + 1;
-            *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xe) = uStack_78;
-            *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xc) = local_80;
-            *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0x10) = local_70;
-            puVar20 = puVar20 + 2;
-          } while (uVar19 != 8);
-          uVar13 = DAT_0010f8b8;
-          uVar4 = param_1[1];
-          puVar1 = param_1 + (ulong)uVar4 * 0x10 + 4;
-          *puVar1 = 0x20000;
-          *(undefined **)(puVar1 + 2) = &DAT_00133357;
-          *(undefined **)(puVar1 + 4) = &DAT_00134f22;
-          *(undefined8 *)(puVar1 + 6) = uVar13;
-          puVar2 = param_1 + (ulong)(uVar4 + 1) * 0x10 + 4;
-          *(undefined1 *)(puVar1 + 0xd) = 1;
-          uVar13 = DAT_0010f7b8;
-          *puVar2 = 0x20001;
-          *(undefined **)(puVar2 + 2) = &DAT_0013c999;
-          *(undefined **)(puVar2 + 4) = &DAT_00134f22;
-          *(undefined8 *)(puVar2 + 6) = uVar13;
-          *(undefined1 *)(puVar2 + 0xd) = 1;
-          param_1[1] = uVar4 + 2;
-        }
-        lVar18 = 0;
-        puVar20 = (undefined8 *)PTR_PTR_s_nexus_sx_spin_001a36f8;
-        do {
-          iVar10 = strcmp((char *)*puVar20,"nexus_quick_menu_preset");
-          if (iVar10 == 0) goto LAB_00185934;
-          lVar18 = lVar18 + 1;
-          puVar20 = puVar20 + 3;
-        } while (lVar18 != 0x76);
-        lVar18 = -1;
-LAB_00185934:
-        lVar21 = 0;
-        iVar10 = *(int *)((long)&DAT_002846b0 + lVar18 * 4);
-        puVar20 = (undefined8 *)PTR_PTR_s_nexus_sx_spin_001a36f8;
-        do {
-          iVar11 = strcmp((char *)*puVar20,"nexus_quick_menu_disabled");
-          if (iVar11 == 0) goto LAB_00185974;
-          lVar21 = lVar21 + 1;
-          puVar20 = puVar20 + 3;
-        } while (lVar21 != 0x76);
-        lVar21 = -1;
-LAB_00185974:
-        puVar17 = PTR_DAT_001a36f0;
-        if ((DAT_0028469e == '\0') && (uVar12 = *(ulong *)PTR_DAT_001a3710, uVar12 != 0)) {
-          uVar4 = iVar10 - 1;
-          lVar18 = (ulong)uVar4 * 0x20;
-          iVar10 = *(int *)((long)&DAT_002846b0 + lVar21 * 4);
-          uVar19 = 1;
-          pcVar23 = PTR_DAT_001a3718;
-          cVar15 = DAT_0028469d;
-          do {
-            if (*pcVar23 == cVar15) {
-              bVar6 = pcVar23[1];
-              uVar16 = (uint)bVar6;
-              if (bVar6 < 0xf) {
-                uVar5 = param_1[1];
-                if (uVar5 < 0xf) {
-                  uVar7 = *(ushort *)(pcVar23 + 2);
-                  if (cVar15 == 'R') {
-                    if (iVar10 != 0) {
-LAB_00185a48:
-                      cVar15 = 'R';
-                      goto LAB_00185a00;
-                    }
-                    if (uVar4 < 3) {
-                      uVar14 = (uint)bVar6;
-                      if (*(uint *)(&DAT_001406b8 + lVar18) == uVar14) {
-                        uVar16 = 0;
-                      }
-                      else if (*(uint *)(&DAT_001406bc + lVar18) == uVar14) {
-                        uVar16 = 1;
-                      }
-                      else if (*(uint *)(&DAT_001406c0 + lVar18) == uVar14) {
-                        uVar16 = 2;
-                      }
-                      else if (*(uint *)(&DAT_001406c4 + lVar18) == uVar14) {
-                        uVar16 = 3;
-                      }
-                      else if (*(uint *)(&DAT_001406c8 + lVar18) == uVar16) {
-                        uVar16 = 4;
-                      }
-                      else if (*(uint *)(&DAT_001406cc + lVar18) == uVar16) {
-                        uVar16 = 5;
-                      }
-                      else if (*(uint *)(&DAT_001406d0 + lVar18) == uVar16) {
-                        uVar16 = 6;
-                      }
-                      else {
-                        if (*(uint *)(&DAT_001406d4 + lVar18) != uVar16) goto LAB_00185a48;
-                        uVar16 = 7;
-                      }
-                    }
-                  }
-                  param_1[1] = uVar5 + 1;
-                  uVar14 = (uint)uVar7;
-                  param_1[(ulong)uVar5 * 0x10 + 4] = uVar14;
-                  *(undefined8 *)(param_1 + (ulong)uVar5 * 0x10 + 6) = *(undefined8 *)(pcVar23 + 8);
-                  *(undefined8 *)(param_1 + (ulong)uVar5 * 0x10 + 8) =
-                       *(undefined8 *)(puVar17 + (ulong)uVar14 * 0x48 + 0x18);
-                  param_1[(ulong)uVar5 * 0x10 + 10] = (&DAT_00140698)[uVar16 % 5];
-                  param_1[(ulong)uVar5 * 0x10 + 0xb] = (&DAT_001406ac)[uVar16 / 5];
-                  *(undefined *)(param_1 + (ulong)uVar5 * 0x10 + 0x12) =
-                       puVar17[(ulong)uVar14 * 0x48 + 0x44];
-                  FUN_00184e28(&local_80,puVar17 + (ulong)uVar7 * 0x48);
-                  puVar17 = PTR_DAT_001a36f0;
-                  *(undefined8 *)(param_1 + (ulong)uVar5 * 0x10 + 0x10) = local_70;
-                  *(undefined8 *)(param_1 + (ulong)uVar5 * 0x10 + 0xe) = uStack_78;
-                  *(undefined8 *)(param_1 + (ulong)uVar5 * 0x10 + 0xc) = local_80;
-                  cVar15 = DAT_0028469d;
-                  if (DAT_0028469e != '\0') break;
-                }
-              }
-            }
-LAB_00185a00:
-            bVar9 = uVar19 < uVar12;
-            pcVar23 = pcVar23 + 0x10;
-            uVar19 = uVar19 + 1;
-          } while (bVar9);
-        }
-        uVar12 = 0;
-        puVar22 = (ushort *)PTR_DAT_001a3720;
-        do {
-          uVar4 = param_1[1];
-          param_1[1] = uVar4 + 1;
-          uVar24 = NEON_fmadd((float)(uVar12 & 0xffffffff),0x43120000,0xc3e40000);
-          uVar7 = *puVar22;
-          param_1[(ulong)uVar4 * 0x10 + 4] = (uint)uVar7;
-          uVar13 = *(undefined8 *)(puVar22 + 4);
-          param_1[(ulong)uVar4 * 0x10 + 10] = uVar24;
-          param_1[(ulong)uVar4 * 0x10 + 0xb] = 0x44010000;
-          *(undefined1 *)(param_1 + (ulong)uVar4 * 0x10 + 0x12) = 1;
-          *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 6) = uVar13;
-          *(undefined **)(param_1 + (ulong)uVar4 * 0x10 + 8) = &DAT_00134f22;
-          *(bool *)((long)param_1 + (ulong)uVar4 * 0x40 + 0x49) = DAT_0028469d == (char)puVar22[1];
-          FUN_00184e28(&local_80,puVar17 + (ulong)(uint)uVar7 * 0x48);
-          puVar17 = PTR_DAT_001a36f0;
-          uVar12 = uVar12 + 1;
-          puVar22 = puVar22 + 8;
-          *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xe) = uStack_78;
-          *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xc) = local_80;
-          *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0x10) = local_70;
-          uVar13 = DAT_0010f788;
-        } while (uVar12 != 6);
-        uVar4 = param_1[1];
-        param_1[1] = uVar4 + 1;
-        *(undefined **)(param_1 + (ulong)uVar4 * 0x10 + 6) = &DAT_00136344;
-        *(undefined **)(param_1 + (ulong)uVar4 * 0x10 + 8) = &DAT_00134f22;
-        param_1[(ulong)uVar4 * 0x10 + 4] = 0x82;
-        *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 10) = uVar13;
-        FUN_00184e28(&local_80,puVar17 + 0x2490);
-        uVar13 = 1;
-        *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xe) = uStack_78;
-        *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0xc) = local_80;
-        *(undefined8 *)(param_1 + (ulong)uVar4 * 0x10 + 0x10) = local_70;
-      }
-      DAT_00284688 = 0;
-    }
-    else {
-      uVar13 = 3;
-    }
-  }
-  if (*(long *)(lVar8 + 0x28) == local_68) {
-    return;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar13);
-}
-
-/* ===== nexus_menu_server_thread @ 00185e94 ===== */
-
-bool nexus_menu_server_thread(int param_1)
-
-{
-  return 0 < param_1 && DAT_00284694 == param_1;
-}
-
-/* ===== nexus_menu_server_open @ 00185eac ===== */
-
-undefined8 nexus_menu_server_open(int param_1)
-
-{
-  ulong uVar1;
-  
-  uVar1 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar1 & 1) != 0) {
-    return 3;
-  }
-  if ((((0 < param_1) && (DAT_00284694 == param_1)) && (DAT_0028469e == '\0')) &&
-     (DAT_0028469c != '\0')) {
-    if (DAT_0028469d != 0x51) {
-      DAT_0022d820 = (uint)DAT_0028469d;
-    }
-    DAT_0028469f = 0;
-    DAT_002846a0 = DAT_002846a0 + 1;
-    DAT_0028469d = 0x51;
-    DAT_00284688 = 0;
-    FUN_00191920(&DAT_00284af0,0x918);
-    if (DAT_00284af4 < 0x21) {
-      if (DAT_00284af4 != 0) {
-        return 1;
-      }
-    }
-    else {
-      DAT_00284af4 = 0;
-    }
-    FUN_00191bb0(0xfffffffe);
-    return 1;
-  }
-  DAT_00284688 = 0;
-  return 4;
-}
-
-/* ===== nexus_menu_server_action @ 00185f90 ===== */
-
-undefined4 nexus_menu_server_action(uint param_1,int param_2)
-
-{
-  undefined4 uVar1;
-  ulong uVar2;
-  
-  if (param_1 - 0x24030 < 0xffffffd0) {
-    return 4;
-  }
-  uVar2 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar2 & 1) != 0) {
-    return 3;
-  }
-  if (param_2 < 1) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_00284694 != param_2) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469d != 'Q') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469e != '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469c == '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (param_1 == 0x24003) {
-    uVar1 = 0xfffffffe;
-  }
-  else if (param_1 == 0x24002) {
-    uVar1 = 0xffffffff;
-  }
-  else {
-    if (param_1 == 0x24001) {
-      uVar1 = 1;
-      DAT_0028469f = 0;
-      DAT_0028469d = (char)DAT_0022d820;
-      goto LAB_001860dc;
-    }
-    if (param_1 < 0x24010) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (DAT_00284af4 <= param_1 - 0x24010) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    uVar1 = (&DAT_00284b08)[(ulong)(param_1 - 0x24010) * 0x12];
-  }
-  DAT_00284688 = 0;
-  uVar1 = FUN_00191bb0(uVar1);
-  uVar2 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar2 & 1) != 0) {
-    return uVar1;
-  }
-LAB_001860dc:
-  DAT_002846a0 = DAT_002846a0 + 1;
-  DAT_00284688 = 0;
-  return uVar1;
-}
-
-/* ===== nexus_menu_theme_action @ 00186548 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_theme_action(uint param_1,int param_2)
-
-{
-  undefined4 uVar1;
-  int iVar2;
-  ulong uVar3;
-  undefined8 uVar4;
-  uint uVar5;
-  
-  if (param_1 - 0x26040 < 0xffffffc0) {
-    return 4;
-  }
-  uVar3 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar3 & 1) != 0) {
-    return 3;
-  }
-  if (param_2 < 1) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_00284694 != param_2) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469c == '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469e != '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469d != 't') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (param_1 != 0x26001) {
-    if (DAT_00287ba4 != 0) {
-      DAT_00284688 = 0;
-      return 2;
-    }
-    if (DAT_00287b98 == 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if (DAT_00285410 == 0) {
-      DAT_00284688 = 0;
-      return 4;
-    }
-    if ((param_1 == 0x26004) && (DAT_00287b90 == 0)) {
-      DAT_00287b90 = 3;
-      FUN_00194010(1,&DAT_0022d824);
-      DAT_00284688 = 0;
-      DAT_0028469f = 0;
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_00287bac = DAT_00287bac + 1;
-      DAT_00287bb4 = 0;
-      return 1;
-    }
-    if (((param_1 & 0xfffffffe) == 0x26002) && (DAT_00287b90 < 2)) {
-      if (param_1 == 0x26002) {
-        if (DAT_00287b94 == 0) {
-          DAT_00284688 = 0;
-          return 4;
-        }
-        uVar5 = 0;
-        if (7 < DAT_00287b94) {
-          uVar5 = DAT_00287b94 - 8;
-        }
-      }
-      else {
-        uVar5 = DAT_00287b94 + 8;
-        if (DAT_00285418 <= DAT_00287b94 + 8) {
-          DAT_00284688 = 0;
-          return 4;
-        }
-      }
-      DAT_00287b98 = 0;
-      DAT_00287ba4 = 1;
-      DAT_00287c50 = DAT_00287c48;
-      DAT_00287b94 = uVar5;
-      FUN_00194010(1,&DAT_0022d824);
-      DAT_00284688 = 0;
-      DAT_0028469f = 0;
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_00287bac = DAT_00287bac + 1;
-      DAT_00287bb4 = 0;
-      return 1;
-    }
-    if ((param_1 < 0x26020) || (1 < DAT_00287b90)) {
-      if ((param_1 != 0x26006) || ((DAT_00287b90 != 1 || (DAT_00287b9c == 0)))) {
-        if ((param_1 == 0x26007) &&
-           ((((DAT_00287b90 == 2 && (DAT_00287c68 == 1)) && (DAT_00287b9c != 0)) &&
-            ((DAT_00287ba0 != 0 && ((DAT_00285424 & 1) != 0)))))) {
-          uVar4 = 1;
-          uVar1 = DAT_00287a64;
-          uVar5 = DAT_0028793c;
-        }
-        else {
-          if ((param_1 == 0x26005) && ((DAT_00285424 & 1) != 0)) {
-            FUN_00186c90(2,0,0);
-            DAT_00284688 = 0;
-            return 2;
-          }
-          if (DAT_00287b90 != 3) {
-            DAT_00284688 = 0;
-            return 4;
-          }
-          if (param_1 == 0x26008) {
-            uVar5 = 1;
-          }
-          else if (param_1 == 0x26009) {
-            uVar5 = 4;
-          }
-          else {
-            uVar5 = (uint)(param_1 == 0x2600a) << 1;
-          }
-          if ((uVar5 == 0) || ((DAT_00285424 >> 1 & 1) == 0)) {
-            if ((param_1 - 0x2600d < 0xfffffffe) || ((DAT_00285424 & 1) == 0)) {
-              if ((param_1 == 0x2600d) && ((DAT_00285424 >> 2 & 1) != 0)) {
-                uVar4 = 4;
-                iVar2 = DAT_00285434;
-              }
-              else {
-                if (param_1 != 0x2600e) {
-                  DAT_00284688 = 0;
-                  return 4;
-                }
-                if ((DAT_00285424 >> 3 & 1) == 0) {
-                  DAT_00284688 = 0;
-                  return 4;
-                }
-                uVar4 = 5;
-                iVar2 = DAT_00285438;
-              }
-              uVar5 = (uint)(iVar2 == 0);
-            }
-            else {
-              uVar4 = 6;
-              uVar5 = 1;
-              if (param_1 == 0x2600b) {
-                uVar5 = 0xffffffff;
-              }
-            }
-          }
-          else {
-            uVar4 = 3;
-            uVar5 = DAT_00285430 ^ uVar5;
-          }
-          uVar1 = 0;
-        }
-        FUN_00186c90(uVar4,uVar5,uVar1);
-        DAT_00284688 = 0;
-        return 2;
-      }
-      if (DAT_00285414 != DAT_00287c40) goto LAB_001869e8;
-      DAT_00287b88 = 0;
-      uRam0000000000287b80 = 0;
-      _DAT_00287b78 = 0;
-      uRam0000000000287b60 = 0;
-      _DAT_00287b58 = 0;
-      uRam0000000000287b50 = 0;
-      _DAT_00287b48 = 0;
-      uRam0000000000287b70 = 0;
-      _DAT_00287b68 = 0;
-      uRam0000000000287b40 = 0;
-      _DAT_00287b38 = 0;
-      uRam0000000000287b30 = 0;
-      _DAT_00287b28 = 0;
-      uRam0000000000287b20 = 0;
-      _DAT_00287b18 = 0;
-      uRam0000000000287b10 = 0;
-      _DAT_00287b08 = 0;
-      uRam0000000000287b00 = 0;
-      _DAT_00287af8 = 0;
-      uRam0000000000287af0 = 0;
-      _DAT_00287ae8 = 0;
-      uRam0000000000287ae0 = 0;
-      _DAT_00287ad8 = 0;
-      uRam0000000000287ad0 = 0;
-      _DAT_00287ac8 = 0;
-      uRam0000000000287ac0 = 0;
-      _DAT_00287ab8 = 0;
-      uRam0000000000287ab0 = 0;
-      _DAT_00287aa8 = 0;
-      uRam0000000000287aa0 = 0;
-      _DAT_00287a98 = 0;
-      uRam0000000000287a90 = 0;
-      _DAT_00287a88 = 0;
-      uRam0000000000287a80 = 0;
-      _DAT_00287a78 = 0;
-      uRam0000000000287a70 = 0;
-      _DAT_00287a68 = 0;
-      DAT_00287a64 = -2;
-      FUN_00183ac8(&DAT_00287a6c,0x60,0x60,"NO MUSIC");
-    }
-    else {
-      param_1 = param_1 - 0x26020;
-      if (DAT_00285420 <= param_1) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      if (DAT_00287bb0 != DAT_00287bac) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      if ((DAT_00287bb4 >> (ulong)(param_1 & 0x1f) & 1) == 0) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      uVar3 = (ulong)param_1;
-      iVar2 = (&DAT_00287bc0)[param_1];
-      if (iVar2 != (&DAT_0028543c)[uVar3 * 0x4a]) {
-        DAT_00284688 = 0;
-        return 4;
-      }
-      uVar5 = (&DAT_00285440)[uVar3 * 0x4a];
-      if (DAT_00287b90 == 0) {
-        if ((uVar5 >> 1 & 1) != 0) {
-          DAT_0028793c = iVar2;
-          DAT_00287940 = uVar5;
-          memmove(&DAT_00287944,&DAT_00285444 + uVar3 * 0x128,0x120);
-          DAT_00287c40 = DAT_00285414;
-          DAT_00287b9c = (int)DAT_0010f860;
-          DAT_00287ba0 = (int)((ulong)DAT_0010f860 >> 0x20);
-          DAT_00287b90 = 1;
-          FUN_00183ac8(&DAT_00287c6c,0x60,0x60,&DAT_001343dc,"CHOOSE MUSIC FOR THIS BACKGROUND");
-          DAT_00287ba4 = 1;
-          DAT_00287b94 = 0;
-          DAT_00287b98 = 0;
-          DAT_00287c50 = DAT_00287c48;
-          FUN_00194010(1,&DAT_0022d824);
-          DAT_00284688 = 0;
-          DAT_0028469f = 0;
-          DAT_002846a0 = DAT_002846a0 + 1;
-          DAT_00287bac = DAT_00287bac + 1;
-          DAT_00287bb4 = 0;
-          return 1;
-        }
-        DAT_00284688 = 0;
-        return 4;
-      }
-      if ((DAT_00287b9c == 0) || (DAT_00285414 != DAT_00287c40)) {
-LAB_001869e8:
-        FUN_00183ac8(&DAT_00287c6c,0x60,0x60,&DAT_001343dc,
-                     "SETTINGS CHANGED - SELECT BACKGROUND AGAIN");
-        DAT_00284688 = 0;
-        DAT_0028469f = 0;
-        DAT_002846a0 = DAT_002846a0 + 1;
-        DAT_00287bac = DAT_00287bac + 1;
-        DAT_00287bb4 = 0;
-        return 4;
-      }
-      _DAT_00287a68 = CONCAT44(_DAT_00287a6c,uVar5);
-      DAT_00287a64 = iVar2;
-      memmove(&DAT_00287a6c,&DAT_00285444 + uVar3 * 0x128,0x120);
-    }
-    DAT_00287ba0 = 1;
-    FUN_00186bf4();
-    DAT_00284688 = 0;
-    return 1;
-  }
-  DAT_00287ba4 = 0;
-  DAT_00287c6c = 0;
-  DAT_00287c48 = DAT_00287c48 + 1;
-  if (DAT_00287b90 == 2) {
-    DAT_00287ba4 = 1;
-    DAT_00287b90 = (uint)DAT_0010f860;
-    DAT_00287b94 = (uint)((ulong)DAT_0010f860 >> 0x20);
-  }
-  else {
-    if (DAT_00287b90 == 0) {
-      DAT_0028469d = (char)DAT_00287b8c;
-      goto LAB_0018670c;
-    }
-    DAT_00287b90 = 0;
-    DAT_00287b94 = 0;
-    DAT_00287b9c = 0;
-    DAT_00287ba0 = (int)DAT_0010f740;
-    DAT_00287ba4 = (int)((ulong)DAT_0010f740 >> 0x20);
-  }
-  DAT_00287b98 = 0;
-  DAT_00287c50 = DAT_00287c48;
-  FUN_00194010(1,&DAT_0022d824);
-LAB_0018670c:
-  DAT_00287bb4 = 0;
-  DAT_00287bac = DAT_00287bac + 1;
-  DAT_002846a0 = DAT_002846a0 + 1;
-  DAT_0028469f = 0;
-  DAT_00284688 = 0;
-  return 1;
-}
-
-/* ===== nexus_menu_profile_open @ 00187e48 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_profile_open(int param_1)
-
-{
-  ulong uVar1;
-  undefined8 uVar2;
-  
-  uVar1 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar1 & 1) == 0) {
-    uVar2 = 4;
-    if ((((0 < param_1) && (DAT_00284694 == param_1)) && (DAT_0028469c != '\0')) &&
-       (DAT_0028469e == '\0')) {
-      if (DAT_0028469d != 0x70) {
-        DAT_0028c288 = (uint)DAT_0028469d;
-      }
-      uVar2 = 1;
-      _DAT_0028c28c = 0;
-      DAT_0028c2a0 = 0;
-      DAT_0028c2c8 = 0;
-      DAT_0028c298 = DAT_0028c298 + 1;
-      DAT_0028469f = 0;
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_0028469d = 0x70;
-    }
-    DAT_00284688 = 0;
-  }
-  else {
-    uVar2 = 3;
-  }
-  return uVar2;
-}
-
-/* ===== nexus_menu_profile_action @ 00187f14 ===== */
-
-undefined8 nexus_menu_profile_action(int param_1,int param_2)
-
-{
-  char *pcVar1;
-  bool bVar2;
-  ulong uVar3;
-  undefined8 uVar4;
-  uint uVar5;
-  
-  if (param_1 - 0x28006U < 0xfffffffa) {
-    return 4;
-  }
-  uVar3 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar3 & 1) != 0) {
-    return 3;
-  }
-  if (param_2 < 1) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_00284694 != param_2) {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469c == '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469e != '\0') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (DAT_0028469d != 'p') {
-    DAT_00284688 = 0;
-    return 4;
-  }
-  if (param_1 == 0x28000) {
-    uVar4 = 1;
-    DAT_0028c290 = 0;
-    DAT_0028469f = 0;
-    DAT_0028c298 = DAT_0028c298 + 1;
-    DAT_0028469d = (char)DAT_0028c288;
-  }
-  else {
-    if (DAT_0028c290 != 0) {
-      DAT_00284688 = 0;
-      return 2;
-    }
-    if (DAT_0028c28c == 0) {
-      DAT_00284688 = 0;
-      return 0;
-    }
-    if (DAT_0028a4c0 == 0) {
-      DAT_00284688 = 0;
-      return 0;
-    }
-    uVar5 = 8;
-    if (param_1 != 0x28004) {
-      uVar5 = 4;
-    }
-    if (param_1 == 0x28001) {
-      uVar5 = 1;
-    }
-    if (((DAT_0028a4c4 & uVar5) == 0) || ((param_1 == 0x28005 && (DAT_0028a4d4 == 0)))) {
-      DAT_00284688 = 0;
-      return 0;
-    }
-    bVar2 = param_1 - 0x28001U < 2;
-    DAT_0028c290 = 3;
-    if (bVar2) {
-      DAT_0028c290 = 1;
-    }
-    pcVar1 = "ENTER A VALUE";
-    if (!bVar2) {
-      pcVar1 = "APPLYING...";
-    }
-    DAT_0028c294 = param_1;
-    FUN_00183ac8(&DAT_0028c2c8,0x60,0x60,&DAT_001343dc,pcVar1);
-    uVar4 = 2;
-  }
-  DAT_002846a0 = DAT_002846a0 + 1;
-  DAT_00284688 = 0;
-  return uVar4;
-}
-
-/* ===== nexus_menu_profile_pump @ 001880e0 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-void nexus_menu_profile_pump(int param_1,ulong param_2)
-
-{
-  undefined *puVar1;
-  char *pcVar2;
-  long lVar3;
-  uint uVar4;
-  long lVar5;
-  bool bVar6;
-  undefined1 uVar7;
-  int iVar8;
-  uint uVar9;
-  uint uVar10;
-  int iVar11;
-  uint uVar12;
-  ulong uVar13;
-  void *pvVar14;
-  undefined8 uVar15;
-  char *pcVar16;
-  uint uVar17;
-  undefined4 uVar18;
-  uint uVar19;
-  long lVar20;
-  uint uVar21;
-  undefined **ppuVar22;
-  int local_2274;
-  undefined8 local_2270;
-  undefined8 uStack_2268;
-  undefined8 local_2260;
-  undefined1 auStack_224c [1028];
-  undefined8 local_1e48;
-  uint local_1e40;
-  uint local_1e3c;
-  uint local_1e2c;
-  int local_1e28;
-  uint local_1e24;
-  uint local_1e20;
-  undefined1 auStack_1e00 [16];
-  undefined1 auStack_1df0 [16];
-  undefined1 auStack_1de0 [593];
-  undefined auStack_1b8f [6935];
-  long local_78;
-  
-  lVar3 = tpidr_el0;
-  local_78 = *(long *)(lVar3 + 0x28);
-  uVar13 = FUN_00193f80(1,&DAT_00284688);
-  uVar12 = DAT_0028c2a8;
-  lVar5 = DAT_0028c298;
-  uVar4 = DAT_0028c294;
-  if ((uVar13 & 1) != 0) {
-LAB_00188608:
-    uVar7 = 3;
-    goto LAB_0018860c;
-  }
-  if ((param_1 < 1) || (DAT_00284694 != param_1)) {
-    uVar7 = 4;
-    DAT_00284688 = 0;
-    goto LAB_0018860c;
-  }
-  if (((DAT_0028469c == '\0') || (DAT_0028469e != '\0')) || (DAT_0028469d != 'p')) {
-    DAT_0028c2a8 = 0;
-    _DAT_0028c28c = 0;
-    DAT_0028c298 = DAT_0028c298 + 1;
-    DAT_00284688 = 0;
-    if (uVar12 == 0) {
-      uVar7 = 1;
-      goto LAB_0018860c;
-    }
-  }
-  else {
-    iVar11 = DAT_0028c290;
-    if ((DAT_0028c2a8 == 0) || (DAT_0028c290 != 0)) {
-      if (DAT_0028c290 == 4) {
-        uVar7 = 3;
-        DAT_00284688 = 0;
-        goto LAB_0018860c;
-      }
-      if (((DAT_0028c290 == 0) && (DAT_0028c2a0 != 0)) &&
-         ((DAT_0028c2a0 <= param_2 && (param_2 - DAT_0028c2a0 < 500)))) {
-        uVar7 = 1;
-        DAT_00284688 = 0;
-        goto LAB_0018860c;
-      }
-      _DAT_0028c28c = CONCAT44(4,DAT_0028c28c);
-      DAT_00284688 = 0;
-      local_1e48 = DAT_0010f800;
-      memset(&local_1e40,0,0x1dc8);
-      iVar8 = FUN_00191f04(&local_1e48,0x1dd0,0);
-      uVar21 = 0;
-      if ((((iVar8 != 0) && ((int)local_1e48 == 1)) && (local_1e48._4_4_ == 0x1dd0)) &&
-         (local_1e28 == 0)) {
-        if (local_1e24 < 0x21) {
-          uVar17 = 0;
-          uVar21 = 0;
-          if (((local_1e24 <= local_1e20) && (uVar21 = uVar17, local_1e20 < 0x201)) &&
-             ((local_1e40 < 2 && (local_1e2c < 2)))) {
-            pvVar14 = memchr(auStack_1b8f,0,0x191);
-            if (((pvVar14 == (void *)0x0) ||
-                (pvVar14 = memchr(auStack_1df0,0,0x10), pvVar14 == (void *)0x0)) ||
-               (pvVar14 = memchr(auStack_1e00,0,0x10), pvVar14 == (void *)0x0)) goto LAB_001882b0;
-            pvVar14 = memchr(auStack_1de0,0,0x191);
-            uVar21 = (uint)(pvVar14 != (void *)0x0);
-          }
-        }
-        else {
-LAB_001882b0:
-          uVar21 = 0;
-        }
-      }
-      memset(auStack_224c,0,0x401);
-      local_2260 = 0;
-      uStack_2268 = _UNK_00140720;
-      local_2270 = _DAT_00140718;
-      FUN_00192340("ShowSkinNamesInProfile",&local_2270);
-      if (iVar11 == 0) {
-LAB_001883bc:
-        uVar17 = 0;
-        uVar9 = 0;
-        uVar10 = 1;
-        uVar19 = 0;
-      }
-      else {
-        uVar10 = 0;
-        uVar17 = 1;
-        if (uVar21 == 0) {
-          uVar9 = 0;
-          uVar19 = uVar10;
-        }
-        else {
-          uVar9 = 0;
-          uVar19 = 0;
-          if (local_1e40 != 0) {
-            uVar17 = 8;
-            if (uVar4 != 0x28004) {
-              uVar17 = 4;
-            }
-            if (uVar4 == 0x28001) {
-              uVar17 = 1;
-            }
-            if ((local_1e3c & uVar17) == 0) {
-              uVar10 = 0;
-              uVar9 = 0;
-              uVar17 = 1;
-              uVar19 = 0;
-            }
-            else if (iVar11 == 3) {
-              uVar9 = 0;
-              uVar10 = 1;
-              uVar17 = 1;
-              uVar19 = 1;
-            }
-            else if (iVar11 == 2) {
-              local_2274 = 3;
-              uVar10 = FUN_0014c8ac(uVar12,&local_2274,auStack_224c,0x401);
-              uVar19 = 0;
-              uVar17 = 1;
-              if ((uVar10 != 0) && (local_2274 != 3)) {
-                if (local_2274 == 2) {
-                  uVar19 = 0;
-                  uVar10 = 2;
-                }
-                else if (local_2274 == 1) {
-                  uVar19 = 1;
-                }
-                else {
-                  uVar17 = 0;
-                  uVar19 = 0;
-                }
-              }
-              uVar9 = 0;
-            }
-            else {
-              if (iVar11 != 1) goto LAB_001883bc;
-              uVar9 = FUN_0014c510();
-              uVar10 = uVar9;
-              if (uVar9 != 0) {
-                bVar6 = uVar4 == 0x28001;
-                puVar1 = &DAT_00134f22;
-                pcVar16 = "PLAYER TAG";
-                if (!bVar6) {
-                  puVar1 = auStack_1b8f;
-                  pcVar16 = "VISUAL NAME";
-                }
-                uVar18 = 0x10;
-                if (!bVar6) {
-                  uVar18 = 100;
-                }
-                iVar8 = FUN_0014c550(uVar9,pcVar16,puVar1,(ulong)bVar6 << 1,uVar18);
-                uVar10 = (uint)(iVar8 != 0);
-              }
-              uVar17 = uVar10 ^ 1;
-              uVar19 = 0;
-            }
-          }
-        }
-      }
-      uVar13 = FUN_00193f80(1,&DAT_00284688);
-      if ((uVar13 & 1) != 0) {
-        if (uVar9 != 0) {
-          FUN_0014cc0c(uVar9);
-          uVar7 = 3;
-          goto LAB_0018860c;
-        }
-        goto LAB_00188608;
-      }
-      if ((((DAT_0028469c == '\0') || (DAT_0028469e != '\0')) || (DAT_0028469d != 'p')) ||
-         ((DAT_0028c298 != lVar5 || (DAT_0028c290 != 4)))) {
-        DAT_00284688 = 0;
-        if (uVar9 == 0) {
-          uVar7 = 4;
-        }
-        else {
-          FUN_0014cc0c(uVar9);
-          uVar7 = 4;
-        }
-        goto LAB_0018860c;
-      }
-      DAT_0028c2b8 = uStack_2268;
-      _DAT_0028c2b0 = local_2270;
-      _DAT_0028c28c = CONCAT44(4,uVar21);
-      DAT_0028c2c0 = local_2260;
-      DAT_0028c2a0 = param_2;
-      if (uVar21 != 0) {
-        memcpy(&DAT_0028a4b8,&local_1e48,0x1dd0);
-      }
-      if (iVar11 == 0) {
-        _DAT_0028c28c = _DAT_0028c28c & 0xffffffff;
-      }
-      else if (uVar17 == 0) {
-        _DAT_0028c28c = CONCAT44(2,DAT_0028c28c);
-        if (uVar9 != 0) {
-          DAT_0028c2a8 = uVar9;
-        }
-      }
-      else {
-        pcVar16 = "UNAVAILABLE IN THE CURRENT SCREEN";
-        if (uVar10 != 0) {
-          pcVar16 = "APPLYING...";
-        }
-        pcVar2 = "CANCELLED";
-        if (uVar10 != 2) {
-          pcVar2 = pcVar16;
-        }
-        _DAT_0028c28c = _DAT_0028c28c & 0xffffffff;
-        DAT_0028c2a8 = 0;
-        FUN_00183ac8(&DAT_0028c2c8,0x60,0x60,&DAT_001343dc,pcVar2);
-      }
-      if ((uVar19 != 0) && (uVar4 != 0x28004)) {
-        DAT_0028469c = '\0';
-      }
-      DAT_002846a0 = DAT_002846a0 + 1;
-      DAT_00284688 = 0;
-      if ((uVar17 != 0) && (uVar12 != 0)) {
-        FUN_0014cc0c(uVar12);
-      }
-      if ((uVar17 != 0) && (uVar9 != 0)) {
-        FUN_0014cc0c(uVar9);
-      }
-      if (uVar19 != 0) {
-        if (uVar4 == 0x28001) {
-          uVar15 = __strlen_chk(auStack_224c,0x401);
-          uVar10 = FUN_00191f60(auStack_224c,uVar15);
-LAB_00188714:
-          uVar12 = 0;
-        }
-        else if ((uVar4 & 0xfffffffe) == 0x28002) {
-          puVar1 = auStack_224c;
-          if (uVar4 == 0x28003) {
-            uVar15 = 0;
-            puVar1 = &DAT_00134f22;
-          }
-          else {
-            uVar15 = __strlen_chk(auStack_224c,0x401);
-          }
-          uVar10 = FUN_00191fa8(puVar1,uVar15);
-          if (uVar10 == 0) goto LAB_00188714;
-          uVar12 = nexus_script_port_ui_reload_request();
-        }
-        else {
-          if (uVar4 != 0x28005) {
-            if (uVar4 == 0x28004) {
-              lVar20 = 0;
-              ppuVar22 = &PTR_s_DisablePinAnimation_0019d588;
-              do {
-                iVar11 = strcmp(*ppuVar22,"ShowSkinNamesInProfile");
-                if (iVar11 == 0) {
-                  iVar11 = FUN_001924cc(0x21000 - (int)lVar20);
-                  uVar10 = (uint)(iVar11 == 1);
-                  uVar12 = 0;
-                  goto code_r0x0018871c;
-                }
-                lVar20 = lVar20 + -1;
-                ppuVar22 = ppuVar22 + 3;
-              } while (lVar20 != -0x37);
-              uVar10 = 0;
-            }
-            goto LAB_00188714;
-          }
-          uVar10 = nexus_script_port_ui_reload_request();
-          uVar12 = uVar10;
-        }
-code_r0x0018871c:
-        uVar13 = FUN_00193f80(1,&DAT_00284688);
-        if ((uVar13 & 1) == 0) {
-          if (((DAT_0028c298 == lVar5) && (DAT_0028469e == '\0')) && (DAT_0028469d == 'p')) {
-            DAT_0028c2a0 = 0;
-            if (uVar10 == 0) {
-              pcVar16 = "ACTION COULD NOT BE APPLIED";
-LAB_00188850:
-              DAT_0028469c = '\x01';
-LAB_0018885c:
-              FUN_00183ac8(&DAT_0028c2c8,0x60,0x60,pcVar16);
-            }
-            else {
-              if (((uVar4 & 0xfffffffe) == 0x28002) && (uVar12 == 0)) {
-                pcVar16 = "NAME SAVED - RELOAD TO APPLY";
-                goto LAB_00188850;
-              }
-              if (uVar4 == 0x28004) {
-                pcVar16 = "APPLIED TO THE NEXT PROFILE";
-                goto LAB_0018885c;
-              }
-            }
-            DAT_002846a0 = DAT_002846a0 + 1;
-          }
-          DAT_00284688 = 0;
-        }
-      }
-      uVar7 = uVar10 != 0;
-      goto LAB_0018860c;
-    }
-    _DAT_0028c28c = _DAT_0028c28c & 0xffffffff;
-  }
-  DAT_0028c2a8 = 0;
-  DAT_00284688 = 0;
-  FUN_0014cc0c(uVar12);
-  uVar7 = 1;
-LAB_0018860c:
-  if (*(long *)(lVar3 + 0x28) != local_78) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(uVar7);
-  }
-  return;
-}
-
-/* ===== nexus_menu_main_count @ 0018975c ===== */
-
-int nexus_menu_main_count(void)
-
-{
-  int iVar1;
-  long lVar2;
-  uint uVar3;
-  
-  iVar1 = 6;
-  switch(DAT_0028469d) {
-  case 0x51:
-    FUN_00191920(&DAT_00284af0,0x918);
-    if (0x20 < DAT_00284af4) {
-      DAT_00284af4 = 0;
-    }
-    iVar1 = DAT_00284af4 + 3;
-    break;
-  default:
-    iVar1 = 0;
-    lVar2 = 0x18;
-    do {
-      if (DAT_0028469d == 0x52) {
-        uVar3 = 1;
-      }
-      else {
-        uVar3 = (uint)(*(uint *)((long)&DAT_0019ddd0 + lVar2) == (uint)DAT_0028469d);
-      }
-      iVar1 = uVar3 + iVar1;
-      lVar2 = lVar2 + 0x28;
-    } while (lVar2 != 0xba8);
-    break;
-  case 100:
-    iVar1 = 0x29;
-    break;
-  case 0x65:
-    iVar1 = 2;
-    if (DAT_0028cc30 != 4) {
-      iVar1 = 0x15;
-    }
-    break;
-  case 0x70:
-    break;
-  case 0x74:
-    if (DAT_00287b90 == 2) {
-      iVar1 = 4;
-    }
-    else if (DAT_00287b90 == 3) {
-      iVar1 = 10;
-    }
-    else {
-      iVar1 = 6;
-      if (DAT_00287b98 != 0) {
-        iVar1 = DAT_00285420 + 6;
-      }
-    }
-  }
-  return iVar1;
-}
-
-/* ===== nexus_menu_section_snapshot @ 0018c44c ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_section_snapshot(undefined8 *param_1,long param_2,int param_3)
-
-{
-  int *piVar1;
-  undefined4 uVar2;
-  int iVar3;
-  undefined8 uVar4;
-  char cVar5;
-  byte bVar6;
-  undefined4 uVar7;
-  undefined4 uVar8;
-  undefined4 uVar9;
-  bool bVar10;
-  int iVar11;
-  ulong uVar12;
-  undefined8 uVar13;
-  void *pvVar14;
-  char *pcVar15;
-  uint uVar16;
-  uint *puVar17;
-  uint uVar18;
-  ulong uVar19;
-  ulong uVar20;
-  undefined *puVar21;
-  undefined8 *puVar22;
-  int *piVar23;
-  undefined **ppuVar24;
-  char *__s1;
-  
-  if (param_1 == (undefined8 *)0x0) {
-    return 0;
-  }
-  if (param_2 != 0x24a68) {
-    return 0;
-  }
-  uVar12 = FUN_00193f80(1,&DAT_00284688);
-  if ((uVar12 & 1) != 0) {
-    return 0;
-  }
-  uVar13 = 0;
-  if ((0 < param_3) && (DAT_00284694 == param_3)) {
-    memset(param_1,0,0x24a68);
-    uVar7 = DAT_0028dcf0;
-    uVar4 = DAT_0010f820;
-    param_1[7] = 0xffffffffffffffff;
-    param_1[8] = 0xffffffffffffffff;
-    uVar8 = DAT_0028dcf4;
-    uVar13 = 1;
-    *param_1 = uVar4;
-    uVar9 = DAT_0028dcf8;
-    uVar2 = DAT_002846a0;
-    bVar6 = DAT_0028469d;
-    *(undefined4 *)((long)param_1 + 0x5c) = uVar7;
-    *(undefined4 *)(param_1 + 0xc) = uVar8;
-    cVar5 = DAT_0028469c;
-    *(uint *)((long)param_1 + 0x14) = (uint)bVar6;
-    *(undefined4 *)((long)param_1 + 100) = uVar9;
-    *(undefined4 *)((long)param_1 + 0xc) = uVar2;
-    iVar3 = DAT_0028a42c;
-    uVar8 = DAT_0028a428;
-    uVar7 = DAT_0028a3dc;
-    uVar2 = DAT_0028a3d8;
-    iVar11 = DAT_00287b98;
-    if ((cVar5 != '\0') && (DAT_0028469e == '\0')) {
-      if (bVar6 == 0x74) {
-        *(undefined4 *)(param_1 + 1) = 2;
-        iVar3 = DAT_00287ba4;
-        uVar18 = DAT_00287b90;
-        bVar10 = DAT_00285410 != 0;
-        *(undefined4 *)(param_1 + 2) = DAT_00285414;
-        *(uint *)((long)param_1 + 0x1c) = uVar18;
-        uVar2 = DAT_0028542c;
-        *(uint *)(param_1 + 4) = (uint)(iVar11 != 0 && bVar10);
-        uVar7 = DAT_00285438;
-        uVar13 = _DAT_00285424;
-        *(undefined4 *)((long)param_1 + 0x3c) = uVar2;
-        *(uint *)((long)param_1 + 0x24) = (uint)(iVar3 != 0);
-        *(undefined8 *)((long)param_1 + 0x34) = uVar13;
-        iVar11 = DAT_00287ba0;
-        uVar13 = _DAT_00285430;
-        uVar2 = DAT_0028793c;
-        if (DAT_00287b9c == 0) {
-          uVar2 = 0xffffffff;
-        }
-        *(undefined4 *)(param_1 + 8) = uVar2;
-        uVar2 = DAT_00287a64;
-        *(undefined4 *)((long)param_1 + 0x54) = uVar7;
-        uVar7 = DAT_00287c68;
-        *(undefined8 *)((long)param_1 + 0x4c) = uVar13;
-        if (iVar11 == 0) {
-          uVar2 = 0xffffffff;
-        }
-        *(undefined4 *)((long)param_1 + 0x44) = uVar2;
-        *(undefined4 *)(param_1 + 9) = uVar7;
-        FUN_00183ac8(param_1 + 0xd,0xffffffffffffffff,0x80,&DAT_001343dc,&DAT_00287c6c);
-        if (DAT_00287b9c != 0) {
-          FUN_00183ac8(param_1 + 0x1d,0xffffffffffffffff,0x60,&DAT_001343dc,&DAT_00287944);
-          FUN_00183ac8(param_1 + 0x35,0xffffffffffffffff,0x60,&DAT_001343dc,&DAT_002879a4);
-          FUN_00183ac8(param_1 + 0x41,0xffffffffffffffff,0x60,&DAT_001343dc,&DAT_00287a04);
-        }
-        if (DAT_00287ba0 != 0) {
-          FUN_00183ac8(param_1 + 0x29,0xffffffffffffffff,0x60,&DAT_001343dc,&DAT_00287a6c);
-        }
-        if ((((DAT_00287b98 != 0) &&
-             (iVar11 = FUN_0018cb98(&DAT_00285408,DAT_00287b94), iVar11 != 0)) &&
-            (param_1[5] = _DAT_00285418, uVar18 = DAT_00285420, DAT_00287b90 < 2)) &&
-           (*(uint *)(param_1 + 6) = DAT_00285420, uVar18 != 0)) {
-          uVar12 = 0;
-          piVar23 = (int *)(param_1 + 0x4d);
-          puVar21 = &DAT_002854a4;
-          do {
-            uVar18 = DAT_00287b90;
-            iVar3 = *(int *)(puVar21 + -0x68);
-            iVar11 = *(int *)(param_1 + 4);
-            piVar1 = (int *)0x285428;
-            if (DAT_00287b90 != 0) {
-              piVar1 = &DAT_0028542c;
-            }
-            *piVar23 = (int)uVar12 + 0x26020;
-            piVar23[1] = (int)uVar12;
-            piVar23[4] = iVar3;
-            if ((iVar11 == 0) || (*(int *)((long)param_1 + 0x24) != 0)) {
-              uVar18 = 0;
-            }
-            else if (uVar18 != 1) {
-              uVar18 = (byte)puVar21[-100] >> 1 & 1;
-            }
-            piVar23[2] = uVar18 & 0xffffffe0 |
-                         uVar18 & 7 | (uint)(iVar3 == *piVar1) << 1 |
-                         (*(uint *)(puVar21 + -100) >> 1 & 3) << 3;
-            FUN_00183ac8(piVar23 + 0x16,0xffffffffffffffff,0x60,&DAT_001343dc,puVar21 + -0x60);
-            FUN_00183ac8(piVar23 + 0x62,0xffffffffffffffff,0x60,&DAT_001343dc,puVar21);
-            FUN_00183ac8(piVar23 + 0x7a,0xffffffffffffffff,0x60,&DAT_001343dc,puVar21 + 0x60);
-            uVar12 = uVar12 + 1;
-            puVar21 = puVar21 + 0x128;
-            piVar23 = piVar23 + 0x92;
-          } while (uVar12 < DAT_00285420);
-          DAT_00284688 = 0;
-          return 1;
-        }
-      }
-      else if (bVar6 == 100) {
-        *(undefined4 *)(param_1 + 1) = 3;
-        *(undefined4 *)(param_1 + 3) = uVar7;
-        *(int *)((long)param_1 + 0x1c) = iVar3;
-        *(undefined4 *)(param_1 + 2) = uVar2;
-        *(undefined4 *)(param_1 + 4) = uVar8;
-        *(uint *)((long)param_1 + 0x24) = (uint)(iVar3 != 0);
-        *(undefined4 *)(param_1 + 5) = 0x28;
-        *(undefined4 *)(param_1 + 6) = 0x28;
-        FUN_00183ac8(param_1 + 0xd,0xffffffffffffffff,0x80,&DAT_001343dc,&DAT_0028a454);
-        if (0x100 < *(uint *)(param_1 + 6)) {
-          DAT_00284688 = 0;
-          return 0;
-        }
-        if (*(uint *)(param_1 + 6) != 0) {
-          uVar12 = 0;
-          piVar23 = (int *)(param_1 + 0x4d);
-          ppuVar24 = &PTR_s_ABOUT_SCREEN_0019cf58;
-          do {
-            iVar11 = *(int *)(ppuVar24 + 2);
-            uVar18 = *(uint *)(ppuVar24 + -2);
-            iVar3 = *(int *)(param_1 + 4);
-            *piVar23 = (int)uVar12 + 0x27020;
-            piVar23[1] = (int)uVar12;
-            piVar23[3] = iVar11;
-            piVar23[4] = uVar18;
-            if ((iVar3 == 0) || (*(int *)((long)param_1 + 0x24) != 0)) {
-              uVar18 = 0;
-            }
-            else {
-              uVar16 = 0;
-              if ((uVar18 < 0x100) && (uVar18 < DAT_0028a3e0)) {
-                uVar16 = *(uint *)(&DAT_0028a3e4 + ((ulong)(uVar18 >> 3) & 0x1ffffffc)) >>
-                         (ulong)(uVar18 & 0x1f) & 1;
-              }
-              uVar18 = (uint)(uVar16 != 0);
-            }
-            __s1 = ppuVar24[-1];
-            piVar23[2] = uVar18;
-            FUN_00183ac8(piVar23 + 6,0xffffffffffffffff,0x40,&DAT_001343dc,__s1);
-            FUN_00183ac8(piVar23 + 0x16,0xffffffffffffffff,0x60,&DAT_001343dc,*ppuVar24);
-            piVar1 = piVar23 + 0x2e;
-            FUN_00183ac8(piVar1,0xffffffffffffffff,0xd0,&DAT_001343dc,ppuVar24[1]);
-            uVar18 = piVar23[2];
-            if ((uVar18 & 1) == 0) {
-              if (*(int *)(param_1 + 4) == 0) {
-                pcVar15 = "DEBUG PROVIDER UNAVAILABLE";
-              }
-              else {
-                pcVar15 = "UNAVAILABLE IN THE CURRENT CONTEXT";
-                if (*(int *)((long)param_1 + 0x24) != 0) {
-                  pcVar15 = "WAITING FOR INPUT OR ACTION";
-                }
-              }
-              FUN_00183ac8(piVar1,0xffffffffffffffff,0xd0,&DAT_001343dc,pcVar15);
-              uVar18 = piVar23[2];
-            }
-            if ((((uVar18 & 1) == 0) && (DAT_0028a438 != 0)) &&
-               ((iVar11 = strcmp(__s1,"GFX_QUALITY_CYCLE"), iVar11 == 0 ||
-                (iVar11 = strcmp(__s1,"MEM_QUALITY_CYCLE"), iVar11 == 0)))) {
-              FUN_00183ac8(piVar1,0xffffffffffffffff,0xd0,&DAT_001343dc,
-                           "DISABLE MAX OPTIMIZATION FIRST");
-            }
-            uVar12 = uVar12 + 1;
-            piVar23 = piVar23 + 0x92;
-            ppuVar24 = ppuVar24 + 5;
-          } while (uVar12 < *(uint *)(param_1 + 6));
-          DAT_00284688 = 0;
-          return 1;
-        }
-      }
-      else {
-        if (bVar6 != 0x51) {
-          DAT_00284688 = 0;
-          return 1;
-        }
-        *(undefined4 *)(param_1 + 1) = 1;
-        uVar18 = DAT_00284af4;
-        if (DAT_00284af0 != 0x918) {
-          DAT_00284688 = 0;
-          return 1;
-        }
-        if (0x20 < DAT_00284af4) {
-          DAT_00284688 = 0;
-          return 1;
-        }
-        if (DAT_00284b00 + 1 < 0 != SCARRY4(DAT_00284b00,1)) {
-          DAT_00284688 = 0;
-          return 1;
-        }
-        if (DAT_00284af4 == 0) {
-          uVar18 = 0;
-        }
-        else {
-          uVar12 = 0;
-          uVar20 = (ulong)DAT_00284af4;
-          do {
-            if ((999999 < (uint)(&DAT_00284b08)[uVar12 * 0x12]) ||
-               (pvVar14 = memchr(&DAT_00284b10 + uVar12 * 0x48,0,0x40), pvVar14 == (void *)0x0))
-            goto LAB_0018cb68;
-            if (uVar12 != 0) {
-              puVar17 = &DAT_00284b08;
-              uVar19 = uVar12;
-              do {
-                if ((&DAT_00284b08)[uVar12 * 0x12] == *puVar17) goto LAB_0018cb68;
-                uVar19 = uVar19 - 1;
-                puVar17 = puVar17 + 0x12;
-              } while (uVar19 != 0);
-            }
-            uVar12 = uVar12 + 1;
-          } while (uVar12 < uVar20);
-        }
-        *(int *)(param_1 + 7) = DAT_00284b00;
-        *(uint *)(param_1 + 5) = uVar18;
-        uVar7 = DAT_00284b04;
-        iVar11 = _DAT_00284afc;
-        uVar2 = DAT_00284af8;
-        *(uint *)(param_1 + 6) = uVar18;
-        *(undefined4 *)(param_1 + 2) = uVar2;
-        *(undefined4 *)(param_1 + 0xb) = uVar7;
-        *(uint *)(param_1 + 4) = (uint)(iVar11 != 0);
-        if (uVar18 != 0) {
-          uVar12 = 0;
-          puVar22 = param_1 + 0x58;
-          puVar21 = &DAT_00284b10;
-          do {
-            *(int *)(puVar22 + -0xb) = (int)uVar12 + 0x24010;
-            *(int *)((long)puVar22 + -0x54) = (int)uVar12;
-            uVar13 = *(undefined8 *)(puVar21 + -8);
-            puVar22[-9] = uVar13;
-            *(uint *)(puVar22 + -10) =
-                 (uint)(*(int *)(param_1 + 4) != 0) | (uint)((int)uVar13 == DAT_00284b00) << 1;
-            FUN_00183ac8(puVar22,0xffffffffffffffff,0x60,&DAT_001343dc,puVar21);
-            uVar12 = uVar12 + 1;
-            puVar21 = puVar21 + 0x48;
-            puVar22 = puVar22 + 0x49;
-          } while (uVar12 < DAT_00284af4);
-          DAT_00284688 = 0;
-          return 1;
-        }
-      }
-LAB_0018cb68:
-      uVar13 = 1;
-    }
-  }
-  DAT_00284688 = 0;
-  return uVar13;
-}
-
-/* ===== nexus_menu_section_present @ 0018cd34 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_section_present(int *param_1,long param_2,int param_3)
-
-{
-  int *piVar1;
-  int iVar2;
-  int iVar3;
-  uint uVar4;
-  uint uVar5;
-  ulong uVar6;
-  uint uVar7;
-  int *piVar8;
-  int *piVar9;
-  int iVar10;
-  
-  if (param_1 == (int *)0x0) {
-    return 0;
-  }
-  if (param_2 != 0x24a68) {
-    return 0;
-  }
-  if ((((*param_1 != 1) || (iVar10 = 0x2400f, param_1[1] != 0x24a68)) ||
-      (0x100 < (uint)param_1[0xc])) || (uVar6 = FUN_00193f80(1,&DAT_00284688), (uVar6 & 1) != 0)) {
-    return 0;
-  }
-  if (param_3 < 1) {
-    DAT_00284688 = 0;
-    return 0;
-  }
-  if (DAT_00284694 != param_3) {
-    DAT_00284688 = 0;
-    return 0;
-  }
-  if (DAT_0028469c == '\0') {
-    DAT_00284688 = 0;
-    return 0;
-  }
-  if (DAT_0028469e != '\0') {
-    DAT_00284688 = 0;
-    return 0;
-  }
-  if ((param_1[5] == (uint)DAT_0028469d) && (DAT_002846a0 == param_1[3])) {
-    iVar2 = param_1[2];
-    if (iVar2 == 1) {
-      if (((DAT_0028469d == 0x51) && (param_1[4] == DAT_00284af8)) && (param_1[0xc] == DAT_00284af4)
-         ) {
-        uVar6 = (ulong)(uint)param_1[0xc];
-        param_1 = param_1 + 0x9e;
-        piVar8 = &DAT_00284b08;
-        while( true ) {
-          if (uVar6 == 0) {
-            DAT_00284688 = 0;
-            return 1;
-          }
-          iVar10 = iVar10 + 1;
-          if (iVar10 != param_1[-4]) break;
-          iVar2 = *param_1;
-          iVar3 = *piVar8;
-          param_1 = param_1 + 0x92;
-          uVar6 = uVar6 - 1;
-          piVar8 = piVar8 + 0x12;
-          if (iVar2 != iVar3) {
-            DAT_00284688 = 0;
-            return 0;
-          }
-        }
-        DAT_00284688 = 0;
+    menu_entry_record_t rec;
+    void *session = NULL;
+    bool fast_acquired;
+    int rc;
+    int saved_errno;
+
+    if (id < 1 || kind_out == NULL || value_out == NULL || value_cap == 0)
         return 0;
-      }
+
+    *kind_out = 3;
+    value_out[0] = '\0';
+
+    saved_errno = errno;
+    if (g_menu_service == NULL || g_menu_store_domain == 0)
+        goto out;
+    if (!nexus_menu_server_thread(gettid()))
+        goto out;
+
+    rc = (int)svc_call2_me1(g_menu_service, 0x30, (long)&session, 0x10006);
+    if (rc == 0) {
+        fast_acquired = true;
+    } else if (rc != -2
+               || (int)svc_call2_me1(g_menu_service, 0x20, (long)&session, 0) != 0) {
+        goto out;
+    } else {
+        fast_acquired = false;
     }
-    else if (iVar2 == 3) {
-      if (((DAT_0028469d == 100) && (DAT_0028a3d8 == param_1[4])) && (param_1[0xc] == 0x28)) {
-        uVar6 = 0;
-        piVar8 = param_1 + 0x9a;
-        piVar9 = &DAT_0019cf48;
-        while ((uint)param_1[0xc] != uVar6) {
-          if (uVar6 != (uint)piVar8[1]) {
-            DAT_00284688 = 0;
-            return 0;
-          }
-          uVar6 = uVar6 + 1;
-          if ((int)uVar6 + 0x2701f != *piVar8) {
-            DAT_00284688 = 0;
-            return 0;
-          }
-          piVar1 = piVar8 + 4;
-          iVar10 = *piVar9;
-          piVar8 = piVar8 + 0x92;
-          piVar9 = piVar9 + 10;
-          if (*piVar1 != iVar10) {
-            DAT_00284688 = 0;
-            return 0;
-          }
-        }
-        if (DAT_0028a428 == 0) {
-          DAT_00284688 = 0;
-          return 1;
-        }
-        uRam000000000028a40c = 0;
-        _DAT_0028a404 = 0;
-        uRam000000000028a41c = 0;
-        _DAT_0028a414 = 0;
-        if (param_1[0xc] == 0) {
-          DAT_00284688 = 0;
-          _DAT_0028a404 = 0;
-          uRam000000000028a40c = 0;
-          _DAT_0028a414 = 0;
-          uRam000000000028a41c = 0;
-          return 1;
-        }
-        uVar7 = 0;
-        do {
-          uVar5 = uVar7 >> 5;
-          uVar4 = uVar7 & 0x1f;
-          uVar7 = uVar7 + 1;
-          (&DAT_0028a404)[uVar5] = (&DAT_0028a404)[uVar5] | 1 << (ulong)uVar4;
-        } while (uVar7 < (uint)param_1[0xc]);
-        DAT_00284688 = 0;
-        return 1;
-      }
+
+    if (session == NULL)
+        goto out;
+
+    if ((int)svc_call1_me1(session, 0x98, 2) != 0) { /* begin read txn */
+        if (svc_call0_me1(session, 0x720) != 0)
+            svc_call0_me1(session, 0x88);
+        if (!fast_acquired)
+            svc_call0_me1(g_menu_service, 0x28);
+        goto out;
     }
-    else if (((iVar2 == 2) && (DAT_0028469d == 0x74)) &&
-            ((DAT_00285414 == param_1[4] && (DAT_00287b90 == param_1[7])))) {
-      iVar10 = DAT_00285420;
-      if (1 < DAT_00287b90 || DAT_00287b98 == 0) {
-        iVar10 = 0;
-      }
-      if (param_1[0xc] != iVar10) {
-        DAT_00284688 = 0;
+
+    {
+        long handle = svc_call3_me1(session, 0x390,
+                                     (long)g_menu_store_domain,
+                                     (long)g_menu_store_read, id);
+        memset(&rec, 0, sizeof rec);
+        if (handle != 0 && svc_call0_me1(session, 0x720) == 0) {
+            int size_full = (int)svc_call1_me1(session, 0x558, handle);
+            uint32_t payload_len = (uint32_t)(size_full - 0x10);
+
+            if (payload_len <= 0x400 && svc_call0_me1(session, 0x720) == 0) {
+                svc_call4_me1(session, 0x640, handle, 0, size_full, (long)&rec);
+                if (svc_call0_me1(session, 0x720) == 0
+                    && rec.magic == 1 && rec.id == (uint32_t)id
+                    && rec.kind < 4 && rec.size == payload_len
+                    && value_cap > payload_len
+                    && (rec.kind == 1 || payload_len == 0)
+                    && memchr(rec.payload, '\0', payload_len) == NULL) {
+                    memcpy(value_out, rec.payload, payload_len);
+                    value_out[payload_len] = '\0';
+                    *kind_out = rec.kind;
+                    svc_call1_me1(session, 0xa0, 0); /* commit */
+                    if (svc_call0_me1(session, 0x720) != 0)
+                        svc_call0_me1(session, 0x88);
+                    if (!fast_acquired)
+                        svc_call0_me1(g_menu_service, 0x28);
+                    errno = saved_errno;
+                    return 1;
+                }
+            }
+        }
+    }
+
+    svc_call1_me1(session, 0xa0, 0); /* commit */
+    if (svc_call0_me1(session, 0x720) != 0)
+        svc_call0_me1(session, 0x88);
+    if (!fast_acquired)
+        svc_call0_me1(g_menu_service, 0x28);
+
+out:
+    errno = saved_errno;
+    return 0;
+}
+
+/*
+ * menu_entry_remove — remove a menu entry by id from the store.
+ * No-op for id < 1. Otherwise acquires the service session (same flags
+ * 0x10006 + fallback dance, no transaction begun) and issues the remove
+ * through slot 0x468 with the remove token; the session is destroyed on a
+ * latched error and released when the fallback path was used. errno is
+ * preserved. @ 0014cc0c
+ */
+void menu_entry_remove(int id)
+{
+    void *session = NULL;
+    bool fast_acquired;
+    int rc;
+    int saved_errno;
+
+    if (id < 1)
+        return;
+
+    saved_errno = errno;
+    if (g_menu_service == NULL || g_menu_store_domain == 0)
+        goto out;
+    if (!nexus_menu_server_thread(gettid()))
+        goto out;
+
+    rc = (int)svc_call2_me1(g_menu_service, 0x30, (long)&session, 0x10006);
+    if (rc == 0) {
+        fast_acquired = true;
+    } else if (rc != -2
+               || (int)svc_call2_me1(g_menu_service, 0x20, (long)&session, 0) != 0) {
+        goto out;
+    } else {
+        fast_acquired = false;
+    }
+
+    if (session != NULL) {
+        svc_call3_me1(session, 0x468, (long)g_menu_store_domain,
+                      (long)g_menu_store_remove, id);
+        if (svc_call0_me1(session, 0x720) != 0)
+            svc_call0_me1(session, 0x88);
+        if (!fast_acquired)
+            svc_call0_me1(g_menu_service, 0x28);
+    }
+
+out:
+    errno = saved_errno;
+}
+
+/* ===== shared menu context ===== */
+
+/* 0x38-byte context snapshot refreshed (rate-limited by callers to ~1 Hz)
+ * while the menu is running on the Mainloop thread. */
+typedef struct {
+    uint64_t refresh_ms;        /* +0x00 — timestamp of this refresh (ms) */
+    uint64_t generation;        /* +0x08 — stage generation counter snapshot */
+    uint64_t stage_view;        /* +0x10 — stashed stage view (g_launcher_stage_view) */
+    uint64_t widget_obj;        /* +0x18 — cached remote widget object */
+    uint32_t autofarm_enabled;  /* +0x20 — evasion 'autofarmEnabled' verdict */
+    uint32_t evasion_armed;     /* +0x24 — protected-plus verified + record kind ok */
+    uint32_t autofarm_gated;    /* +0x28 — autofarm_verified && setting 0x25 == 1 */
+    uint32_t stage_byte;        /* +0x2c — byte at stage_root + 0x19c */
+    uint32_t limit_0x62;        /* +0x30 — setting 0x62 (default 3500 / 0xdac) */
+    uint32_t limit_99;          /* +0x34 — setting 99 (default 2000) */
+} menu_context_t;               /* 0x38 */
+
+/*
+ * menu_context_init — refresh the shared menu context snapshot.
+ * Always seeds the frame (timestamp, generation, stage view, default limits
+ * from 0x10f928) and zeroes the verdict fields; everything else is gated on
+ * the Mainloop thread (armed flag, owning tid, thread name "Mainloop"), a
+ * bound target of 7, the module/stage identity chain (qword at
+ * bias+0x12eb9f0 == stashed stage root, its +0x90 == stashed stage view,
+ * launcher view still parented) and the stage byte at stage root + 0x19c.
+ * Then reads settings 0x25/0x62/99, takes the evasion snapshot for
+ * 'autofarmEnabled' (resolving the provider via dlsym + dladdr module
+ * check, and protected-plus via pthread_once) and walks the remote stage
+ * graph (root at bias+0x1307e20, count at +0x50 must be 0..0x40; count 5
+ * walks +0x48 -> +0x28 -> size at +0xb8), bumping the shared stage
+ * generation whenever the cached identity changes or the child count
+ * shrinks. Side effects: caches the evasion fn, the stage-graph quad.
+ * @ 0014ef90
+ */
+void menu_context_init(menu_context_t *ctx, uint64_t now_ms)
+{
+    uint64_t stage_view = g_launcher_stage_view;
+    uint64_t defaults = g_menu_ctx_default_limits;
+    int32_t setting_0x25 = 0;
+    int32_t limit_0x62 = 0xdac; /* 3500 */
+    int32_t limit_99 = 2000;
+    uint8_t stage_byte = 1;
+    int owning_tid = (int)g_launcher_menu_id;
+    uint32_t autofarm_enabled;
+    uint32_t evasion_armed;
+    uint32_t autofarm_verified;
+    char thread_name[0x10];
+    int64_t bind_target;
+    uint64_t stage_root;
+    uint64_t view_check;
+    bool settings_ok;
+
+    ctx->autofarm_enabled = 0;
+    ctx->evasion_armed = 0;
+    ctx->autofarm_gated = 0;
+    ctx->stage_byte = 0;
+    ctx->refresh_ms = now_ms;
+    ctx->generation = (uint64_t)g_stage_generation;
+    ctx->stage_view = stage_view;
+    ctx->widget_obj = 0;
+    memcpy(&ctx->limit_0x62, &defaults, sizeof defaults);
+
+    if (g_mainloop_armed != 1)
+        return;
+    if (g_launcher_menu_id < 1 || gettid() != owning_tid)
+        return;
+
+    memset(thread_name, 0, sizeof thread_name);
+    if (pthread_getname_np(pthread_self(), thread_name, sizeof thread_name) != 0)
+        return;
+    if (memcmp(thread_name, "Mainloop", 8) != 0 /* 0x706f6f6c6e69614d */
+        || thread_name[8] != '\0')
+        return;
+    if (g_launcher_attached < 1)
+        return;
+    bind_target = bind_state_value_read(g_bind_state);
+    if ((int)bind_target != 7)
+        return;
+
+    /* module/stage identity: qword at bias+0x12eb9f0 must be the stashed
+     * stage root, whose +0x90 must be the stashed stage view */
+    stage_root = 0;
+    if (proc_mem_read((void *)(intptr_t)bind_target,
+                      (uint64_t)g_proc_mem_bias + 0x12eb9f0, &stage_root, 8) == 0
+        || (stage_root & 7) != 0 || stage_root < 0x1000)
+        stage_root = 0;
+    if (stage_root != g_launcher_stage_root)
+        return;
+
+    view_check = 0;
+    if (proc_mem_read((void *)(intptr_t)bind_target, stage_root + 0x90,
+                      &view_check, 8) == 0
+        || (view_check & 7) != 0 || view_check < 0x1000)
+        view_check = 0;
+    if (view_check != g_launcher_stage_view)
+        return;
+    if (remote_child_link_valid(g_launcher_view, g_launcher_stage_view) == 0)
+        return;
+    if (proc_mem_read((void *)(intptr_t)bind_target,
+                      g_launcher_stage_root + 0x19c, &stage_byte, 1) == 0)
+        return;
+    ctx->stage_byte = stage_byte;
+
+    /* settings 0x25 / 0x62 / 99 gate the autofarm verdict */
+    settings_ok = false;
+    if (nexus_menu_setting_value(0x25, &setting_0x25) == 1
+        && nexus_menu_setting_value(0x62, &limit_0x62) == 1)
+        settings_ok = nexus_menu_setting_value(99, &limit_99) == 1;
+
+    /* evasion snapshot for 'autofarmEnabled'; the provider fn is resolved
+     * once via dlsym and must live in the expected module (dladdr base) */
+    {
+        int (*snapshot_fn)(const char **, uint64_t *, int, int64_t *, int *) =
+            g_evasion_snapshot_fn;
+        Dl_info info;
+
+        if (snapshot_fn == NULL) {
+            snapshot_fn = (int (*)(const char **, uint64_t *, int, int64_t *, int *))
+                dlsym(g_evasion_dl_handle, "nexus_evasion_snapshot_keys_v1");
+            if (snapshot_fn == NULL || dladdr(snapshot_fn, &info) == 0
+                || (uint64_t)info.dli_fbase != g_evasion_module_base)
+                snapshot_fn = NULL;
+        }
+
+        if (snapshot_fn == NULL) {
+            autofarm_verified = 0;
+            evasion_armed = 0;
+            autofarm_enabled = 0;
+        } else {
+            const char *keys[1] = { "autofarmEnabled" };
+            uint64_t record[2]; /* {lo dword, enabled dword, kind dword, pad} */
+            int64_t value = 0;
+            int errcode = -1;
+
+            g_evasion_snapshot_fn = snapshot_fn;
+            if (snapshot_fn(keys, record, 1, &value, &errcode) != 1 || value == 0) {
+                autofarm_verified = 0;
+                evasion_armed = 0;
+                autofarm_enabled = 0;
+            } else {
+                autofarm_enabled = errcode == 0 ? settings_ok : 0;
+                if (autofarm_enabled == 1) {
+                    pthread_once(&g_protected_plus_once, protected_plus_resolve_once);
+                    if (g_protected_plus_query == NULL) {
+                        autofarm_verified = 1;
+                        evasion_armed = 0;
+                    } else {
+                        int plus_active = g_protected_plus_query();
+
+                        autofarm_verified = 1;
+                        evasion_armed = 0;
+                        if (plus_active == 1 && (uint32_t)record[1] == 2)
+                            evasion_armed = (uint32_t)(record[0] >> 32) == 1;
+                    }
+                } else {
+                    autofarm_verified = 0;
+                    evasion_armed = 0;
+                }
+            }
+        }
+    }
+    ctx->autofarm_enabled = autofarm_enabled;
+
+    ctx->limit_0x62 = (uint32_t)limit_0x62;
+    ctx->limit_99 = (uint32_t)limit_99;
+    ctx->evasion_armed = evasion_armed;
+    ctx->autofarm_gated = setting_0x25 == 1 ? autofarm_verified : 0;
+
+    /* remote stage-graph walk: root at bias+0x1307e20, count at +0x50 */
+    {
+        uint64_t root_obj = remote_read_ptr((uint64_t)g_proc_mem_bias + 0x1307e20);
+        int32_t root_count = -1;
+        uint32_t child_size_field = 0;
+
+        if (root_obj == 0
+            || proc_mem_read((void *)(intptr_t)bind_target, root_obj + 0x50,
+                             &root_count, 4) == 0
+            || root_count < 0 || root_count > 0x40) {
+            ctx->autofarm_enabled = 0;
+            return;
+        }
+
+        if (root_count == 5) {
+            uint64_t widget_obj = remote_read_ptr(root_obj + 0x48);
+            uint64_t child_obj = remote_read_ptr(widget_obj + 0x28);
+
+            if (child_obj == 0
+                || proc_mem_read((void *)(intptr_t)bind_target,
+                                 child_obj + 0xb8, &child_size_field, 4) == 0
+                || (int32_t)child_size_field < 0) {
+                ctx->autofarm_enabled = 0;
+                return;
+            }
+
+            if (widget_obj != 0) {
+                uint64_t child_size = child_size_field; /* zero-extended */
+                bool changed;
+
+                if (g_stage_widget_obj == widget_obj
+                    && g_stage_child_obj == child_obj
+                    && g_stage_root_obj == root_obj) {
+                    /* identity unchanged: a shrunken child count still
+                     * counts as a rebuild */
+                    changed = child_size < g_stage_child_size;
+                    g_stage_widget_obj = widget_obj;
+                    g_stage_child_obj = child_obj;
+                    g_stage_root_obj = root_obj;
+                    g_stage_child_size = child_size;
+                } else {
+                    changed = true;
+                }
+                if (changed) {
+                    if (g_stage_generation != -1)
+                        g_stage_generation = g_stage_generation + 1;
+                    else
+                        ctx->autofarm_enabled = 0;
+                    g_stage_widget_obj = widget_obj;
+                    g_stage_child_obj = child_obj;
+                    g_stage_root_obj = root_obj;
+                    g_stage_child_size = child_size;
+                }
+            } else {
+                g_stage_child_obj = 0;
+                g_stage_widget_obj = 0;
+                g_stage_child_size = 0;
+            }
+        } else {
+            g_stage_child_obj = 0;
+            g_stage_widget_obj = 0;
+            g_stage_child_size = 0;
+        }
+        ctx->widget_obj = g_stage_widget_obj;
+        ctx->generation = (uint64_t)g_stage_generation;
+    }
+}
+/* menu_engine chain chunk 2: covers raw lines 527-950 */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <dirent.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+
+/* ---- re-declarations carried from chunk 1: these resolve to chunk 1's
+ * definitions when the chain is concatenated (prototypes only here; the
+ * veneer bodies live in chunk 1) ---- */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out, uint32_t len);
+int remote_child_link_valid(uint64_t node, uint64_t parent); /* chunk 1 extern:
+   misc.c @ 00154d5c; the preflight call site passes only the node and ignores
+   the verdict (raw keeps the result in an unused register) */
+extern int nexus_menu_ui_state(void *state_out, int tid);
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+void nexus_menu_diagnostics(char *out, uint32_t cap); /* @ 00186858 (p4) */
+extern int64_t g_proc_mem_bias;      /* 0x22d8e0 — remote-read bias */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern int32_t g_launcher_attached;  /* 0x22f03c — 1 attached, -1 failed, 0 pending */
+extern uint64_t g_launcher_stage_root; /* 0x22f178 — stashed stage root */
+extern uint64_t g_launcher_stage_view; /* 0x22db60 — stashed stage view */
+extern uint64_t g_launcher_view;     /* 0x22f180 — rich launcher view object */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+
+/* glibc/bionic tid + thread-name helpers */
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+int *__errno_location(void);
+#define __errno() __errno_location()
+
+/* service-table veneers (chunk 1 owns the bodies in the assembled file;
+ * prototypes here make this chunk's calls explicit) */
+long svc_call0_me1(void *obj, uint32_t slot);
+long svc_call1_me1(void *obj, uint32_t slot, long a);
+long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c);
+
+/* ===== cross-file functions (chunk-2 additions) ===== */
+extern int postbattle_island_verify(void);         /* misc.c @ 0014fac4 — verify the
+                                                       ui-server island stub at 0x22f1e0
+                                                       matches its saved copy */
+extern int ui_sc_bundle_ready(void *ctx);          /* widgets.c @ 001554b0 — 'sc/ui.sc'
+                                                       bundle ready probe (flags at bias
+                                                       +0x12eb0e8/+0x12eb170 clear, bundle
+                                                       bit +0x80, popover styles chain);
+                                                       ctx is a pass-through */
+extern int debug_quality_file_read(uint32_t dirfd,
+                                   struct timespec *out); /* misc.c @ 00155a40 —
+                                                       validate the BSDQ marker file;
+                                                       missing -> ok (1), tampered -> 0;
+                                                       publishes the marker mtime */
+
+/* nexus_menu_* exports defined later in this file (parts 3/4) */
+extern void nexus_menu_start(void);                 /* @ 00183b6c */
+extern uint64_t nexus_menu_status(void);            /* @ 00183d70 — <0 failed, 3 busy */
+extern uint64_t nexus_menu_register_backend(uint32_t kind, int *callbacks); /* @ 00183e8c */
+
+/* ===== cross-file globals (chunk-2 additions) ===== */
+extern uint32_t g_graphics_policy_active;  /* 0x22d890 — renderer.c: bit0 performance/graphics policy engaged */
+extern uint32_t g_stage_log_count;         /* 0x22f4bc — renderer.c: capped-128 shared stage-log counter
+                                              (menu_stage_log); co-defined for the gate assembly */
+extern uint32_t g_graphics_cycle_ready;    /* 0x22dfb0 — renderer.c: 0 = cycle disabled */
+extern uint32_t g_graphics_reload_pending; /* 0x22dfb4 — renderer.c: reload in flight after publish */
+extern uint32_t g_graphics_policy_failed;  /* 0x22dfb8 — renderer.c: latched policy/release failure */
+extern uint32_t g_graphics_inhibit;        /* 0x22dfbc — renderer.c: must be 0 for the cycle to run */
+extern uint32_t g_debug_quality_base;      /* 0x22e000 — renderer.c: 1 once a quality block was published */
+extern uint64_t g_debug_quality_ticks;     /* 0x22e004 — renderer.c: {tick0, tick1} published pair */
+extern void    *g_loader_service;          /* 0x22e010 — widgets.c: NexusLoader service locator (set by
+                                              widgets init); used to query statusJson */
+extern const char *g_ui_init_stage;        /* 0x1a7c40 — widgets.c: current ui_initialize stage/reason
+                                              string (written on failure paths) */
+
+/*
+ * is_plausible_ptr_me1 — pointer sanity gate used when reading remote object
+ * handles (raw idiom: `(v & 7) != 0 || v < 0x1000`). @ inline
+ */
+static int is_plausible_ptr_me1(uint64_t v)
+{
+    return (v & 7) == 0 && v >= 0x1000;
+}
+
+/* ===== preflight poll ===== */
+
+/*
+ * menu_sc_preflight_poll — pre-poll the stage/thread/ui-state gates before
+ * engaging graphics work. Reads the stage root qword at bias+0x1307e20 up
+ * front, then requires: graphics policy active (0x22d890 == 1), launcher
+ * attached >= 0, owning menu tid, thread name "Mainloop", island stub intact,
+ * plausible stage root with root count at +0x50 in 0..0x40 but NOT 5 (raw
+ * rejects 5 here), ui-state match with flag byte +5 clear, module/stage
+ * identity (qword at bias+0x12eb9f0 == stashed stage root, its +0x90 ==
+ * stashed stage view), and — when the policy bit is clear — the launcher view
+ * still parented. Then reads the stage byte at stage root + 0x19c and returns
+ * ui_sc_bundle_ready()'s verdict when that byte is 0. Returns 0 on any gate
+ * failure or when polled from the wrong thread. @ 00150378
+ */
+int menu_sc_preflight_poll(void *read_ctx)
+{
+    uint64_t stage_root = 0;
+    int read_ok = proc_mem_read(read_ctx,
+                                (uint64_t)g_proc_mem_bias + 0x1307e20,
+                                &stage_root, 8);
+    int owning_tid = (int)g_launcher_menu_id;
+
+    if (g_graphics_policy_active == 1) {
+        if (g_launcher_attached < 0)
+            return 0;
+    } else if (g_launcher_attached <= 0) {
         return 0;
-      }
-      uVar6 = 0;
-      piVar8 = param_1 + 0x9a;
-      piVar9 = &DAT_0028543c;
-      while( true ) {
-        if ((uint)param_1[0xc] == uVar6) {
-          if (DAT_00287b98 == 0) {
-            DAT_00284688 = 0;
-            return 1;
-          }
-          if (DAT_00287b90 < 2) {
-            DAT_00287bb0 = DAT_00287bac;
-            if (param_1[0xc] != 0) {
-              uVar6 = 0;
-              DAT_00287bb4 = 0;
-              piVar8 = param_1 + 0x9e;
-              do {
-                iVar10 = *piVar8;
-                piVar8 = piVar8 + 0x92;
-                (&DAT_00287bc0)[uVar6] = iVar10;
-                DAT_00287bb4 = DAT_00287bb4 | 1 << (ulong)((uint)uVar6 & 0x1f);
-                uVar6 = uVar6 + 1;
-              } while (uVar6 < (uint)param_1[0xc]);
-              DAT_00284688 = 0;
-              return 1;
+    }
+
+    if (g_launcher_menu_id < 1 || gettid() != owning_tid)
+        return 0;
+
+    {
+        char thread_name[0x10];
+
+        memset(thread_name, 0, sizeof thread_name);
+        if (pthread_getname_np(pthread_self(), thread_name,
+                               sizeof thread_name) != 0)
+            return 0;
+        if (memcmp(thread_name, "Mainloop", 8) != 0 /* 0x706f6f6c6e69614d */
+            || thread_name[8] != '\0')
+            return 0;
+    }
+
+    if (postbattle_island_verify() == 0)
+        return 0;
+    if (read_ok == 0 || !is_plausible_ptr_me1(stage_root))
+        return 0;
+
+    {
+        int32_t root_count = -1;
+
+        if (proc_mem_read(NULL, stage_root + 0x50, &root_count, 4) == 0
+            || root_count < 0 || root_count > 0x40 || root_count == 5)
+            return 0;
+    }
+
+    {
+        uint8_t ui_state[6];
+
+        memset(ui_state, 0, sizeof ui_state);
+        if (nexus_menu_ui_state(ui_state, owning_tid) != 1 || ui_state[5] != 0)
+            return 0;
+    }
+
+    {
+        uint64_t module_stage_root = 0;
+
+        if (proc_mem_read(NULL, (uint64_t)g_proc_mem_bias + 0x12eb9f0,
+                          &module_stage_root, 8) == 0)
+            module_stage_root = 0;
+        if (!is_plausible_ptr_me1(module_stage_root))
+            module_stage_root = 0;
+        if (module_stage_root != g_launcher_stage_root)
+            return 0;
+
+        {
+            uint64_t stage_view = 0;
+
+            if (proc_mem_read(NULL, module_stage_root + 0x90, &stage_view, 8) == 0)
+                stage_view = 0;
+            if (!is_plausible_ptr_me1(stage_view))
+                stage_view = 0;
+            if (stage_view != g_launcher_stage_view)
+                return 0;
+
+            if ((g_graphics_policy_active & 1) == 0
+                && (remote_child_link_valid(g_launcher_view,
+                                            g_launcher_stage_view), 0) == 0)
+                return 0;
+
+            {
+                uint8_t stage_byte = 1;
+
+                if (proc_mem_read(NULL, g_launcher_stage_root + 0x19c,
+                                  &stage_byte, 1) != 0
+                    && stage_byte == 0)
+                    return ui_sc_bundle_ready(NULL);
             }
-            DAT_00284688 = 0;
-            DAT_00287bb0 = DAT_00287bac;
-            DAT_00287bb4 = 0;
-            return 1;
-          }
-          DAT_00284688 = 0;
-          return 1;
         }
-        if ((uVar6 != (uint)piVar8[1]) || (uVar6 = uVar6 + 1, (int)uVar6 + 0x2601f != *piVar8))
-        break;
-        piVar1 = piVar8 + 4;
-        iVar10 = *piVar9;
-        piVar8 = piVar8 + 0x92;
-        piVar9 = piVar9 + 0x4a;
-        if (*piVar1 != iVar10) {
-          DAT_00284688 = 0;
-          return 0;
-        }
-      }
     }
-  }
-  DAT_00284688 = 0;
-  return 0;
+    return 0;
 }
 
-/* ===== FUN_0018d64c @ 0018d64c ===== */
+/* ===== Mainloop liveness ===== */
 
-void FUN_0018d64c(int param_1)
-
+/*
+ * menu_mainloop_alive_check — true when the game's "Mainloop" thread is alive
+ * and the NexusLoader reports the linking phase. Scans /proc/self/task
+ * (comm files, 0x3f-byte reads, EINTR retried, fstatat fallback for vanished
+ * tids); a comm of exactly "Mainloop" (or "Mainloop\n") latches the reason
+ * string "mainloop_live" and switches to the loader probe. The probe acquires
+ * the loader service session (flags 0x10006), begins a txn (mode 8), finds
+ * class "nexus/loader/NexusLoader", calls its "statusJson" "()Ljava/lang/String;"
+ * and requires the JSON to start with
+ * '{"schema":1,"phase":"linking","game_jni_boundary_observed":true,"synchronous_link_barrier_complete":false,'
+ * (0x6a bytes) and contain
+ * '"process_restart_required":false,"error":'. On any failure the shared
+ * ui_initialize stage string (0x1a7c40) receives the failing reason token
+ * ("task_directory_open"/"task_directory_fd"/"task_directory_read"/
+ * "task_comm_path"/"task_comm_open"/"task_comm_read"). errno is preserved.
+ * @ 00152b7c
+ */
+int menu_mainloop_alive_check(void)
 {
-  uint uVar1;
-  long lVar2;
-  undefined *puVar3;
-  int iVar4;
-  int iVar5;
-  undefined8 uVar6;
-  undefined8 *puVar7;
-  long lVar8;
-  int *piVar9;
-  uint uVar10;
-  long lVar11;
-  long lVar12;
-  char acStack_2a8 [96];
-  uint local_248 [118];
-  long local_70;
-  
-  lVar2 = tpidr_el0;
-  local_70 = *(long *)(lVar2 + 0x28);
-  memcpy(local_248,&DAT_002846b0,0x1d8);
-  puVar3 = PTR_PTR_s_nexus_sx_spin_001a36f8;
-  uVar6 = 0;
-  if (param_1 < 0x5c) {
-    if (param_1 == 0x40) {
-      lVar11 = 0;
-      piVar9 = (int *)(PTR_PTR_s_nexus_sx_spin_001a36f8 + 0xc);
-      do {
-        iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_aop_target_mode");
-        if (iVar4 == 0) {
-          if (((-1 < (int)lVar11) && (piVar9[-1] < 1)) && (-1 < *piVar9)) {
-            lVar8 = 0;
-            piVar9 = (int *)(puVar3 + 0xc);
-            local_248[lVar11] = 0;
-            goto LAB_0018da64;
-          }
-          break;
-        }
-        lVar11 = lVar11 + 1;
-        piVar9 = piVar9 + 6;
-      } while (lVar11 != 0x76);
-    }
-    else {
-      if (param_1 != 0x4a) goto LAB_0018ddf0;
-      lVar8 = 0;
-      puVar7 = (undefined8 *)PTR_PTR_s_nexus_sx_spin_001a36f8;
-      do {
-        iVar4 = strcmp((char *)*puVar7,"nexus_autofarm_follow_target");
-        if (iVar4 == 0) {
-          if (-1 < (int)lVar8) {
-            lVar11 = 0;
-            piVar9 = (int *)(puVar3 + 0xc);
-            uVar10 = (uint)(local_248[lVar8] == 0);
-            goto LAB_0018da0c;
-          }
-          break;
-        }
-        lVar8 = lVar8 + 1;
-        puVar7 = puVar7 + 3;
-      } while (lVar8 != 0x76);
-    }
-  }
-  else {
-    if (param_1 == 0x5c) {
-      lVar11 = 0;
-      puVar7 = (undefined8 *)PTR_PTR_s_nexus_sx_spin_001a36f8;
-      do {
-        iVar4 = strcmp((char *)*puVar7,"nexus_autododge_version");
-        if (iVar4 == 0) {
-          if (-1 < (int)lVar11) {
-            iVar4 = *(int *)((long)&DAT_002846b0 + lVar11 * 4);
-            if (0xfffffffa < iVar4 - 6U) goto LAB_0018d818;
-            goto LAB_0018ddec;
-          }
-          break;
-        }
-        lVar11 = lVar11 + 1;
-        puVar7 = puVar7 + 3;
-      } while (lVar11 != 0x76);
-      iVar4 = 3;
-LAB_0018d818:
-      lVar11 = 0;
-      do {
-        if (iVar4 == 1) {
-          FUN_00183ac8(acStack_2a8,0x60,0x60,"nexus_dodge_%s",(&PTR_s_reaction_pct_0019e960)[lVar11]
-                      );
-        }
-        else {
-          FUN_00183ac8(acStack_2a8,0x60,0x60,"nexus_v%d_dodge_%s",iVar4);
-        }
-        lVar8 = 0;
-        uVar10 = 0x424;
-        if (lVar11 != 5) {
-          uVar10 = 100;
-        }
-        uVar1 = 0xb4;
-        if (lVar11 != 0) {
-          uVar1 = uVar10;
-        }
-        piVar9 = (int *)(puVar3 + 0xc);
-        while (iVar5 = strcmp(*(char **)(piVar9 + -3),acStack_2a8), iVar5 != 0) {
-          lVar8 = lVar8 + 1;
-          piVar9 = piVar9 + 6;
-          if (lVar8 == 0x76) goto LAB_0018ddec;
-        }
-        if ((((int)lVar8 < 0) || ((int)uVar1 < piVar9[-1])) || (*piVar9 < (int)uVar1))
-        goto LAB_0018ddec;
-        lVar11 = lVar11 + 1;
-        local_248[lVar8] = uVar1;
-      } while (lVar11 != 6);
-      lVar8 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      do {
-        iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_autododge_require_hold");
-        if (iVar4 == 0) {
-          if ((((int)lVar8 < 0) || (0 < piVar9[-1])) || (*piVar9 < 0)) goto LAB_0018ddec;
-          lVar11 = 0;
-          piVar9 = (int *)(puVar3 + 0xc);
-          local_248[lVar8] = 0;
-          goto LAB_0018dbf4;
-        }
-        lVar8 = lVar8 + 1;
-        piVar9 = piVar9 + 6;
-        uVar6 = 4;
-      } while (lVar8 != 0x76);
-      goto LAB_0018ddf0;
-    }
-    if (param_1 == 0x70) {
-      lVar11 = 0;
-      puVar7 = (undefined8 *)PTR_PTR_s_nexus_sx_spin_001a36f8;
-      do {
-        iVar4 = strcmp((char *)*puVar7,"nexus_sx_outline_color_preset");
-        if (iVar4 == 0) {
-          if (-1 < (int)lVar11) {
-            lVar8 = 0;
-            piVar9 = (int *)(puVar3 + 0xc);
-            uVar10 = (int)(local_248[lVar11] + 1) % 7;
-            goto LAB_0018d960;
-          }
-          break;
-        }
-        lVar11 = lVar11 + 1;
-        puVar7 = puVar7 + 3;
-      } while (lVar11 != 0x76);
-    }
-    else {
-      if (param_1 != 0x91) goto LAB_0018ddf0;
-      lVar11 = 0;
-      piVar9 = (int *)(PTR_PTR_s_nexus_sx_spin_001a36f8 + 0xc);
-      do {
-        iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_bolt_smooth");
-        if (iVar4 == 0) {
-          if (((-1 < (int)lVar11) && (piVar9[-1] < 0x56)) && (0x54 < *piVar9)) {
-            lVar8 = 0;
-            piVar9 = (int *)(puVar3 + 0xc);
-            local_248[lVar11] = 0x55;
-            goto LAB_0018d9c0;
-          }
-          break;
-        }
-        lVar11 = lVar11 + 1;
-        piVar9 = piVar9 + 6;
-      } while (lVar11 != 0x76);
-    }
-  }
-  goto LAB_0018ddec;
-  while( true ) {
-    lVar8 = lVar8 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar8 == 0x76) break;
-LAB_0018da64:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_combat_aura_range");
-    if (iVar4 == 0) {
-      if ((((int)lVar8 < 0) || (0x1068 < piVar9[-1])) || (*piVar9 < 0x1068)) goto LAB_0018ddec;
-      lVar11 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar8] = 0x1068;
-      goto LAB_0018db9c;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018db9c:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_combat_fire_interval");
-    if (iVar4 == 0) {
-      if ((((int)lVar11 < 0) || (1000 < piVar9[-1])) || (*piVar9 < 1000)) goto LAB_0018ddec;
-      lVar8 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar11] = 1000;
-      goto LAB_0018dd1c;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar8 = lVar8 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar8 == 0x76) break;
-LAB_0018dd1c:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_aop_reaction_ms");
-    if (iVar4 == 0) {
-      if ((((int)lVar8 < 0) || (0 < piVar9[-1])) || (*piVar9 < 0)) goto LAB_0018ddec;
-      lVar11 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar8] = 0;
-      goto LAB_0018de84;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018de84:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_aop_lead_scale");
-    if (iVar4 == 0) {
-      if ((((int)lVar11 < 0) || (100 < piVar9[-1])) || (*piVar9 < 100)) goto LAB_0018ddec;
-      uVar10 = 100;
-      goto LAB_0018de40;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018da0c:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_autofarm_follow_target");
-    if (iVar4 == 0) goto LAB_0018ddd0;
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018dbf4:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_dodge_blacklist_mask");
-    if (iVar4 == 0) {
-      if ((((int)lVar11 < 0) || (0x3ff < piVar9[-1])) || (*piVar9 < 0x3ff)) goto LAB_0018ddec;
-      uVar10 = 0x3ff;
-      goto LAB_0018de40;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar8 = lVar8 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar8 == 0x76) break;
-LAB_0018d960:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_outline_color_preset");
-    if (iVar4 == 0) {
-      if ((((int)lVar8 < 0) || ((int)uVar10 < piVar9[-1])) || (*piVar9 < (int)uVar10))
-      goto LAB_0018ddec;
-      lVar11 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      uVar1 = *(uint *)(&DAT_0014073c + (long)(int)uVar10 * 0xc);
-      local_248[lVar8] = uVar10;
-      goto LAB_0018dad8;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018dad8:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_outline_r");
-    if (iVar4 == 0) {
-      if ((((int)lVar11 < 0) || ((int)uVar1 < piVar9[-1])) || (*piVar9 < (int)uVar1))
-      goto LAB_0018ddec;
-      lVar8 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar11] = uVar1;
-      uVar1 = *(uint *)(&DAT_00140740 + (long)(int)uVar10 * 0xc);
-      goto LAB_0018dc5c;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar8 = lVar8 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar8 == 0x76) break;
-LAB_0018dc5c:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_outline_g");
-    if (iVar4 == 0) {
-      if ((((int)lVar8 < 0) || ((int)uVar1 < piVar9[-1])) || (*piVar9 < (int)uVar1))
-      goto LAB_0018ddec;
-      lVar11 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar8] = uVar1;
-      uVar10 = *(uint *)(&DAT_00140744 + (long)(int)uVar10 * 0xc);
-      goto LAB_0018dda8;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018dda8:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_outline_b");
-    if (iVar4 == 0) goto LAB_0018ddd0;
-  }
-  goto LAB_0018ddf0;
-LAB_0018ddd0:
-  if (((-1 < (int)lVar11) && (piVar9[-1] <= (int)uVar10)) && ((int)uVar10 <= *piVar9)) {
-LAB_0018de40:
-    local_248[lVar11] = uVar10;
-    uVar6 = FUN_001846b8(local_248);
-    goto LAB_0018ddf0;
-  }
-LAB_0018ddec:
-  uVar6 = 4;
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar8 = lVar8 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar8 == 0x76) break;
-LAB_0018d9c0:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_bolt_wall_lookahead");
-    if (iVar4 == 0) {
-      if ((((int)lVar8 < 0) || (500 < piVar9[-1])) || (*piVar9 < 500)) goto LAB_0018ddec;
-      lVar12 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar8] = 500;
-      goto LAB_0018db38;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar12 = lVar12 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar12 == 0x76) break;
-LAB_0018db38:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_bolt_target_range");
-    if (iVar4 == 0) {
-      if ((((int)lVar12 < 0) || (0x578 < piVar9[-1])) || (*piVar9 < 0x578)) goto LAB_0018ddec;
-      lVar11 = 0;
-      piVar9 = (int *)(puVar3 + 0xc);
-      local_248[lVar12] = 0x578;
-      goto LAB_0018dcbc;
-    }
-  }
-  goto LAB_0018ddf0;
-  while( true ) {
-    lVar11 = lVar11 + 1;
-    piVar9 = piVar9 + 6;
-    uVar6 = 4;
-    if (lVar11 == 0x76) break;
-LAB_0018dcbc:
-    iVar4 = strcmp(*(char **)(piVar9 + -3),"nexus_sx_bolt_exit_hold");
-    if (iVar4 == 0) {
-      if ((((int)lVar11 < 0) || (0x28a < piVar9[-1])) || (*piVar9 < 0x28a)) goto LAB_0018ddec;
-      uVar10 = 0x28a;
-      goto LAB_0018de40;
-    }
-  }
-LAB_0018ddf0:
-  if (*(long *)(lVar2 + 0x28) != local_70) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail(uVar6);
-  }
-  return;
-}
+    DIR *dir;
+    int dfd;
+    struct stat st;
+    char comm_path[0x140];
+    const char *reason = NULL;
+    bool alive = false;
+    int saved_errno = errno;
 
-/* ===== nexus_menu_engine_register @ 0018e174 ===== */
-
-/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */
-
-undefined8 nexus_menu_engine_register(int *param_1)
-
-{
-  int iVar1;
-  ulong uVar2;
-  undefined8 uVar3;
-  
-  if (((((((param_1 == (int *)0x0) || (*param_1 != 1)) || (param_1[1] != 0x80)) ||
-        ((*(char **)(param_1 + 6) == (char *)0x0 ||
-         (iVar1 = strcmp(*(char **)(param_1 + 6),
-                         "a10aeb6b4085fb2a15d969a130cd9608231998b5269a40aed41129d99624ede3"),
-         iVar1 != 0)))) ||
-       ((*(ulong *)(param_1 + 4) < 0x1000 ||
-        ((*(long *)(param_1 + 8) == 0 || (*(long *)(param_1 + 10) == 0)))))) ||
-      (*(long *)(param_1 + 0xc) == 0)) ||
-     ((((*(long *)(param_1 + 0xe) == 0 || (*(long *)(param_1 + 0x10) == 0)) ||
-       (*(long *)(param_1 + 0x12) == 0)) ||
-      (((*(long *)(param_1 + 0x14) == 0 || (*(long *)(param_1 + 0x16) == 0)) ||
-       ((*(long *)(param_1 + 0x18) == 0 ||
-        ((*(long *)(param_1 + 0x1a) == 0 || (*(long *)(param_1 + 0x1c) == 0)))))))))) {
-    uVar3 = 4;
-  }
-  else {
-    uVar2 = FUN_00193f80(1,&DAT_0028fb40);
-    if ((uVar2 & 1) == 0) {
-      if (DAT_0028fb44 == 0) {
-        DAT_0028fae8 = *(undefined8 *)(param_1 + 10);
-        DAT_0028fae0 = *(undefined8 *)(param_1 + 8);
-        DAT_0028faf8 = *(undefined8 *)(param_1 + 0xe);
-        DAT_0028faf0 = *(undefined8 *)(param_1 + 0xc);
-        DAT_0028fac8 = *(undefined8 *)(param_1 + 2);
-        _DAT_0028fac0 = *(undefined8 *)param_1;
-        uRam000000000028fad8 = *(undefined8 *)(param_1 + 6);
-        DAT_0028fad0 = *(undefined8 *)(param_1 + 4);
-        DAT_0028fb28 = *(undefined8 *)(param_1 + 0x1a);
-        DAT_0028fb20 = *(undefined8 *)(param_1 + 0x18);
-        DAT_0028fb38 = *(undefined8 *)(param_1 + 0x1e);
-        DAT_0028fb30 = *(undefined8 *)(param_1 + 0x1c);
-        DAT_0028fb08 = *(undefined8 *)(param_1 + 0x12);
-        DAT_0028fb00 = *(undefined8 *)(param_1 + 0x10);
-        DAT_0028fb18 = *(undefined8 *)(param_1 + 0x16);
-        DAT_0028fb10 = *(undefined8 *)(param_1 + 0x14);
-        uVar3 = 1;
-        DAT_0028fb44 = 1;
-        FUN_00183cdc(2,0,"waiting_rooted_mainloop_text");
-      }
-      else {
-        uVar3 = 4;
-      }
-      DAT_0028fb40 = 0;
+    dir = opendir("/proc/self/task");
+    if (dir == NULL) {
+        reason = "task_directory_open";
+        goto fail;
     }
-    else {
-      uVar3 = 3;
+    dfd = dirfd(dir);
+    if (dfd < 0) {
+        reason = "task_directory_fd";
+        closedir(dir);
+        goto fail;
     }
-  }
-  return uVar3;
-}
 
-/* ===== nexus_menu_engine_observe @ 0018e2b4 ===== */
+    for (;;) {
+        struct dirent *de = readdir(dir);
+        char comm[0x40];
+        ssize_t n;
+        int fd;
 
-ulong nexus_menu_engine_observe
-                (float param_1,float param_2,uint param_3,long param_4,int param_5,char *param_6,
-                ulong param_7)
-
-{
-  bool bVar1;
-  undefined4 uVar2;
-  char *pcVar3;
-  uint uVar4;
-  int iVar5;
-  ulong uVar6;
-  long lVar7;
-  long lVar8;
-  char *pcVar9;
-  long lVar10;
-  
-  if (param_6 == (char *)0x0) {
-    return 0;
-  }
-  if (param_5 < 1) {
-    return 0;
-  }
-  if (1 < param_3) {
-    return 0;
-  }
-  if (DAT_0028fb44 == 0) {
-    return 0;
-  }
-  if (DAT_0028fb48 < 0) {
-    return 0;
-  }
-  uVar4 = strcmp(param_6,"Mainloop");
-  uVar6 = (ulong)uVar4;
-  if (uVar4 != 0) {
-    return 0;
-  }
-  if (ABS(param_1) == INFINITY) {
-    return uVar6;
-  }
-  if (NAN(ABS(param_1))) {
-    return uVar6;
-  }
-  if (DAT_0028fb4c != 0 && DAT_0028fb4c != param_5) {
-    return uVar6;
-  }
-  if (param_2 != 8192.0 && param_2 < 8192.0 == NAN(param_2)) {
-    return 0;
-  }
-  if (param_1 != 8192.0 && param_1 < 8192.0 == NAN(param_1)) {
-    return 0;
-  }
-  if (param_2 < 560.0) {
-    return 0;
-  }
-  if (param_1 < 960.0) {
-    return 0;
-  }
-  if (ABS(param_2) == INFINITY) {
-    return 0;
-  }
-  if (NAN(ABS(param_2))) {
-    return 0;
-  }
-  uVar6 = nexus_menu_status(0);
-  if ((int)uVar6 == 0) {
-    return uVar6;
-  }
-  uVar6 = FUN_00193f80(1,&DAT_0028fb40);
-  if ((uVar6 & 1) != 0) {
-    return 3;
-  }
-  if (DAT_0028fb48 == 2) {
-    if ((param_3 == 0) && (param_7 < DAT_0028fb68)) {
-      DAT_0028fb40 = 0;
-      return 1;
-    }
-    DAT_0028fb68 = param_7 + 100;
-    iVar5 = FUN_0018e668();
-    if (iVar5 != 0) {
-      if (param_3 == 1) {
-        lVar10 = 0;
+        if (de == NULL) {
+            /* scan exhausted: alive only if a Mainloop comm matched */
+            reason = *(__errno()) == 0 ? "" : "task_directory_read";
+            goto done;
+        }
+        if (de->d_name[0] == '.') {
+            /* "." / "..": skipped, rescan */
+            continue;
+        }
+        if (str_format(comm_path, 0x140, 0x140,
+                       "/proc/self/task/%s/comm", de->d_name) >= 0x140) {
+            reason = "task_comm_path";
+            goto done;
+        }
         do {
-          if (((&DAT_0028fca0)[lVar10] != '\0') && ((&DAT_0028fb80)[lVar10] == param_4)) {
-            uVar4 = (&DAT_0028fc40)[lVar10];
-            if ((uVar4 & 0xfffffffe) == 0x20000) {
-              uVar2 = 0xffffffff;
-              if (uVar4 == 0x20001) {
-                uVar2 = 1;
-              }
-              iVar5 = nexus_menu_scroll_battle(uVar2,param_5);
+            fd = open(comm_path, 0x80000 /* O_RDONLY | O_CLOEXEC */);
+            if (fd >= 0)
+                break;
+        } while (*(__errno()) == 4 /* EINTR */);
+        if (fd < 0 && (*(__errno()) & 0xfffffffe) == 2 /* ENOENT/ENOTDIR */) {
+            do {
+                if (fstatat(dfd, de->d_name, &st, 0x100 /* AT_SYMLINK_NOFOLLOW */)
+                    >= 0)
+                    break;
+            } while (*(__errno()) == 4);
+            if (*(__errno()) == 2) {
+                /* tid vanished mid-scan: skip, rescan */
+                continue;
             }
-            else {
-              iVar5 = nexus_menu_dispatch(uVar4,0,0,param_5);
+        }
+        if (fd < 0) {
+            reason = "task_comm_open";
+            goto done;
+        }
+        do {
+            n = read(fd, comm, 0x3f);
+            if (n >= 0)
+                break;
+        } while (*(__errno()) == 4);
+        if (n < 0) {
+            close(fd);
+            if ((*(__errno()) & 0xfffffffe) == 2) {
+                do {
+                    if (fstatat(dfd, de->d_name, &st,
+                                0x100 /* AT_SYMLINK_NOFOLLOW */) >= 0)
+                        break;
+                } while (*(__errno()) == 4);
+                if (*(__errno()) != 2) {
+                    reason = "task_comm_read";
+                    goto done;
+                }
+                continue; /* tid vanished mid-read: skip, rescan */
             }
-            uVar4 = DAT_0028fb54 + 1;
-            bVar1 = DAT_0028fb54 < 0x80;
-            DAT_0028fb54 = uVar4;
-            if ((bVar1) && (DAT_0028fb38 != (code *)0x0)) {
-              pcVar9 = "pending";
-              if (iVar5 != 2) {
-                pcVar9 = "blocked";
-              }
-              pcVar3 = "acknowledged";
-              if (iVar5 != 1) {
-                pcVar3 = pcVar9;
-              }
-              (*DAT_0028fb38)(DAT_0028fac8,"nexus_menu_click",pcVar3,(&DAT_0028fc40)[lVar10]);
+            reason = "task_comm_read";
+            goto done;
+        }
+        close(fd);
+        if (n == 0) {
+            /* empty comm: skip, rescan */
+            continue;
+        }
+        if (memcmp(comm, "Mainloop", 8) == 0 /* 0x706f6f6c6e69614d */) {
+            if (comm[8] == '\n' /* 10 */) {
+                /* "Mainloop\n": candidate, verify below */
+                reason = "mainloop_live";
+                goto loader_probe;
             }
+            if (comm[8] == '\0') {
+                /* "Mainloop\0": candidate, verify below */
+                reason = "mainloop_live";
+                goto loader_probe;
+            }
+            /* "Mainloop" + suffix: not the thread, rescan */
+            continue;
+        }
+        /* other thread: rescan */
+    }
+
+loader_probe:
+    /* reached only with reason == "mainloop_live": ask the loader for its
+     * linking-phase statusJson */
+    alive = false;
+    if (g_loader_service != NULL) {
+        void *session = NULL;
+
+        if ((int)svc_call2_me1(g_loader_service, 0x30, (long)&session,
+                               0x10006) == 0
+            && session != NULL
+            && svc_call0_me1(session, 0x720) == 0) {
+            if ((int)svc_call1_me1(session, 0x98, 8) == 0) {
+                long class_h = svc_call1_me1(session, 0x30,
+                                             (long)"nexus/loader/NexusLoader");
+                long method_h = 0;
+                long str_h = 0;
+                char *json = NULL;
+
+                if (class_h != 0 && svc_call0_me1(session, 0x720) == 0
+                    && (method_h = svc_call3_me1(session, 0x388, class_h,
+                                                  (long)"statusJson",
+                                                  (long)"()Ljava/lang/String;")) != 0
+                    && svc_call0_me1(session, 0x720) == 0
+                    && (str_h = svc_call3_me1(session, 0x390, class_h,
+                                               method_h, 0)) != 0
+                    && svc_call0_me1(session, 0x720) == 0
+                    && (json = (char *)svc_call2_me1(session, 0x548, str_h,
+                                                     0)) != NULL) {
+                    if (strncmp(json,
+                                "{\"schema\":1,\"phase\":\"linking\",\"game_jni_boundary_observed\":true,\"synchronous_link_barrier_complete\":false,",
+                                0x6a) == 0
+                        && strstr(json,
+                                  "\"process_restart_required\":false,\"error\":")
+                               != NULL)
+                        alive = true;
+                    svc_call2_me1(session, 0x550, str_h, (long)json);
+                }
+                if (svc_call0_me1(session, 0x720) != 0)
+                    svc_call0_me1(session, 0x88);
+                svc_call1_me1(session, 0xa0, 0);
+            } else {
+                alive = false;
+            }
+            if (svc_call0_me1(session, 0x720) != 0)
+                svc_call0_me1(session, 0x88);
+        }
+    }
+    goto done;
+
+done:
+    closedir(dir);
+    errno = saved_errno;
+    if (alive)
+        return 1;
+
+fail:
+    g_ui_init_stage = reason;
+    return 0;
+}
+
+/* ===== status / diagnostics ===== */
+
+/*
+ * menu_status_failed — true when nexus_menu_status() is negative (failed)
+ * or exactly 3 (busy). @ 00155e08
+ */
+int menu_status_failed(void)
+{
+    int64_t status = nexus_menu_status();
+
+    return status < 0 || status == 3;
+}
+
+/*
+ * menu_diagnostics_push — render the 0x800-byte diagnostics snapshot via
+ * nexus_menu_diagnostics and push it into the sink object's method slot
+ * +0x538. The sink table is read before the call (Ghidra shows the raw
+ * param as long*). @ 00155e28
+ */
+void menu_diagnostics_push(void *sink)
+{
+    char text[0x800];
+
+    nexus_menu_diagnostics(text, 0x800);
+    svc_call2_me1(sink, 0x538, (long)text, 0); /* slot arg count approximated */
+}
+
+/* menu_engine.c-owned diagnostics writer defined in part 4 (p4 range) */
+
+/* ===== performance settings ===== */
+
+uint32_t g_perf_mode_latched;  /* 0x22f4b8 — 1 while the performance mode is applied;
+                                   written here and cleared by the frame tick / misc
+                                   perf-save path; renderer+widgets read it ("RELOADING
+                                   TEXTURES") */
+
+/*
+ * menu_performance_load — load, validate and apply performance.bin from the
+ * given directory fd. Gates: dirfd >= 0; the file must be a regular file
+ * (S_IFREG), owned by the current uid, nlink == 1, mode 0600 (raw: mode &
+ * 0x3f == 0), exactly 0x14 bytes, magic "NXP69252" (qword 0x323532393650584e)
+ * with version 1 and mode < 2; the CRC-32 (reflected 0xedb88320/0x76dc4190,
+ * NEON-folded in the dump) over the first 0x10 bytes must match ~stored_crc.
+ * Applies the mode (mode value published to the battle-state word 0x22d880
+ * low half) and the latched "optimization on" flag 0x22f4b8, then reads the
+ * debug-quality marker (published to 0x22dfb0/0x22e000/0x22e004). Always
+ * logs one 'performance_settings' stage line (reason
+ * 'invalid_or_unreadable_default_off' unless verified, else
+ * 'optimization_off'/'optimization_on'). errno is preserved.
+ * @ 001560d8
+ */
+void menu_performance_load(int dirfd)
+{
+    struct stat st;
+    int fd;
+    uint32_t rec[5]; /* magic+ver qword, mode, crc, pad — 0x14 bytes */
+    uint64_t got = 0;
+    bool verified = false;
+    uint32_t mode_value = 0;
+    int saved_errno;
+
+    if (dirfd < 0)
+        goto out;
+
+    fd = openat(dirfd, "performance.bin", 0x88000 /* O_RDONLY|O_CLOEXEC */);
+    if (fd < 0) {
+        verified = *(__errno()) == 2; /* ENOENT counts as default-off */
+        goto out;
+    }
+    if (fstat(fd, &st) != 0
+        || (st.st_mode & 0xf000) != 0x8000
+        || st.st_uid != getuid()
+        || st.st_nlink != 1
+        || (st.st_mode & 0x3f) != 0
+        || st.st_size != 0x14) {
+        close(fd);
+        goto out;
+    }
+
+    while (got < 0x14) {
+        ssize_t n = read(fd, (char *)rec + got, 0x14 - got);
+
+        if (n < 0 && *(__errno()) == 4) /* EINTR */
+            continue;
+        if (n <= 0)
             break;
-          }
-          lVar10 = lVar10 + 1;
-        } while (lVar10 != 0x18);
-      }
-LAB_0018e63c:
-      uVar6 = FUN_0018e880(param_1,param_2);
-      DAT_0028fb40 = 0;
-      return uVar6;
+        got += (uint64_t)n;
     }
-    pcVar9 = "stage_generation_or_membership";
-LAB_0018e5c0:
-    FUN_0018e804(pcVar9);
-    uVar6 = 0xffffffff;
-  }
-  else {
-    if ((((param_3 == 0) && (lVar10 = FUN_0018edcc(DAT_0028fad0 + 0x12eb9f0), lVar10 != 0)) &&
-        (lVar7 = FUN_0018edcc(lVar10 + 0x90), lVar7 != 0)) &&
-       ((lVar8 = FUN_0018edcc(param_4), lVar8 == DAT_0028fad0 + 0x11abad8 &&
-        (iVar5 = FUN_0018ee70(param_4,lVar7), iVar5 != 0)))) {
-      if (DAT_0028fb60 == 0) {
-        DAT_0028fb60 = param_7;
-      }
-      if (DAT_0028fb68 <= param_7) {
-        if ((0x1f < DAT_0028fb50) || (0x752 < param_7 - DAT_0028fb60 >> 5)) {
-          pcVar9 = "asset_readiness_budget";
-          goto LAB_0018e5c0;
+    close(fd);
+    if (got == 0x14
+        && rec[0] == 0x32353239 /* "NXP6" */
+        && rec[1] == 0x3652584e /* "9252" */
+        && (int)rec[2] == 1     /* version */
+        && rec[3] < 2) {        /* mode */
+        /* CRC-32 (reflected, poly 0xedb88320) over the first 0x10 bytes,
+         * compared against the stored complement */
+        uint32_t crc = 0xffffffff;
+        const uint8_t *p = (const uint8_t *)rec;
+        int i;
+
+        for (i = 0; i < 0x10; i++) {
+            int bit;
+
+            crc ^= p[i];
+            for (bit = 0; bit < 8; bit++)
+                crc = (crc >> 1) ^ (0xedb88320u & (uint32_t)(-(int32_t)(crc & 1)));
         }
-        DAT_0028fb50 = DAT_0028fb50 + 1;
-        DAT_0028fb68 = param_7 + 500;
-        iVar5 = (*DAT_0028fae8)(DAT_0028fac8,"popover_button_blue");
-        if (iVar5 != 0) {
-          DAT_0028fb4c = param_5;
-          iVar5 = FUN_00183c78(param_5);
-          if (iVar5 == 0) {
-            DAT_0028fb40 = 0;
-            DAT_0028fb4c = 0;
-            return 3;
-          }
-          DAT_0028fb48 = 1;
-          DAT_0028fb70 = lVar10;
-          DAT_0028fb78 = lVar7;
-          uVar6 = FUN_0018ef84();
-          if ((int)uVar6 != 1) {
-            DAT_0028fb40 = 0;
-            return uVar6;
-          }
-          goto LAB_0018e63c;
-        }
-      }
+        verified = rec[4] == ~crc; /* stored complement check */
+        mode_value = verified ? rec[3] : 0;
     }
-    uVar6 = 2;
-  }
-  DAT_0028fb40 = 0;
-  return uVar6;
-}
 
-/* ===== FUN_0018e804 @ 0018e804 ===== */
+out:
+    saved_errno = errno;
+    {
+        uint32_t state_lo = 0; /* low dword of the 0x22d880 state word */
 
-void FUN_0018e804(undefined8 param_1)
+        if (verified)
+            state_lo = mode_value;
+        g_battle_state = (g_battle_state & 0xffffffff00000000u) | state_lo;
+        g_perf_mode_latched = verified ? mode_value : 0; /* 0x22f4b8 */
+    }
+    {
+        struct timespec ts;
+        int marker_ok;
 
-{
-  uint uVar1;
-  
-  DAT_0028fb48 = 0xffffffff;
-  FUN_00183cdc(0xffffffff,DAT_0028fb4c,param_1);
-  uVar1 = DAT_0028fb54;
-  DAT_0028fb54 = DAT_0028fb54 + 1;
-  if ((uVar1 < 0x80) && (DAT_0028fb38 != (code *)0x0)) {
-                    /* WARNING: Could not recover jumptable at 0x0018e870. Too many branches */
-                    /* WARNING: Treating indirect jump as call */
-    (*DAT_0028fb38)(DAT_0028fac8,"nexus_menu_stopped",param_1,0);
-    return;
-  }
-  return;
-}
+        memset(&ts, 0, sizeof ts);
+        marker_ok = debug_quality_file_read((uint32_t)dirfd, &ts);
+        g_graphics_cycle_ready = marker_ok;             /* 0x22dfb0 */
+        g_debug_quality_base = marker_ok ? (uint32_t)ts.tv_sec : 0; /* 0x22e000 */
+        g_debug_quality_ticks = marker_ok
+            ? (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000
+            : 0;                                        /* 0x22e004 */
+        if (marker_ok && ts.tv_sec != 0)
+            g_perf_mode_latched = 1;
+    }
+    errno = saved_errno;
 
-/* ===== FUN_0018e880 @ 0018e880 ===== */
+    /* one capped stage log per invocation */
+    {
+        const char *reason = "invalid_or_unreadable_default_off";
+        const char *opt = "optimization_off";
 
-undefined8 FUN_0018e880(undefined4 param_1,float param_2)
+        if (mode_value != 0)
+            opt = "optimization_on";
+        if (verified)
+            reason = opt;
 
-{
-  bool bVar1;
-  uint uVar2;
-  char cVar3;
-  long lVar4;
-  int iVar5;
-  undefined8 *puVar6;
-  undefined8 uVar7;
-  ulong uVar8;
-  long lVar9;
-  char *__s1;
-  long lVar10;
-  long lVar11;
-  long lVar12;
-  float fVar13;
-  float fVar14;
-  float fVar15;
-  float fVar16;
-  ulong local_7b0;
-  undefined8 local_7a8;
-  undefined1 auStack_7a0 [128];
-  undefined4 local_720;
-  uint local_71c;
-  char local_717;
-  undefined4 local_710 [6];
-  float local_6f8 [8];
-  byte local_6d8 [1608];
-  long local_90;
-  
-  lVar4 = tpidr_el0;
-  local_90 = *(long *)(lVar4 + 0x28);
-  iVar5 = nexus_menu_view(&local_720,DAT_0028fb4c);
-  if (iVar5 == 1) {
-    if (local_71c < 0x17) {
-      local_7a8 = 0;
-      puVar6 = (undefined8 *)nexus_menu_settings(&local_7b0);
-      if (local_7b0 != 0) {
-        uVar8 = 0;
-        do {
-          __s1 = (char *)*puVar6;
-          iVar5 = strcmp(__s1,"nexus_quick_menu_offset_x");
-          if (iVar5 == 0) {
-            nexus_menu_setting_value(uVar8 & 0xffffffff,(long)&local_7a8 + 4);
-            __s1 = (char *)*puVar6;
-          }
-          iVar5 = strcmp(__s1,"nexus_quick_menu_offset_y");
-          if (iVar5 == 0) {
-            nexus_menu_setting_value(uVar8 & 0xffffffff,&local_7a8);
-          }
-          uVar8 = uVar8 + 1;
-          puVar6 = puVar6 + 3;
-        } while (uVar8 < local_7b0);
-      }
-      DAT_0028fc40 = 0x82;
-      if (local_717 == '\0') {
-        DAT_0028fc40 = 1;
-      }
-      DAT_0028fca0 = 1;
-      iVar5 = FUN_0018f988(0,"NEXUS");
-      if (iVar5 == 1) {
-        fVar13 = (float)local_7a8._4_4_ + 90.0;
-        fVar15 = (float)(int)local_7a8 + 40.0;
-        if (((DAT_0028fe40 == '\0') || (DAT_0028fd80 != fVar13)) || (DAT_0028fde0 != fVar15)) {
-          (*DAT_0028fb28)(fVar13,fVar15,DAT_0028fac8,DAT_0028fb80);
-          DAT_0028fe40 = '\x01';
-          DAT_0028fd80 = fVar13;
-          DAT_0028fde0 = fVar15;
+        if (g_stage_log_count < 0x80) {
+            struct timespec now;
+            int64_t ms = 0;
+
+            g_stage_log_count = g_stage_log_count + 1;
+            if (clock_gettime(CLOCK_REALTIME, &now) == 0)
+                ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            __android_log_print(4, "NexusLab69252",
+                                "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%lld}",
+                                "performance_settings", reason, 0,
+                                (int)getpid(), (int)gettid(), (long long)ms);
+        } else {
+            g_stage_log_count = g_stage_log_count + 1;
         }
-        DAT_0028fc44 = 0;
-        DAT_0028fca1 = 0;
-        iVar5 = FUN_0018f988(1,"NEXUS MENU");
-        if (iVar5 == 1) {
-          fVar14 = (float)NEON_fmadd(param_1,0x3f000000,0x42b40000);
-          fVar16 = (param_2 + -600.0) * 0.5;
-          fVar15 = -9999.0;
-          fVar13 = -9999.0;
-          if (local_717 != '\0') {
-            fVar15 = fVar16 + 100.0;
-            fVar13 = fVar14 + -370.0;
-          }
-          if (((DAT_0028fe41 == '\0') || (DAT_0028fd84 != fVar13)) || (DAT_0028fde4 != fVar15)) {
-            (*DAT_0028fb28)(fVar13,fVar15,DAT_0028fac8,DAT_0028fb88);
-            DAT_0028fe41 = '\x01';
-            DAT_0028fd84 = fVar13;
-            DAT_0028fde4 = fVar15;
-          }
-          lVar9 = 0;
-          lVar10 = 0x1e2;
-          lVar11 = 0x188;
-          lVar12 = 0xd0;
-          do {
-            (&DAT_0028fac0)[lVar10] = 0;
-            *(undefined4 *)(&DAT_0028fac0 + lVar11) = 0;
-            if ((local_717 == '\0') || ((ulong)local_71c <= lVar10 - 0x1e2U)) {
-              if ((*(char *)(lVar10 + 0x28fc60) == '\0') ||
-                 ((*(float *)(lVar11 + 0x28fc00) != -9999.0 ||
-                  (*(float *)(lVar11 + 0x28fc60) != -9999.0)))) {
-                (*DAT_0028fb28)(0xc61c3c00,0xc61c3c00,DAT_0028fac8,
-                                *(undefined8 *)(&DAT_0028fac0 + lVar12));
-                *(undefined4 *)(lVar11 + 0x28fc00) = 0xc61c3c00;
-                *(undefined4 *)(lVar11 + 0x28fc60) = 0xc61c3c00;
-                goto LAB_0018ed58;
-              }
+    }
+}
+/* menu_engine chain chunk 3: covers raw lines 951-1350 */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <pthread.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+
+/* ---- carried declarations (chunk 1/2 own the bodies) ---- */
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern void nexus_menu_start(void);                 /* @ 00183b6c */
+extern uint64_t nexus_menu_status(void);            /* @ 00183d70 */
+extern uint64_t nexus_menu_register_backend(uint32_t kind, int *callbacks); /* @ 00183e8c */
+extern int binding_state_name(int state);          /* misc.c @ 00169ab8 — state index
+                                                       to name string
+                                                       ("binding_state_invalid" fallback) */
+extern int memfd_module_callback(void *info, size_t size, void *data); /* misc.c
+                                                       @ 00156d68 — dl_iterate_phdr
+                                                       callback matching a
+                                                       "/memfd:nexus-* (deleted)"
+                                                       module by soname */
+extern int mapped_file_hash_check(void *rec, const void *expect,
+                                  size_t len);   /* misc.c @ 00156f1c — fstat +
+                                                  SHA-256 a sealed memfd of the
+                                                  expected size */
+extern int memfd_path_resolve(const char *name, char *out); /* misc.c @ 001574ec */
+extern int memfd_module_open(const char *name, int a, int b); /* misc.c @ 00157740 */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern const char g_empty_text[];    /* 0x134f22 — shared "" rodata */
+
+/* dlfcn (Android dlfcn.h provides dladdr/dlerror via <dlfcn.h> included above) */
+#define _GNU_SOURCE_DUMMY_ME3 1
+#ifndef _DLFCN_H_DECLARED_ME3
+#define DLINFO_ME3_DECLARED 1
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const void *dli_saddr;
+    const char *dli_sname;
+} dl_info_me3_t;
+extern int dladdr_me3(const void *addr, dl_info_me3_t *info);
+#define Dl_info dl_info_me3_t
+#define dladdr dladdr_me3
+#endif
+
+/* dl_iterate_phdr (link.h) — declared here to keep the include set minimal */
+struct dl_phdr_info;
+int dl_iterate_phdr(int (*cb)(struct dl_phdr_info *, size_t, void *), void *data);
+
+/* 0x1020-byte module-discovery record seeded from rodata templates
+ * (0x198c78 = libNexusEvasion69252.so, 0x199c98 = libNexusEvasionRuntime69252.so)
+ * and filled by the phdr callback. */
+typedef struct {
+    uint32_t matches;          /* +0x0000 — soname match count (capped at 2) */
+    uint32_t _pad0;
+    uint64_t dlbase;           /* +0x0008 — dladdr base of the matching module */
+    char     soname[0xfe9];    /* +0x0010 — NUL-terminated resident path */
+    char     verified;         /* +0x1010 — module verified flag */
+    char     _pad1[7];
+    uint64_t record_cookie;    /* +0x1018 — saved cookie (module identity) */
+} memfd_module_record_t;       /* 0x1020 */
+
+/* rodata templates the records are seeded from (plain memcpy sources). */
+extern const memfd_module_record_t g_evasion_tpl_main;     /* 0x198c78 — template for
+                                                              "libNexusEvasion69252.so" */
+extern const memfd_module_record_t g_evasion_tpl_runtime;  /* 0x199c98 — template for
+                                                              "libNexusEvasionRuntime69252.so" */
+extern const uint8_t g_evasion_hash_main[0x1d8f0];         /* 0x110010 — expected hash
+                                                              blob for the main module */
+extern const uint8_t g_evasion_hash_runtime[0xc46e0];      /* 0x110030 — expected hash
+                                                              blob for the runtime module */
+
+/*
+ * menu_evasion_backend_load — locate, verify and load the evasion backend
+ * provider. Seeds two 0x1020-byte module records from the rodata templates and
+ * walks the phdr list with the memfd callback (soname match, count cap 2, both
+ * must be found exactly once). Returns 0xffffffff when either record is
+ * ambiguous or missing, when the discovered paths/flags/bases are empty, or
+ * when mapped_file_hash_check rejects either module (hash blobs 0x1d8f0 /
+ * 0xc46e0 bytes at 0x110010/0x110030). Otherwise resolves the memfd path,
+ * opens the sealed module (memfd_module_open), dlopens it (RTLD_LAZY|
+ * RTLD_LOCAL = 6) — with a fallback through the "/memfd:nexus-* (deleted)"
+ * readlink path when dlopen fails — and requires BOTH exports
+ * "nexus_evasion_menu_backend_v1" and "nexus_evasion_bind_image_v1" to resolve
+ * inside the module whose dladdr base matches the record's base (dlclose +
+ * 0xffffffff on mismatch). On success fills out[] = { magic (0x10f7d8),
+ * dlopen handle, module base, backend fn, bind_image fn } and returns 1.
+ * Failures in the fallback path log 'resident lookup failed descriptor=%s
+ * soname=%s error=%s' (tag NexusMem, prio 6). Returns 0 when the memfd open
+ * itself fails. @ 00156850
+ */
+int menu_evasion_backend_load(void *unused, void **out)
+{
+    memfd_module_record_t rec_main;
+    memfd_module_record_t rec_runtime;
+    char descriptor[54];
+    char resident[0x100];
+    void *handle;
+    long backend_fn;
+    long bind_image_fn;
+
+    (void)unused;
+
+    memcpy(&rec_main, &g_evasion_tpl_main, sizeof rec_main);
+    memcpy(&rec_runtime, &g_evasion_tpl_runtime, sizeof rec_runtime);
+    dl_iterate_phdr((int (*)(struct dl_phdr_info *, size_t, void *))memfd_module_callback,
+                    &rec_main);
+    dl_iterate_phdr((int (*)(struct dl_phdr_info *, size_t, void *))memfd_module_callback,
+                    &rec_runtime);
+
+    if (rec_main.matches > 1 || rec_runtime.matches > 1)
+        return -1; /* 0xffffffff: ambiguous soname match */
+    if (rec_main.matches == 0)
+        return 0; /* main module not loaded */
+    if (rec_runtime.matches == 0)
+        return -1;
+    if (rec_main.soname[0] == '\0')
+        return -1;
+    if (rec_runtime.verified == '\0' || rec_main.dlbase == 0
+        || rec_runtime.record_cookie == 0)
+        return -1;
+    if (mapped_file_hash_check(&rec_main, g_evasion_hash_main, 0x1d8f0) == 0)
+        return -1;
+    if (mapped_file_hash_check(&rec_runtime, g_evasion_hash_runtime, 0xc46e0) == 0)
+        return -1;
+
+    if (memfd_path_resolve(rec_main.soname, descriptor) == 0
+        && memfd_module_open(descriptor, 0, 0) >= 0) {
+        ssize_t n;
+
+        /* resident path buffer: raw reads the link into a 0x140 Dl_info-sized
+         * area then shifts the " (deleted)"-stripped name to a 0x100 slot;
+         * dlopen uses slot+1 (leading char skipped, raw &local_2e0 + 1) */
+        memset(resident, 0, sizeof resident);
+        n = readlink(descriptor, resident, 0x13f);
+        if (n < 0 || n - 0x13f > -0x13f /* readlink range check */
+            || n <= 0x17)
+            goto fallback;
+        resident[n] = '\0';
+        if (memcmp(resident, "/memfd:nexus-", 13) != 0 /* 0x6e3a64666d656d2f */
+            || memcmp(resident + 13, "dnexus-su", 9) != 0 /* 0x2d737578656e3a64 */
+            || strcmp(resident + n - 23, " (deleted)") != 0
+            || (size_t)(n - 0x17) >= 0x100)
+            goto fallback;
+        memmove(resident, resident + 23, (size_t)(n - 0x17));
+        resident[n - 0x17] = '\0';
+        if (strlen(resident) > 0x41) {
+            handle = dlopen(resident + 1, 6 /* RTLD_LAZY|RTLD_LOCAL */);
+            if (handle != NULL)
+                goto loaded;
+        }
+
+    fallback:
+        {
+            const char *dl_err = dlerror();
+            size_t len = strlen(resident);
+            const void *soname = len >= 0x42 ? (const void *)resident
+                                             : (const void *)g_empty_text;
+            const char *err_text = dl_err != NULL ? dl_err : "unknown";
+
+            __android_log_print(6, "NexusMem",
+                                "resident lookup failed descriptor=%s soname=%s error=%s",
+                                descriptor, soname, err_text);
+        }
+        return 0;
+    }
+
+loaded:
+    {
+        void *loaded_handle = handle;
+
+        backend_fn = (long)dlsym(loaded_handle, "nexus_evasion_menu_backend_v1");
+        bind_image_fn = (long)dlsym(loaded_handle, "nexus_evasion_bind_image_v1");
+        if (backend_fn == 0 || bind_image_fn == 0) {
+            dlclose(loaded_handle);
+            return -1;
+        }
+        {
+            Dl_info info;
+
+            if (dladdr((void *)backend_fn, &info) == 0
+                || (uint64_t)info.dli_fbase != rec_main.dlbase
+                || dladdr((void *)bind_image_fn, &info) == 0
+                || (uint64_t)info.dli_fbase != rec_main.dlbase) {
+                dlclose(loaded_handle);
+                return -1;
             }
-            else {
-              if (local_6d8[lVar9] < 8) {
-                uVar2 = 1 << (ulong)(local_6d8[lVar9] & 0x1f);
-                if ((uVar2 & 0xd8) == 0) {
-                  if ((uVar2 & 0x24) == 0) goto LAB_0018ecc4;
-                  FUN_0018fb04(auStack_7a0);
+        }
+        out[0] = (void *)(uintptr_t)0x10f7d8; /* magic cookie (raw 0x10f7d8) */
+        out[1] = loaded_handle;
+        out[2] = (void *)rec_main.dlbase;
+        out[3] = (void *)backend_fn;
+        out[4] = (void *)bind_image_fn;
+    }
+    return 1;
+}
+/* menu_engine chain chunk 4: covers raw lines 1419-1900 */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out, uint32_t len);
+extern uint64_t remote_read_ptr(uint64_t addr);
+extern int remote_child_link_valid(uint64_t node, uint64_t parent);
+extern int nexus_menu_ui_state(void *state_out, int tid);
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern uint64_t nexus_menu_status(void);
+extern int menu_sc_preflight_poll(void *read_ctx);
+extern int ui_sc_bundle_ready(void *ctx);
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 —
+                                                            atomic byte test-and-set */
+extern long svc_call0_me1(void *obj, uint32_t slot);
+extern long svc_call1_me1(void *obj, uint32_t slot, long a);
+extern long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+extern long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c);
+extern long svc_call4_me1(void *obj, uint32_t slot, long a, long b, long c, long d);
+extern int64_t g_proc_mem_bias;      /* 0x22d8e0 — remote-read bias */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern int32_t g_launcher_attached;  /* 0x22f03c — 1 attached, -1 failed, 0 pending */
+extern uint64_t g_launcher_stage_root; /* 0x22f178 — stashed stage root */
+extern uint64_t g_launcher_stage_view; /* 0x22db60 — stashed stage view */
+extern uint64_t g_launcher_view;     /* 0x22f180 — rich launcher view object */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_reload_requested;  /* 0x22d88c — renderer.c: UI reload requested */
+extern uint32_t g_graphics_policy_active; /* 0x22d890 — renderer.c: policy engaged */
+extern uint32_t g_reload_request_arg;     /* 0x22d894 — renderer.c: reload arg */
+extern uint32_t g_reload_phase;      /* 0x22d898 — renderer.c: reload walk phase */
+extern uint64_t g_reload_cookie;     /* 0x22d8a0 — renderer.c: {hi=1, lo=interval} */
+extern uint64_t g_reload_deadline_ms; /* 0x22d8a8 — renderer.c: request monotonic ms */
+extern uint32_t g_graphics_policy_failed; /* 0x22dfb8 — renderer.c: latched failure */
+extern uint32_t g_graphics_inhibit;  /* 0x22dfbc — renderer.c: cycle inhibit */
+extern uint32_t g_ui_release_done;   /* 0x22db70 — renderer.c: frame freed flag */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern uint32_t g_perf_mode_latched; /* 0x22f4b8 — perf-mode latch (chunk 2) */
+extern uint32_t g_launcher_reset_a;  /* 0x25ca20 — renderer.c: asset probe start ms */
+extern uint32_t g_launcher_reset_b;  /* 0x25ca28 — renderer.c: asset probe next ms */
+extern uint64_t g_graphics_policy_ms; /* 0x281a20 — renderer.c: policy applied at */
+extern int32_t g_graphics_policy_pair[2]; /* 0x281a28 — renderer.c: source pair */
+extern uint32_t g_lowres_atlas_pair; /* 0x25cb38 — lowres atlas source pair value
+                                        (multi-part; also referenced by p2) */
+extern void *g_launcher_renderer_ops; /* 0x25ca38 — renderer.c: cached renderer ops
+                                         v1 table (slots +0x10 metrics, +0x18 ts) */
+extern const char *g_launcher_status; /* 0x1a7c58 — renderer.c: status reason
+                                          ("launcher initializing") */
+extern int64_t g_host_session;       /* 0x1a7c50 — misc.c: host session dir fd (>= 0) */
+extern uint8_t g_bind_state[];       /* 0x22f040 — misc.c bind state (wake +4) */
+extern int64_t bind_state_value_read(void *state);
+extern int bind_request_handle(void *state, void *rec, uint64_t now_ms, int arg);
+extern int remote_widget_ancestor_of(uint64_t frame, uint64_t target);
+extern uint64_t protected_channel_ready(void);
+
+/* ---- menu_engine part-2 definitions (forward; raw 2525+) ---- */
+extern void menu_shell_stop_log(const char *reason);        /* @ 001607dc */
+extern int menu_launcher_style_apply(int screen, void *viewport); /* @ 00160c3c */
+extern int menu_action_dispatch(uint32_t action_id);        /* @ 001613ac */
+extern int menu_value_set_gated(int id, uint32_t value, int tid); /* @ 00161538 */
+extern int menu_perf_mode_toggle(uint64_t now_ms, int tid); /* @ 00161acc */
+extern int menu_perf_mode_toggle_screen(uint64_t now_ms, int tid); /* @ 00161b84 */
+extern int menu_battle_state_sync(int tid);                 /* @ 00161c58 */
+extern void chooser_page_build(void *rec, int tid);         /* @ 0016291c */
+
+/* ---- menu_engine part-3/4 definitions (forward) ---- */
+extern void nexus_menu_import(void *buf, uint64_t len, int tid); /* @ 001843dc */
+extern uint64_t nexus_menu_scroll_battle(int dir, int tid);     /* @ 00184900 */
+extern uint64_t nexus_menu_server_open(int tid);                /* @ 00185eac */
+extern uint32_t nexus_menu_server_action(uint32_t op, int tid); /* @ 00185f90 */
+extern uint64_t nexus_menu_theme_open(int tid);                 /* @ 0018640c */
+extern uint64_t nexus_menu_theme_action(uint32_t op, int tid);  /* @ 00186548 */
+extern uint64_t nexus_menu_profile_open(int tid);               /* @ 00187e48 */
+extern uint64_t nexus_menu_profile_action(int op, int tid);    /* @ 00187f14 */
+extern void nexus_menu_profile_pump(int tid, uint64_t now_ms);  /* @ 001880e0 */
+extern uint32_t nexus_menu_dispatch(uint32_t op, int a, int b, int tid); /* @ 00194730 */
+extern bool menu_settings_load(void *unused, void *buf, size_t cap,
+                               uint64_t *out_len);          /* @ 00156614 (chunk 5) */
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action); /* @ 00156760 (chunk 5) */
+
+/* ---- cross-file (misc.c / widgets.c / renderer.c / themes.c) ---- */
+extern int command_ring_pop(int *opcode, void *value_hi, void *value); /* misc @ 001612c8 */
+extern uint64_t clipboard_invoke(void);                /* misc @ 00161970 */
+extern int script_port_reset(int kind);                /* misc @ 00192228 */
+extern int performance_mode_save(uint32_t mode, uint64_t now_ms); /* misc @ 001645e0 */
+extern uint64_t allocator_state_read(void *ops, void *view_out); /* misc @ 00150710 */
+extern void allocator_state_write(void *rec, uint64_t addr, int value); /* misc @ 001556ec */
+extern int maps_range_is_rw(uint64_t addr, uint64_t len); /* misc @ 00155848 */
+extern int engine_global_pair_read(void *pair_out, void *viewport); /* misc @ 00167524 */
+extern uint64_t integrity_master_gate(void);           /* misc @ 00167750 */
+extern void frame_time_stamp_forward(uint64_t now_ms); /* misc @ 00167888 */
+extern int renderer_graphics_release(void);            /* renderer @ 0016793c */
+extern int allocator_cycle_check(void *ops);           /* misc @ 00167e78 */
+extern int menu_view_draw(void *rec, int tid);         /* renderer @ 0016205c */
+extern void menu_perf_status_row_append(void *rec);    /* widgets @ 00162118 */
+extern void main_view_rows_refresh(void *rec);         /* misc @ 00162260 */
+extern int plus_key_input(int armed, uint64_t now_ms); /* activation_plus @ 00162390 */
+extern int ui_named_action_invoke(int action_id);      /* widgets @ 001924cc */
+extern int launcher_stage_wait(uint64_t root, uint64_t view, int tid); /* renderer @ 001608e0 */
+extern int nexus_rich_main_frame(uint64_t now_ms, uint32_t frame_not3,
+                                  int menu_open);      /* renderer @ 00178c78 */
+extern int nexus_ui_graphics_resources(uint64_t root, uint64_t view,
+                                       uint64_t launcher, uint32_t arg); /* renderer @ 00177afc */
+extern int nexus_menu_theme_pump(int tid, uint64_t now_ms); /* themes @ 00186d58 */
+extern int theme_menu_status_set(int code, int tid, const char *reason); /* misc @ 00183cdc */
+extern void battle_end_state_tick(uint32_t kind, void *frame_obj, void *arg,
+                                  uint64_t now_ms);    /* widgets @ 0015f334 */
+extern int binding_state_name(int state);              /* misc @ 00169ab8 */
+/* named imports with no body in the dump (resolved from the companion mods) */
+extern uint64_t nexus_menu_debug_open(int tid);        /* external @ 001842d0 — not in dump */
+extern uint64_t nexus_menu_debug_action(uint32_t op, int tid); /* external — not in dump */
+extern void nexus_menu_debug_pump(int tid, uint64_t now_ms);   /* external — not in dump */
+extern uint64_t nexus_menu_editor_open(int tid);       /* external — not in dump */
+extern uint64_t nexus_menu_editor_action(uint32_t op, int tid); /* external — not in dump */
+extern void nexus_menu_editor_pump(int tid, uint64_t now_ms);  /* external — not in dump */
+extern int nexus_script_port_fonts_open(void);         /* external — not in dump */
+extern int nexus_script_port_fps_open(void);           /* renderer @ 0016e618 (thunk 00194690) */
+
+/* chunk-local helpers (defined below / in chunk 5) */
+static float int_as_float_me4(uint32_t bits);
+static int dispatch_command_me4(int opcode, int tid, uint64_t now_ms);
+static void menu_frame_attach_path(long frame_obj, uint64_t now_ms, int tid,
+                                   uint32_t open_state);
+static int frame_perf_graphics_restore(uint64_t now_ms, int tid);
+static int frame_game_reload_verify(uint64_t now_ms, int tid,
+                                    const char *thread_name);
+static void frame_battle_end_pump(uint64_t now_ms, int tid,
+                                  const char *thread_name);
+
+/* ===== frame-tick globals owned by this file ===== */
+
+uint32_t g_ui_release_armed;    /* 0x22db78 — nonzero once frame-v1 release is armed
+                                   (widgets sets it; renderer + this tick gate on it) */
+uint64_t g_perf_restore_ms;     /* 0x25cb30 — saved-mode restore start (ms; misc clears) */
+static uint32_t g_frame_tick_latch; /* 0x25ca14 — re-entrancy latch (test-and-set) */
+static uint64_t g_open_wait_next_ms; /* 0x25ca18 — next allowed open attempt (ms) */
+static uint32_t g_asset_probe_count; /* 0x25ca30 — 'nexus_shell_waiting_assets' retries (< 4) */
+static uint32_t g_settings_restored; /* 0x25ca34 — settings restore-once latch */
+static uint64_t g_plus_key_last_ms; /* 0x25ca40 — opcode 0x97 rate gate (ms) */
+static uint64_t g_menu_open_since_ms; /* 0x2815b0 — menu-open wait start (ms) */
+static uint32_t g_menu_open_reported; /* 0x2815b8 — open-wait deadline reported */
+static uint64_t g_battle_pump_last_ms; /* 0x281a30 — battle-end pump throttle (ms) */
+static uint64_t g_plus_service_last_ms; /* 0x281a38 — plus service throttle (ms) */
+
+/* raw float-bit reinterpretation (Ghidra shows raw int slots) */
+static float int_as_float_me4(uint32_t bits)
+{
+    float f;
+
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+/* ===== backend registration (UI backend contract veneers) ===== */
+
+/*
+ * menu_backend_register — forward (kind, callbacks) to
+ * nexus_menu_register_backend. — dlsym export thunk @ 00156c50
+ */
+void menu_backend_register__export(uint32_t kind, int *callbacks)
+{
+    extern uint64_t nexus_menu_register_backend(uint32_t kind, int *callbacks);
+
+    nexus_menu_register_backend(kind, callbacks);
+}
+
+/*
+ * menu_backend_start — start the menu (nexus_menu_start) and report whether
+ * the status word became non-zero. — dlsym export thunk @ 00156c5c
+ */
+bool menu_backend_start__export(void)
+{
+    extern void nexus_menu_start(void);
+
+    nexus_menu_start();
+    return nexus_menu_status() != 0;
+}
+
+/*
+ * menu_backend_bind_log — log one 'nexus_ui_backend_binding' stage line with
+ * the binding-state name for the given state id, capped by the shared
+ * 0x22f4bc counter. @ 00156c7c
+ */
+void menu_backend_bind_log(void *unused, uint32_t bind_state)
+{
+    const char *state_name =
+        (const char *)(intptr_t)binding_state_name((int)bind_state);
+
+    (void)unused;
+    if (g_stage_log_count < 0x80) {
+        struct timespec now;
+        int64_t ms = 0;
+
+        g_stage_log_count = g_stage_log_count + 1;
+        if (clock_gettime(CLOCK_REALTIME, &now) == 0)
+            ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        __android_log_print(4, "NexusLab69252",
+                            "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                            "nexus_ui_backend_binding", state_name, 0,
+                            (int)getpid(), (int)gettid(), (unsigned long long)ms);
+    } else {
+        g_stage_log_count = g_stage_log_count + 1;
+    }
+}
+
+/* ===== main frame tick ===== */
+
+/*
+ * menu_main_frame_tick — per-frame menu tick on the game's render thread.
+ * The body is gated on the frame-v1 release being armed (0x22db78) plus a
+ * test-and-set re-entrancy latch (0x25ca14). Frame 0 re-registers the
+ * renderer-ops guard bundle when the bind state wakes; frames 1 and 3 run
+ * nexus_rich_main_frame (frame 3 rate-limits the open path to a 16ms
+ * window), the 'nexus_menu_open_wait' deadline bookkeeping, then — when the
+ * ui-state permits, status is non-zero and the Mainloop tid matches — the
+ * attach path (see menu_frame_attach_path). Frame 3 then runs the
+ * perf-graphics restore, game-reload verify and battle-end/plus pumps
+ * (chunk 5) plus the theme/debug/profile/editor pumps; other frames only
+ * drive battle_end_state_tick. errno is preserved; the latch is cleared on
+ * the way out. @ 0015d224
+ */
+void menu_main_frame_tick(long frame_obj, void *param_2, uint64_t frame_kind)
+{
+    int saved_errno = errno;
+    char thread_name[0x10];
+    uint64_t now_ms = 0;
+    int tid;
+    int name_ok;
+    uint32_t open_state;
+
+    if ((int)g_ui_release_armed == 0)
+        return;
+    if ((ui_latch_test_and_set(1, &g_frame_tick_latch) & 1) != 0)
+        return;
+
+    memset(thread_name, 0, sizeof thread_name);
+    if (pthread_getname_np(pthread_self(), thread_name, sizeof thread_name) != 0)
+        goto out;
+
+    tid = gettid();
+    {
+        struct timespec ts;
+
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+            now_ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+    }
+    name_ok = tid > 0
+              && memcmp(thread_name, "Mainloop", 8) == 0 /* 0x706f6f6c6e69614d */
+              && thread_name[8] == '\0';
+
+    /* ---- frame 0: bind/stage verify + renderer ops registration ---- */
+    if (*(int32_t *)(g_bind_state + 4) /* 0x22f044 wake */ != 0
+        && (uint32_t)frame_kind == 0
+        && name_ok
+        && (g_launcher_menu_id == 0 || (int)g_launcher_menu_id == tid)) {
+        int64_t handle = bind_state_value_read(g_bind_state);
+        uint64_t stage_root = 0;
+
+        if (handle < 7
+            && proc_mem_read((void *)(intptr_t)handle,
+                             (uint64_t)g_proc_mem_bias + 0x12eb9f0,
+                             &stage_root, 8) != 0
+            && (stage_root & 7) == 0 && stage_root >= 0x1000) {
+            uint64_t stage_view = remote_read_ptr(stage_root + 0x90);
+            uint32_t viewport[4]; /* four floats at stage view +0x3c */
+            uint8_t stage_byte = 1;
+
+            if (stage_view != 0
+                && proc_mem_read((void *)(intptr_t)handle, stage_view + 0x3c,
+                                 viewport, 0x10) != 0
+                && proc_mem_read((void *)(intptr_t)handle, stage_root + 0x19c,
+                                 &stage_byte, 1) != 0
+                && stage_byte == 0) {
+                float f0 = int_as_float_me4(viewport[0]);
+                float f1 = int_as_float_me4(viewport[1]);
+                float f2 = int_as_float_me4(viewport[2]);
+                float f3 = int_as_float_me4(viewport[3]);
+
+                if (isfinite(f0) && isfinite(f1) && isfinite(f2) && isfinite(f3)
+                    && f0 == 0.0f && f1 == 0.0f
+                    && f2 >= 960.0f && f3 >= 560.0f
+                    && f2 <= 8192.0f && f3 <= 8192.0f
+                    && remote_read_ptr((uint64_t)frame_obj)
+                           == (uint64_t)g_proc_mem_bias + 0x11abad8
+                    && remote_widget_ancestor_of((uint64_t)frame_obj,
+                                                 stage_view) != 0) {
+                    /* renderer-ops guard bundle (6 qwords at the bind record) */
+                    struct {
+                        uint64_t magic;           /* 0x10f748 */
+                        uint64_t remote_bias;     /* g_proc_mem_bias */
+                        const char *build_hash_a; /* rodata 0x13667e */
+                        const char *build_hash_b; /* rodata 0x135b30 */
+                        int (*read_mem)(long, uint64_t, void *, uint64_t);
+                        void *slot5;              /* raw stores 0 */
+                    } guard;
+
+                    guard.magic = 0x10f748;
+                    guard.remote_bias = (uint64_t)g_proc_mem_bias;
+                    guard.build_hash_a = (const char *)(uintptr_t)0x13667e;
+                    guard.build_hash_b = (const char *)(uintptr_t)0x135b30;
+                    guard.read_mem = (int (*)(long, uint64_t, void *,
+                                              uint64_t))(void *)proc_mem_read;
+                    guard.slot5 = NULL;
+                    bind_request_handle((void *)g_bind_state, &guard, now_ms, 1);
                 }
-                else {
-                  FUN_0018fb04(auStack_7a0);
-                }
-              }
-              else {
-LAB_0018ecc4:
-                FUN_0018fb04(auStack_7a0);
-              }
-              iVar5 = FUN_0018f988((int)lVar10 + -0x1e0,auStack_7a0);
-              if (iVar5 != 1) goto LAB_0018ed88;
-              *(undefined4 *)(&DAT_0028fac0 + lVar11) = *(undefined4 *)((long)local_710 + lVar9);
-              fVar13 = *(float *)((long)local_6f8 + lVar9);
-              fVar15 = *(float *)((long)local_6f8 + lVar9 + 4);
-              cVar3 = *(char *)(lVar10 + 0x28fc60);
-              (&DAT_0028fac0)[lVar10] = 1;
-              fVar13 = fVar14 + fVar13;
-              fVar15 = fVar16 + fVar15;
-              if (((cVar3 == '\0') || (*(float *)(lVar11 + 0x28fc00) != fVar13)) ||
-                 (*(float *)(lVar11 + 0x28fc60) != fVar15)) {
-                (*DAT_0028fb28)(fVar13,fVar15,DAT_0028fac8,*(undefined8 *)(&DAT_0028fac0 + lVar12));
-                *(float *)(lVar11 + 0x28fc00) = fVar13;
-                *(float *)(lVar11 + 0x28fc60) = fVar15;
-LAB_0018ed58:
-                *(undefined1 *)(lVar10 + 0x28fc60) = 1;
-              }
             }
-            lVar10 = lVar10 + 1;
-            lVar11 = lVar11 + 4;
-            lVar12 = lVar12 + 8;
-            lVar9 = lVar9 + 0x40;
-          } while (lVar9 != 0x580);
-          uVar7 = 1;
-          DAT_0028fcb8 = local_720;
-          goto LAB_0018ed8c;
         }
-      }
-LAB_0018ed88:
-      uVar7 = 0xffffffff;
     }
-    else {
-      uVar7 = 0xffffffff;
-      DAT_0028fb48 = 0xffffffff;
-      FUN_00183cdc(0xffffffff,DAT_0028fb4c,"view_capacity");
-      uVar2 = DAT_0028fb54 + 1;
-      bVar1 = DAT_0028fb54 < 0x80;
-      DAT_0028fb54 = uVar2;
-      if ((bVar1) && (DAT_0028fb38 != (code *)0x0)) {
-        (*DAT_0028fb38)(DAT_0028fac8,"nexus_menu_stopped","view_capacity",0);
-      }
-    }
-  }
-  else {
-    uVar7 = 3;
-  }
-LAB_0018ed8c:
-  if (*(long *)(lVar4 + 0x28) == local_90) {
-    return uVar7;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail();
-}
 
-/* ===== FUN_0018ef84 @ 0018ef84 ===== */
+    /* ---- frame dispatch: rich frame + open-wait bookkeeping ---- */
+    open_state = (uint32_t)frame_kind; /* 1 for frame 1, frame id otherwise */
+    if (frame_kind == 3 || frame_kind == 1) {
+        bool attempt_allowed = false;
+        int rich_result = 0;
+        bool menu_open = false;
 
-undefined8 FUN_0018ef84(void)
-
-{
-  uint uVar1;
-  ulong uVar2;
-  ulong uVar3;
-  ulong uVar4;
-  ulong uVar5;
-  long lVar6;
-  bool bVar7;
-  bool bVar8;
-  int iVar9;
-  long lVar10;
-  char *pcVar11;
-  char *pcVar12;
-  ulong uVar13;
-  ulong uVar14;
-  undefined8 uVar15;
-  ulong uVar16;
-  ulong uVar17;
-  long lVar18;
-  short local_7c [2];
-  ulong local_78 [2];
-  long local_68;
-  
-  lVar6 = tpidr_el0;
-  bVar8 = false;
-  local_68 = *(long *)(lVar6 + 0x28);
-  uVar14 = 0;
-  do {
-    uVar16 = 0;
-    uVar3 = (&DAT_0019e9e0)[uVar14 * 3];
-    uVar4 = (&DAT_0019e9e8)[uVar14 * 3];
-    uVar17 = ~uVar3;
-    uVar13 = uVar4;
-    do {
-      uVar5 = uVar13 - 0x10;
-      if (0xf < uVar13) {
-        uVar13 = 0x10;
-      }
-      uVar2 = uVar3 + uVar16 + DAT_0028fad0;
-      if (((uVar2 < 0x1000 || uVar17 - DAT_0028fad0 < uVar13) ||
-          (iVar9 = (*DAT_0028fae0)(DAT_0028fac8,uVar2,local_78,uVar13), iVar9 != 1)) ||
-         (iVar9 = memcmp(local_78,(&PTR_DAT_0019e9f0)[uVar14 * 3] + uVar16,uVar13), iVar9 != 0))
-      goto joined_r0x0018f090;
-      uVar16 = uVar16 + 0x10;
-      uVar17 = uVar17 - 0x10;
-      uVar13 = uVar5;
-    } while (uVar16 < uVar4);
-    uVar16 = uVar14 + 1;
-    bVar8 = 7 < uVar14;
-    uVar14 = uVar16;
-  } while (uVar16 != 9);
-joined_r0x0018f090:
-  if (bVar8) {
-    uVar14 = 0;
-    lVar18 = 0x2c0;
-    do {
-      lVar10 = (*DAT_0028faf0)(DAT_0028fac8,0x260);
-      (&DAT_0028fb80)[uVar14] = lVar10;
-      if (lVar10 == 0) {
-        uVar15 = 0xffffffff;
-        DAT_0028fb48 = 0xffffffff;
-        FUN_00183cdc(0xffffffff,DAT_0028fb4c,"button_allocation");
-        uVar1 = DAT_0028fb54 + 1;
-        bVar8 = 0x7f < DAT_0028fb54;
-        DAT_0028fb54 = uVar1;
-        if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-        pcVar11 = "nexus_menu_stopped";
-        pcVar12 = "button_allocation";
-        goto LAB_0018f0ec;
-      }
-      (*DAT_0028faf8)(DAT_0028fac8,lVar10);
-      iVar9 = FUN_0018fba0(lVar10);
-      if (iVar9 == 0) {
-        uVar15 = 0xffffffff;
-        DAT_0028fb48 = 0xffffffff;
-        FUN_00183cdc(0xffffffff,DAT_0028fb4c,"button_constructor_contract");
-        uVar1 = DAT_0028fb54 + 1;
-        bVar8 = 0x7f < DAT_0028fb54;
-        DAT_0028fb54 = uVar1;
-        if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-        pcVar11 = "nexus_menu_stopped";
-        pcVar12 = "button_constructor_contract";
-        goto LAB_0018f0ec;
-      }
-      uVar16 = (*DAT_0028fb00)(DAT_0028fac8,"popover_button_blue");
-      local_7c[0] = 0;
-      if (uVar16 == 0) {
-LAB_0018f3ac:
-        DAT_0028fb48 = 0xffffffff;
-        FUN_00183cdc(0xffffffff,DAT_0028fb4c,"movie_type_or_frame_count");
-        uVar1 = DAT_0028fb54 + 1;
-        bVar8 = DAT_0028fb54 < 0x80;
-        DAT_0028fb54 = uVar1;
-        if ((bVar8) && (DAT_0028fb38 != (code *)0x0)) {
-          pcVar11 = "movie_type_or_frame_count";
-LAB_0018f458:
-          (*DAT_0028fb38)(DAT_0028fac8,"nexus_menu_stopped",pcVar11,0);
+        if (frame_kind == 3) {
+            /* open-path rate limit: one attempt per >= 16ms window */
+            if (now_ms < g_open_wait_next_ms
+                && g_open_wait_next_ms - now_ms < 0x3e9) {
+                attempt_allowed = false;
+            } else {
+                g_open_wait_next_ms = now_ms + 0x10;
+                attempt_allowed = true;
+            }
         }
-LAB_0018f464:
-        uVar15 = 0xffffffff;
-        goto LAB_0018f718;
-      }
-      local_78[0] = 0;
-      if (uVar16 + 8 >> 3 < 0x201) {
-        bVar8 = false;
-      }
-      else {
-        iVar9 = (*DAT_0028fae0)(DAT_0028fac8,uVar16,local_78,8);
-        bVar8 = iVar9 == 1;
-      }
-      bVar7 = false;
-      if (0xfff < local_78[0]) {
-        bVar7 = bVar8;
-      }
-      uVar13 = local_78[0];
-      if (!(bool)(bVar7 & (local_78[0] & 7) == 0)) {
-        uVar13 = 0;
-      }
-      if ((((uVar13 != DAT_0028fad0 + 0x11ad208U) || (uVar16 + 0xbe < 0x1000)) ||
-          ((uVar16 & 0xfffffffffffffffe) == 0xffffffffffffff40)) ||
-         ((iVar9 = (*DAT_0028fae0)(DAT_0028fac8,uVar16 + 0xbe,local_7c,2), iVar9 != 1 ||
-          (local_7c[0] < 1)))) goto LAB_0018f3ac;
-      (*DAT_0028fb08)(DAT_0028fac8,lVar10,uVar16);
-      local_78[0] = 0;
-      if (((lVar10 + 0x88U >> 3 < 0x201) ||
-          (iVar9 = (*DAT_0028fae0)(DAT_0028fac8,lVar10 + 0x80,local_78,8), iVar9 != 1)) ||
-         ((local_78[0] < 0x1000 ||
-          (((local_78[0] & 7) != 0 || (iVar9 = FUN_0018fba0(lVar10), iVar9 == 0)))))) {
-        DAT_0028fb48 = 0xffffffff;
-        FUN_00183cdc(0xffffffff,DAT_0028fb4c,"movie_binding_contract");
-        uVar1 = DAT_0028fb54 + 1;
-        bVar8 = 0x7f < DAT_0028fb54;
-        DAT_0028fb54 = uVar1;
-        if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f464;
-        pcVar11 = "movie_binding_contract";
-        goto LAB_0018f458;
-      }
-      (*DAT_0028fb10)(DAT_0028fac8,uVar16,0);
-      if ((((&DAT_0028fe40)[uVar14] == '\0') || (*(float *)(&DAT_0028fac0 + lVar18) != -9999.0)) ||
-         (*(float *)((long)&DAT_0028fb20 + lVar18) != -9999.0)) {
-        (*DAT_0028fb28)(0xc61c3c00,0xc61c3c00,DAT_0028fac8,(&DAT_0028fb80)[uVar14]);
-        *(undefined4 *)(&DAT_0028fac0 + lVar18) = 0xc61c3c00;
-        *(undefined4 *)((long)&DAT_0028fb20 + lVar18) = 0xc61c3c00;
-        (&DAT_0028fe40)[uVar14] = 1;
-      }
-      iVar9 = FUN_0018f988(uVar14 & 0xffffffff,&DAT_00134f22);
-      if (iVar9 != 1) goto LAB_0018f464;
-      uVar14 = uVar14 + 1;
-      lVar18 = lVar18 + 4;
-    } while (uVar14 != 0x18);
-    uVar1 = DAT_0028fb54 + 1;
-    bVar8 = DAT_0028fb54 < 0x80;
-    DAT_0028fb54 = uVar1;
-    if ((bVar8) && (DAT_0028fb38 != (code *)0x0)) {
-      (*DAT_0028fb38)(DAT_0028fac8,"nexus_menu_constructed","24_0x260_frame0_buttons",0);
-    }
-    local_78[0] = 0;
-    if (DAT_0028fad0 + 0x12eb9f8U >> 3 < 0x201) {
-      bVar8 = false;
-    }
-    else {
-      iVar9 = (*DAT_0028fae0)(DAT_0028fac8,DAT_0028fad0 + 0x12eb9f0,local_78,8);
-      bVar8 = iVar9 == 1;
-    }
-    bVar7 = false;
-    if (0xfff < local_78[0]) {
-      bVar7 = bVar8;
-    }
-    uVar14 = local_78[0];
-    if (!(bool)(bVar7 & (local_78[0] & 7) == 0)) {
-      uVar14 = 0;
-    }
-    if (uVar14 == DAT_0028fb70) {
-      local_78[0] = 0;
-      if (uVar14 + 0x98 >> 3 < 0x201) {
-        bVar8 = false;
-      }
-      else {
-        iVar9 = (*DAT_0028fae0)(DAT_0028fac8,uVar14 + 0x90,local_78,8);
-        bVar8 = iVar9 == 1;
-      }
-      bVar7 = false;
-      if (0xfff < local_78[0]) {
-        bVar7 = bVar8;
-      }
-      uVar14 = local_78[0];
-      if (!(bool)(bVar7 & (local_78[0] & 7) == 0)) {
-        uVar14 = 0;
-      }
-      if (uVar14 == DAT_0028fb78) {
-        lVar18 = 0;
-        do {
-          (*DAT_0028fb30)(DAT_0028fac8,DAT_0028fb70,*(undefined8 *)((long)&DAT_0028fb80 + lVar18));
-          iVar9 = FUN_0018f750(*(undefined8 *)((long)&DAT_0028fb80 + lVar18),DAT_0028fb78);
-          if (iVar9 == 0) {
-            uVar15 = 0xffffffff;
-            DAT_0028fb48 = 0xffffffff;
-            FUN_00183cdc(0xffffffff,DAT_0028fb4c,"stage_root_membership");
-            uVar1 = DAT_0028fb54 + 1;
-            bVar8 = 0x7f < DAT_0028fb54;
-            DAT_0028fb54 = uVar1;
-            if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-            pcVar11 = "nexus_menu_stopped";
-            pcVar12 = "stage_root_membership";
-            goto LAB_0018f0ec;
-          }
-          lVar18 = lVar18 + 8;
-        } while (lVar18 != 0xc0);
-        DAT_0028fb48 = 2;
-        FUN_00183cdc(3,DAT_0028fb4c,"attached");
-        uVar15 = 1;
-        uVar1 = DAT_0028fb54 + 1;
-        bVar8 = 0x7f < DAT_0028fb54;
-        DAT_0028fb54 = uVar1;
-        if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-        pcVar11 = "nexus_menu_attached";
-        pcVar12 = "all_root_membership_verified";
-        goto LAB_0018f0ec;
-      }
-    }
-    uVar15 = 0xffffffff;
-    DAT_0028fb48 = 0xffffffff;
-    FUN_00183cdc(0xffffffff,DAT_0028fb4c,"stage_changed_during_build");
-    uVar1 = DAT_0028fb54 + 1;
-    bVar8 = 0x7f < DAT_0028fb54;
-    DAT_0028fb54 = uVar1;
-    if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-    pcVar11 = "nexus_menu_stopped";
-    pcVar12 = "stage_changed_during_build";
-  }
-  else {
-    uVar15 = 0xffffffff;
-    DAT_0028fb48 = 0xffffffff;
-    FUN_00183cdc(0xffffffff,DAT_0028fb4c,"a10_body_guard");
-    uVar1 = DAT_0028fb54 + 1;
-    bVar8 = 0x7f < DAT_0028fb54;
-    DAT_0028fb54 = uVar1;
-    if ((bVar8) || (DAT_0028fb38 == (code *)0x0)) goto LAB_0018f718;
-    pcVar11 = "nexus_menu_stopped";
-    pcVar12 = "a10_body_guard";
-  }
-LAB_0018f0ec:
-  (*DAT_0028fb38)(DAT_0028fac8,pcVar11,pcVar12,0);
-LAB_0018f718:
-  if (*(long *)(lVar6 + 0x28) != local_68) {
-                    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-  }
-  return uVar15;
-}
 
-/* ===== nexus_menu_actions @ 0018fde4 ===== */
+        /* menu-open verdict: attached==2, no policy/battle/reload, owning
+         * tid, Mainloop name, ui-state flag byte set and screen char in the
+         * 0x22002000cd001 bitmask (or 'e') */
+        if (g_launcher_attached == 2
+            && (g_graphics_policy_active & 1) == 0
+            && ((uint32_t)(g_battle_state >> 32) & 1) == 0
+            && (g_reload_requested & 1) == 0
+            && g_launcher_menu_id >= 1 && tid == (int)g_launcher_menu_id
+            && name_ok) {
+            uint8_t ui_state[8];
 
-undefined * nexus_menu_actions(undefined8 *param_1)
+            memset(ui_state, 0, sizeof ui_state);
+            if (nexus_menu_ui_state(ui_state, tid) == 1
+                && ui_state[4] != 0 && ui_state[5] == 0) {
+                uint32_t scr = (uint32_t)ui_state[6] - 0x43;
 
-{
-  if (param_1 != (undefined8 *)0x0) {
-    *param_1 = 0xa8;
-  }
-  return &DAT_0019eab8;
-}
-
-/* ===== nexus_menu_settings @ 0018fdfc ===== */
-
-undefined ** nexus_menu_settings(undefined8 *param_1)
-
-{
-  if (param_1 != (undefined8 *)0x0) {
-    *param_1 = 0x76;
-  }
-  return &PTR_s_nexus_sx_spin_001a19f8;
-}
-
-/* ===== nexus_menu_cells @ 0018fe14 ===== */
-
-undefined1 * nexus_menu_cells(undefined8 *param_1)
-
-{
-  if (param_1 != (undefined8 *)0x0) {
-    *param_1 = 0x9a;
-  }
-  return &DAT_001a2508;
-}
-
-/* ===== nexus_menu_tabs @ 0018fe2c ===== */
-
-undefined2 * nexus_menu_tabs(undefined8 *param_1)
-
-{
-  if (param_1 != (undefined8 *)0x0) {
-    *param_1 = 6;
-  }
-  return &DAT_001a2ea8;
-}
-
-/* ===== nexus_script_port_ui_server_thread @ 00191908 ===== */
-
-void nexus_script_port_ui_server_thread(void)
-
-{
-  syscall(0xb2);
-  nexus_menu_server_thread();
-  return;
-}
-
-/* ===== FUN_0019265c @ 0019265c ===== */
-
-undefined8 FUN_0019265c(long *param_1,undefined8 param_2,int *param_3)
-
-{
-  undefined *puVar1;
-  char *pcVar2;
-  long lVar3;
-  bool bVar4;
-  int iVar5;
-  int iVar6;
-  uint uVar7;
-  ulong uVar8;
-  int *piVar9;
-  long lVar10;
-  long lVar11;
-  long lVar12;
-  undefined8 uVar13;
-  char *pcVar14;
-  ulong uVar15;
-  long *plVar16;
-  ulong uVar17;
-  undefined1 auStack_4540 [8];
-  long local_4538;
-  undefined1 auStack_4520 [8];
-  long local_4518;
-  undefined1 auStack_4500 [8];
-  long local_44f8;
-  undefined1 auStack_44e0 [8];
-  long local_44d8;
-  undefined1 auStack_44c0 [8];
-  long local_44b8;
-  undefined1 auStack_44a0 [8];
-  long local_4498;
-  undefined1 auStack_4480 [8];
-  long local_4478;
-  undefined1 auStack_4460 [8];
-  long local_4458;
-  stat sStack_4440;
-  long local_43b0;
-  long lStack_43a8;
-  undefined1 auStack_43a0 [16384];
-  undefined1 auStack_3a0 [89];
-  undefined1 auStack_347 [23];
-  undefined8 local_330;
-  long lStack_328;
-  undefined8 local_320;
-  undefined8 uStack_318;
-  undefined8 local_310;
-  undefined8 uStack_308;
-  undefined8 local_300;
-  undefined8 uStack_2f8;
-  undefined8 local_2f0;
-  undefined8 uStack_2e8;
-  undefined8 local_2e0;
-  undefined8 uStack_2d8;
-  undefined8 local_2d0;
-  undefined8 uStack_2c8;
-  undefined8 local_2c0;
-  undefined8 uStack_2b8;
-  undefined8 local_2b0;
-  undefined8 uStack_2a8;
-  undefined8 local_2a0;
-  undefined8 uStack_298;
-  undefined8 local_290;
-  undefined8 uStack_288;
-  undefined8 local_280;
-  undefined8 uStack_278;
-  undefined8 local_270;
-  undefined8 uStack_268;
-  undefined8 local_260;
-  undefined8 uStack_258;
-  undefined8 local_250;
-  undefined8 uStack_248;
-  undefined8 local_240;
-  undefined8 uStack_238;
-  undefined1 auStack_228 [8];
-  long local_220;
-  char acStack_1f2 [10];
-  undefined5 local_1e8;
-  undefined3 uStack_1e3;
-  undefined5 local_1e0;
-  undefined3 auStack_1db [76];
-  char acStack_a8 [8];
-  long local_a0;
-  long local_68;
-  
-  lVar3 = tpidr_el0;
-  local_68 = *(long *)(lVar3 + 0x28);
-  uVar8 = param_1[1];
-  if (uVar8 == 0) goto LAB_001927f8;
-  uVar8 = FUN_00192f58(uVar8,"libNexusEvasionRuntime69252.so",
-                       "571dcf2fac82e67c84db6e11f79bbe0031dfb9508fd3974db3ce989e4a5dadf2");
-  iVar6 = (int)uVar8;
-  if (iVar6 < 0) goto LAB_001927f8;
-  *param_3 = *param_3 + 1;
-  iVar5 = fstat(iVar6,&sStack_4440);
-  FUN_00191314(auStack_3a0);
-  uVar17 = 0;
-  bVar4 = true;
-  if ((iVar5 == 0) && (sStack_4440.st_size == 0xc46e0)) {
-    uVar17 = 0;
-    do {
-      while( true ) {
-        uVar15 = 0xc46e0 - uVar17;
-        if (0x3fff < uVar15) {
-          uVar15 = 0x4000;
+                if (scr < 0x32 && ((1UL << (scr & 0x3f)) & 0x22002000cd001UL) != 0)
+                    menu_open = true;
+                else
+                    menu_open = ui_state[6] == 0x65; /* 'e' */
+            }
         }
-        lVar10 = __pread_chk(uVar8 & 0xffffffff,auStack_43a0,uVar15,uVar17,0x4000);
-        if (lVar10 < 0) break;
-        if (lVar10 == 0) {
-LAB_00192774:
-          bVar4 = true;
-          goto LAB_00192778;
+
+        rich_result = (int)nexus_rich_main_frame(now_ms,
+                                                 (uint32_t)(frame_kind != 3),
+                                                 menu_open);
+        if (rich_result != 0) {
+            g_reload_phase = 0;
+            g_reload_cookie = 0;
         }
-        FUN_00191338(auStack_3a0,auStack_43a0,lVar10);
-        uVar17 = lVar10 + uVar17;
-        if (0xc46df < uVar17) goto LAB_0019276c;
-      }
-      piVar9 = (int *)__errno();
-      if (*piVar9 != 4) goto LAB_00192774;
-    } while (uVar17 < 0xc46e0);
-LAB_0019276c:
-    bVar4 = false;
-  }
-LAB_00192778:
-  close(iVar6);
-  uVar8 = FUN_00191678(auStack_3a0,sStack_4440.__unused + 1);
-  if ((((bVar4) || (uVar17 != 0xc46e0)) ||
-      (((sStack_4440.__unused[1] != 0x7ce682ac2fcf1d57 ||
-        sStack_4440.__unused[2] != 0xbe9bf7116edb84) || local_43b0 != 0x4d97d38f50b9df31) ||
-       lStack_43a8 != -0xd52a2b56167314d)) ||
-     (uVar8 = FUN_0019339c(param_1[1],auStack_228), (int)uVar8 == 0)) goto LAB_001927f8;
-  uVar8 = FUN_00192f58(auStack_228,0,0);
-  iVar6 = (int)uVar8;
-  if (iVar6 < 0) goto LAB_001927f8;
-  uStack_238 = 0;
-  local_240 = 0;
-  uStack_248 = 0;
-  local_250 = 0;
-  uStack_258 = 0;
-  local_260 = 0;
-  uStack_268 = 0;
-  local_270 = 0;
-  uStack_278 = 0;
-  local_280 = 0;
-  uStack_288 = 0;
-  local_290 = 0;
-  uStack_298 = 0;
-  local_2a0 = 0;
-  uStack_2a8 = 0;
-  local_2b0 = 0;
-  uStack_2b8 = 0;
-  local_2c0 = 0;
-  uStack_2c8 = 0;
-  local_2d0 = 0;
-  uStack_2d8 = 0;
-  local_2e0 = 0;
-  uStack_2e8 = 0;
-  local_2f0 = 0;
-  uStack_2f8 = 0;
-  local_300 = 0;
-  uStack_308 = 0;
-  local_310 = 0;
-  uStack_318 = 0;
-  local_320 = 0;
-  lStack_328 = 0;
-  local_330 = 0;
-  lVar10 = dlopen(auStack_228,6);
-  if (lVar10 == 0) {
-    iVar5 = FUN_0019339c(auStack_228,acStack_a8);
-    if ((((iVar5 != 0) &&
-         (uVar8 = readlink(acStack_a8,(char *)&local_1e8,0x13f), 0xfffffffffffffec1 < uVar8 - 0x13f)
-         ) && ((*(undefined1 *)((long)&local_1e8 + uVar8) = 0, 0x17 < uVar8 &&
-               ((CONCAT35(uStack_1e3,local_1e8) == 0x6e3a64666d656d2f &&
-                 CONCAT53(local_1e0,uStack_1e3) == 0x2d737578656e3a64 &&
-                (iVar5 = strcmp(acStack_1f2 + uVar8," (deleted)"), iVar5 == 0)))))) &&
-       (uVar8 - 0x17 < 0x100)) {
-      __memcpy_chk(&local_330,auStack_1db,uVar8 - 0x17,0x100);
-      auStack_347[uVar8] = 0;
-      uVar8 = __strlen_chk(&local_330,0x100);
-      if ((0x41 < uVar8) && (lVar10 = dlopen((long)&local_2f0 + 1,6), lVar10 != 0))
-      goto LAB_001928bc;
+
+        /* open-wait gate: frame 3, rate window active, rich frame idle */
+        if (!attempt_allowed && (frame_kind != 3 || rich_result == 0)
+            && frame_kind == 3) {
+            if (g_launcher_menu_id < 1 || tid != (int)g_launcher_menu_id || !name_ok) {
+                open_state = 3;
+            } else if (g_launcher_attached < 1 || g_launcher_stage_root == 0
+                       || g_launcher_stage_view == 0 || g_launcher_view == 0
+                       || g_launcher_renderer_ops == NULL) {
+                open_state = 3;
+                g_menu_open_since_ms = 0;
+                g_menu_open_reported = 0;
+            } else {
+                uint8_t ui_state[8];
+
+                memset(ui_state, 0, sizeof ui_state);
+                if (nexus_menu_ui_state(ui_state, tid) != 1) {
+                    open_state = 3;
+                } else {
+                    if (ui_state[4] == 0 || g_launcher_attached == 2) {
+                        g_menu_open_since_ms = 0;
+                        g_menu_open_reported = 0;
+                    } else {
+                        if (now_ms <= g_menu_open_since_ms - 1)
+                            g_menu_open_since_ms = now_ms;
+                        if ((g_menu_open_reported & 1) == 0
+                            && (now_ms - g_menu_open_since_ms) >> 4 > 0x270) {
+                            g_menu_open_reported = 1;
+                            menu_stage_log(NULL, "nexus_menu_open_wait",
+                                           "pending_open_deadline", 0);
+                        }
+                    }
+                    open_state = ui_state[4] != 0 ? 0 : 3;
+                }
+            }
+        }
     }
-    pcVar14 = (char *)dlerror();
-    uVar8 = __strlen_chk(&local_330,0x100);
-    puVar1 = (undefined *)((long)&local_2f0 + 1);
-    if (uVar8 < 0x42) {
-      puVar1 = &DAT_00134f22;
+
+    /* ---- attach path (open_state < 2: frames 0/1, or open frame 3) ---- */
+    if ((g_graphics_policy_active & 1) == 0
+        && ((uint32_t)(g_battle_state >> 32) & 1) == 0
+        && g_launcher_attached >= -1
+        && tid > 0 && open_state < 2
+        && (int64_t)nexus_menu_status() != 0
+        && name_ok
+        && (g_launcher_menu_id == 0 || (int)g_launcher_menu_id == tid))
+        menu_frame_attach_path(frame_obj, now_ms, tid, open_state);
+
+    /* ---- frame-3 tail: perf/reload/battle pumps (chunk 5) + mod pumps ---- */
+    if (frame_kind == 3) {
+        if ((int)g_ui_release_armed == 0) {
+            g_ui_release_done = 0;
+        } else {
+            if (frame_perf_graphics_restore(now_ms, tid) == 0
+                && frame_game_reload_verify(now_ms, tid, thread_name) == 0)
+                frame_battle_end_pump(now_ms, tid, thread_name);
+        }
+        nexus_menu_theme_pump(tid, now_ms);
+        nexus_menu_debug_pump(tid, now_ms);
+        nexus_menu_profile_pump(tid, now_ms);
+        nexus_menu_editor_pump(tid, now_ms);
+    } else {
+        battle_end_state_tick((uint32_t)frame_kind, (void *)frame_obj,
+                              param_2, now_ms);
     }
-    pcVar2 = "unknown";
-    if (pcVar14 != (char *)0x0) {
-      pcVar2 = pcVar14;
+
+out:
+    g_frame_tick_latch = 0; /* 0x25ca14 */
+    errno = saved_errno;
+}
+
+/* ===== attach path (raw 1718-2058) ===== */
+
+/*
+ * menu_frame_attach_path — stage-verified attach sequence of the frame tick.
+ * Re-reads the module stage root (bias+0x12eb9f0) and its stage view
+ * (+0x90), requires the viewport quad (two 0.0 floats, then >= 960x560 and
+ * <= 8192) and stage byte 0 at +0x19c. While attach is pending: asset probe
+ * via the 0x12eb0e8/0x12eb170 marker bytes (4 tries, 200ms apart,
+ * 'nexus_shell_waiting_assets') inside a 60s window, then
+ * launcher_stage_wait ('asset_readiness_deadline' / 'launcher initializing'
+ * stop reasons). Once attaching: reload interval bookkeeping (40/100ms),
+ * stage identity + parentage, launcher style apply, one-shot settings
+ * restore ('nexus_ui_settings_restore' restored/rejected), command-ring
+ * dispatch (see dispatch_command_me4) and the frame publish: battle sync,
+ * ui-state snapshot into a 0x690 record, view draw, perf status row, row
+ * refresh, plus-key input, chooser page build, the renderer-ops +0x10
+ * publish ('android_overlay_services_waiting' /
+ * 'android_overlay_bridge_ready' / 'rich_services_stopped'), then the
+ * launcher style re-apply and the attached==2 transition
+ * ('nexus_menu_attached'). @ 0015d224 (attach section, raw 1718-2058)
+ */
+static void menu_frame_attach_path(long frame_obj, uint64_t now_ms, int tid,
+                                   uint32_t open_state)
+{
+    uint64_t stage_root = 0;
+    uint64_t handle = (uint64_t)nexus_menu_status();
+
+    if (proc_mem_read((void *)(intptr_t)handle,
+                      (uint64_t)g_proc_mem_bias + 0x12eb9f0,
+                      &stage_root, 8) == 0
+        || (stage_root & 7) != 0 || stage_root < 0x1000)
+        return;
+
+    {
+        uint64_t stage_view = 0;
+
+        if (proc_mem_read((void *)(intptr_t)handle, stage_root + 0x90,
+                          &stage_view, 8) == 0
+            || (stage_view & 7) != 0 || stage_view < 0x1000)
+            return;
+
+        {
+            uint32_t viewport[4]; /* floats at stage view +0x3c */
+            uint8_t stage_byte = 1;
+
+            if (proc_mem_read((void *)(intptr_t)handle, stage_view + 0x3c,
+                              viewport, 0x10) == 0
+                || proc_mem_read((void *)(intptr_t)handle, stage_root + 0x19c,
+                                 &stage_byte, 1) == 0
+                || stage_byte != 0)
+                return;
+
+            {
+                float f0 = int_as_float_me4(viewport[0]);
+                float f1 = int_as_float_me4(viewport[1]);
+                float f2 = int_as_float_me4(viewport[2]);
+                float f3 = int_as_float_me4(viewport[3]);
+
+                if (!(isfinite(f0) && isfinite(f1) && isfinite(f2) && isfinite(f3)
+                      && f0 == 0.0f && f1 == 0.0f
+                      && f2 >= 960.0f && f3 >= 560.0f
+                      && f2 <= 8192.0f && f3 <= 8192.0f))
+                    return;
+            }
+
+            /* ---- pending attach: asset probe ---- */
+            if (g_launcher_attached == 0) {
+                if (open_state == 0
+                    && remote_read_ptr((uint64_t)frame_obj)
+                           == (uint64_t)g_proc_mem_bias + 0x11abad8
+                    && remote_widget_ancestor_of((uint64_t)frame_obj,
+                                                 stage_view) != 0) {
+                    if (g_launcher_reset_a == 0)
+                        g_launcher_reset_a = (uint32_t)now_ms;
+                    if (now_ms - g_launcher_reset_a < 0xea61) {
+                        if (g_launcher_reset_b <= now_ms) {
+                            g_launcher_reset_b = (uint32_t)now_ms + 200;
+                            if (ui_sc_bundle_ready(NULL) != 0) {
+                                int wait_rc = launcher_stage_wait(stage_root,
+                                                                  stage_view, tid);
+
+                                if (wait_rc == -1) {
+                                    menu_shell_stop_log(g_launcher_status);
+                                } else if (wait_rc != 0) {
+                                    goto attached_block;
+                                }
+                            } else if (g_asset_probe_count < 4) {
+                                uint8_t probe_a = 0xff;
+                                uint8_t probe_b = 0xff;
+
+                                proc_mem_read(NULL, (uint64_t)g_proc_mem_bias
+                                                      + 0x12eb0e8, &probe_a, 1);
+                                proc_mem_read(NULL, (uint64_t)g_proc_mem_bias
+                                                      + 0x12eb170, &probe_b, 1);
+                                menu_stage_log(NULL, "nexus_shell_waiting_assets",
+                                               probe_a != 0xff
+                                                   ? (probe_b != 0
+                                                          ? "ui_prefetch_active"
+                                                          : "ui_sc_exports_pending")
+                                                   : "asset_probe_read_failed",
+                                               0);
+                                g_asset_probe_count = g_asset_probe_count + 1;
+                            }
+                        }
+                    } else {
+                        menu_shell_stop_log("asset_readiness_deadline");
+                    }
+                }
+                return;
+            }
+
+            /* ---- attaching/attached: reload interval bookkeeping ---- */
+attached_block:
+            if (open_state != 1) {
+                if (g_launcher_attached == 2) {
+                    uint32_t interval = 0x28; /* 40ms */
+
+                    if ((int32_t)g_battle_state != 0)
+                        interval = 100;
+                    if ((uint32_t)(g_reload_cookie >> 32) != 0
+                        && (uint32_t)g_reload_cookie == interval
+                        && g_reload_phase <= now_ms
+                        && now_ms - g_reload_phase < interval)
+                        return; /* inside an active reload window */
+                    g_reload_cookie = ((uint64_t)1 << 32) | interval;
+                    g_reload_phase = now_ms;
+                }
+            }
+
+            /* ---- stage identity + launcher style ---- */
+            if (stage_root == g_launcher_stage_root
+                && stage_view == g_launcher_stage_view
+                && remote_child_link_valid(g_launcher_view, stage_view) != 0) {
+                int style_rc = menu_launcher_style_apply(
+                    (int)protected_channel_ready(), viewport);
+
+                if (style_rc == 0)
+                    return;
+                if (style_rc == -1) {
+                    menu_shell_stop_log(g_launcher_status);
+                    return;
+                }
+
+                /* one-shot settings restore */
+                if ((g_settings_restored & 1) == 0) {
+                    uint8_t settings_buf[0x1000];
+                    uint64_t settings_len = 0;
+
+                    g_settings_restored = 1;
+                    if (menu_settings_load(NULL, settings_buf, 0x1000,
+                                           &settings_len)) {
+                        nexus_menu_import(settings_buf, settings_len, tid);
+                        menu_stage_log(NULL, "nexus_ui_settings_restore",
+                                       "restored", 0);
+                    }
+                }
+
+                /* ---- command ring + dispatch ---- */
+                {
+                    int opcode = 0;
+                    uint64_t value_qword = 0;
+                    int popped = command_ring_pop(&opcode,
+                                                  (char *)&value_qword + 4,
+                                                  &value_qword);
+
+                    if (open_state == 1 || popped) {
+                        uint32_t action = 0;
+                        int result = 0;
+                        int have_result = 0;
+
+                        if (popped) {
+                            /* flag in the low dword, value in the high dword */
+                            if ((uint32_t)value_qword != 0) {
+                                result = menu_value_set_gated(
+                                    opcode, (uint32_t)(value_qword >> 32), tid);
+                                if (result != (int)0x80000000u) {
+                                    action = (uint32_t)opcode;
+                                    have_result = 1;
+                                }
+                                /* INT_MIN verdict: re-dispatch as a command */
+                            }
+                            if (!have_result) {
+                                action = (uint32_t)opcode;
+                                result = dispatch_command_me4(opcode, tid,
+                                                              now_ms);
+                            }
+                        } else if (g_launcher_view != (uint64_t)frame_obj) {
+                            /* renderer ops slot +0x18: timestamp/metrics call */
+                            long *ops = (long *)g_launcher_renderer_ops;
+                            long (*ts_fn)(void *, void *) =
+                                (long (*)(void *, void *))ops[3];
+                            uint64_t out_rec = 0;
+
+                            if (ts_fn((void *)frame_obj, &out_rec) == 0
+                                || (uint32_t)out_rec == 0)
+                                goto publish;
+                            action = (uint32_t)out_rec;
+                            result = dispatch_command_me4((int)(uint32_t)out_rec,
+                                                          tid, now_ms);
+                        } else {
+                            int rc = menu_action_dispatch((uint32_t)tid);
+                            const char *reason =
+                                1 < (uint32_t)(rc - 1) ? "blocked" : "queued";
+
+                            g_reload_phase = 0;
+                            g_reload_cookie = 0;
+                            menu_stage_log(NULL, "nexus_android_overlay_open",
+                                           reason, 1);
+                            goto publish;
+                        }
+
+                        /* opcode 0x32 with a 1/2 verdict consults the
+                         * script-port reset before reporting */
+                        if (action == 0x32 && (uint32_t)(result - 1) < 2) {
+                            int rc = script_port_reset(0);
+
+                            if (rc != 1)
+                                result = rc;
+                        }
+                        {
+                            const char *reason =
+                                result == 1 ? "acknowledged"
+                                            : (result == 2 ? "pending" : "blocked");
+
+                            g_reload_phase = 0;
+                            g_reload_cookie = 0;
+                            menu_stage_log(NULL, "nexus_menu_click", reason,
+                                           action);
+                        }
+                    }
+                }
+
+publish:
+                /* ---- frame publish ---- */
+                menu_battle_state_sync(tid);
+                {
+                    uint8_t ui_state[8];
+
+                    memset(ui_state, 0, sizeof ui_state);
+                    if (nexus_menu_ui_state(ui_state, tid) == 1) {
+                        uint8_t rec[0x690];
+
+                        memset(rec, 0, sizeof rec);
+                        memcpy(rec, ui_state, 4);
+                        rec[8] = ui_state[6];
+                        rec[9] = ui_state[4];
+                        rec[10] = ui_state[5];
+                        rec[11] = ui_state[7];
+                        if (ui_state[4] == 0 /* menu closed */
+                            || menu_view_draw(rec, tid) == 1) {
+                            long *ops;
+
+                            menu_perf_status_row_append(rec);
+                            main_view_rows_refresh(rec);
+                            {
+                                uint32_t interval = 0x28;
+
+                                if ((int32_t)g_battle_state != 0)
+                                    interval = 100;
+                                g_reload_cookie = ((uint64_t)1 << 32) | interval;
+                                g_reload_phase = (uint32_t)now_ms;
+                            }
+                            plus_key_input(rec[8] == 'Y' && rec[9] != 0
+                                               && rec[10] == 0,
+                                           now_ms);
+                            chooser_page_build(rec, tid);
+                            {
+                                uint8_t rec_copy[0x690];
+                                long (*pub)(uint32_t, uint32_t, void *,
+                                            uint64_t, uint64_t, uint64_t);
+                                int rc;
+                                const char *bridge_reason =
+                                    "android_overlay_services_waiting";
+
+                                memcpy(rec_copy, rec, sizeof rec_copy);
+                                ops = (long *)g_launcher_renderer_ops;
+                                pub = (long (*)(uint32_t, uint32_t, void *,
+                                                uint64_t, uint64_t, uint64_t))
+                                    ops[2]; /* slot +0x10 */
+                                rc = (int)pub(viewport[2], viewport[3],
+                                              rec_copy, stage_root,
+                                              stage_view, now_ms);
+                                if ((1 < (uint32_t)(rc - 2)) && rc != 0) {
+                                    if (rc == -1) {
+                                        menu_shell_stop_log(
+                                            "rich_services_stopped");
+                                        return;
+                                    }
+                                    if (rc != 4)
+                                        bridge_reason =
+                                            "android_overlay_bridge_ready";
+                                }
+                                {
+                                    int style2 = menu_launcher_style_apply(
+                                        (int)protected_channel_ready(), viewport);
+
+                                    if (style2 == -1) {
+                                        menu_shell_stop_log(g_launcher_status);
+                                        return;
+                                    }
+                                    if (style2 != 0 && g_launcher_attached == 1) {
+                                        g_launcher_attached = 2;
+                                        theme_menu_status_set(3, tid,
+                                                              bridge_reason);
+                                        menu_stage_log(NULL, "nexus_menu_attached",
+                                                       bridge_reason, 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                menu_shell_stop_log("stage_generation_or_launcher_membership");
+            }
+        }
     }
-    __android_log_print(6,"NexusMem","resident lookup failed descriptor=%s soname=%s error=%s",
-                        auStack_228,puVar1,pcVar2);
-    uVar7 = close(iVar6);
-    uVar8 = (ulong)uVar7;
-  }
-  else {
-LAB_001928bc:
-    close(iVar6);
-    lVar11 = dlsym(lVar10,"nexus_script_port_query");
-    lVar12 = dlsym(lVar10,"nexus_script_port_set");
-    if ((((lVar11 != 0) && (lVar12 != 0)) && (iVar6 = dladdr(lVar11,&local_1e8), iVar6 != 0)) &&
-       (((iVar6 = dladdr(lVar12,&local_330), iVar6 != 0 &&
-         (CONCAT35(auStack_1db[0],local_1e0) == *param_1)) &&
-        (lStack_328 == CONCAT35(auStack_1db[0],local_1e0))))) {
-      *(long *)(param_3 + 2) = lVar11;
-      *(long *)(param_3 + 4) = lVar12;
-      lVar11 = dlsym(lVar10,"nexus_script_port_chat_snapshot");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,acStack_a8), iVar6 != 0)) &&
-         (local_a0 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 6) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_reset");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_228), iVar6 != 0)) &&
-         (local_220 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 10) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_hud_snapshot");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_4460), iVar6 != 0)) &&
-         (local_4458 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 8) = lVar11;
-      }
-      uVar13 = FUN_00193324(lVar10,"nexus_script_port_battle_snapshot",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(undefined8 *)(param_3 + 0xe) = uVar13;
-      lVar11 = dlsym(lVar10,"nexus_script_port_chat_action");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_4480), iVar6 != 0)) &&
-         (local_4478 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0xc) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_server_snapshot");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_44a0), iVar6 != 0)) &&
-         (local_4498 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x10) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_server_select");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_44c0), iVar6 != 0)) &&
-         (local_44b8 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x12) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_camera_snapshot");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_44e0), iVar6 != 0)) &&
-         (local_44d8 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x14) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_camera_control");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_4500), iVar6 != 0)) &&
-         (local_44f8 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x16) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_fast_replay_snapshot");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_4520), iVar6 != 0)) &&
-         (local_4518 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x18) = lVar11;
-      }
-      lVar11 = dlsym(lVar10,"nexus_script_port_fast_replay_claim");
-      if (((lVar11 != 0) && (iVar6 = dladdr(lVar11,auStack_4540), iVar6 != 0)) &&
-         (local_4538 == CONCAT35(auStack_1db[0],local_1e0))) {
-        *(long *)(param_3 + 0x1a) = lVar11;
-      }
-      if ((*(long *)(param_3 + 0x18) == 0) || (*(long *)(param_3 + 0x1a) == 0)) {
-        *(long *)(param_3 + 0x18) = 0;
-        param_3[0x1a] = 0;
-        param_3[0x1b] = 0;
-      }
-      if ((*(long *)(param_3 + 0x14) == 0) || (*(long *)(param_3 + 0x16) == 0)) {
-        *(long *)(param_3 + 0x14) = 0;
-        param_3[0x16] = 0;
-        param_3[0x17] = 0;
-      }
-      if ((*(long *)(param_3 + 0x10) == 0) || (*(long *)(param_3 + 0x12) == 0)) {
-        *(long *)(param_3 + 0x10) = 0;
-        param_3[0x12] = 0;
-        param_3[0x13] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_theme_snapshot",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      plVar16 = (long *)(param_3 + 0x1c);
-      *plVar16 = lVar11;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_theme_command",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x1e) = lVar11;
-      if ((*plVar16 == 0) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x1e] = 0;
-        param_3[0x1f] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_debug_snapshot",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      plVar16 = (long *)(param_3 + 0x20);
-      *plVar16 = lVar11;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_debug_apply",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x22) = lVar11;
-      if ((*plVar16 == 0) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x22] = 0;
-        param_3[0x23] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_performance_query",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      plVar16 = (long *)(param_3 + 0x24);
-      *plVar16 = lVar11;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_performance_apply",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x26) = lVar11;
-      if ((*plVar16 == 0) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x26] = 0;
-        param_3[0x27] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_profile_snapshot",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      plVar16 = (long *)(param_3 + 0x28);
-      *plVar16 = lVar11;
-      uVar13 = FUN_00193324(lVar10,"nexus_script_port_profile_open",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(undefined8 *)(param_3 + 0x2a) = uVar13;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_profile_set_name",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x2c) = lVar11;
-      if (((*plVar16 == 0) || (*(long *)(param_3 + 0x2a) == 0)) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x2a] = 0;
-        param_3[0x2b] = 0;
-        param_3[0x2c] = 0;
-        param_3[0x2d] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_editor_snapshot",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      plVar16 = (long *)(param_3 + 0x2e);
-      *plVar16 = lVar11;
-      uVar13 = FUN_00193324(lVar10,"nexus_script_port_client_editor_apply",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(undefined8 *)(param_3 + 0x30) = uVar13;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_client_editor_tick",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x32) = lVar11;
-      if (((*plVar16 == 0) || (*(long *)(param_3 + 0x30) == 0)) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x30] = 0;
-        param_3[0x31] = 0;
-        param_3[0x32] = 0;
-        param_3[0x33] = 0;
-      }
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_font_query",CONCAT35(auStack_1db[0],local_1e0)
-                           );
-      plVar16 = (long *)(param_3 + 0x34);
-      *plVar16 = lVar11;
-      uVar13 = FUN_00193324(lVar10,"nexus_script_port_font_apply",CONCAT35(auStack_1db[0],local_1e0)
-                           );
-      *(undefined8 *)(param_3 + 0x36) = uVar13;
-      lVar11 = FUN_00193324(lVar10,"nexus_script_port_font_body_current",
-                            CONCAT35(auStack_1db[0],local_1e0));
-      *(long *)(param_3 + 0x38) = lVar11;
-      if (((*plVar16 == 0) || (*(long *)(param_3 + 0x36) == 0)) || (lVar11 == 0)) {
-        *plVar16 = 0;
-        param_3[0x36] = 0;
-        param_3[0x37] = 0;
-        param_3[0x38] = 0;
-        param_3[0x39] = 0;
-      }
+}
+
+/*
+ * dispatch_command_me4 — command dispatch tail of the attach path (raw
+ * 1856-1987): maps a ring opcode to its handler. 0x97 is rate-gated on
+ * 0x25ca40 (never written elsewhere, so it always passes); 0x94/0x95 go to
+ * the clipboard; 0x20000/0x20001 scroll the battle view; 0x20002 toggles
+ * the perf mode (ring vs ops origin); 0x21028/0x240xx server, 0x2102f and
+ * the 0x260xx family theme, 0x21030/0x270xx debug, 0x21031 fps, 0x21033/
+ * 0x280xx profile, 0x21035/0x290xx editor, 0x21036 fonts, 0x21000-0x21036
+ * named actions, and anything else nexus_menu_dispatch (with the 0x32
+ * perf-save special clearing the reload request). Returns the handler
+ * verdict. @ 0015d224 (dispatch section, raw 1856-1987)
+ */
+static int dispatch_command_me4(int opcode, int tid, uint64_t now_ms)
+{
+    uint64_t result = 0;
+
+    switch (opcode) {
+    case 0x97:
+        /* rate gate on 0x25ca40 (unwritten elsewhere: always passes) */
+        if (499 < now_ms - g_plus_key_last_ms)
+            result = clipboard_invoke();
+        break;
+    case 0x94:
+    case 0x95:
+        result = clipboard_invoke();
+        break;
+    case 0x20000:
+        result = nexus_menu_scroll_battle(-1, tid);
+        break;
+    case 0x20001:
+        result = nexus_menu_scroll_battle(1, tid);
+        break;
+    case 0x21028:
+        result = nexus_menu_server_open(tid);
+        break;
+    case 0x2102f:
+        result = nexus_menu_theme_open(tid);
+        break;
+    case 0x21030:
+        result = nexus_menu_debug_open(tid);
+        break;
+    case 0x21031:
+        result = (uint64_t)(nexus_script_port_fps_open() != 0);
+        break;
+    case 0x21033:
+        result = nexus_menu_profile_open(tid);
+        break;
+    case 0x21035:
+        result = nexus_menu_editor_open(tid);
+        break;
+    case 0x21036:
+        result = (uint64_t)(nexus_script_port_fonts_open() != 0);
+        break;
+    case 0x20002:
+        /* origin is not distinguishable here: the ring path toggles */
+        result = (uint64_t)menu_perf_mode_toggle(now_ms, tid);
+        break;
+    default:
+        if ((uint32_t)opcode - 0x24000 < 0x30)
+            result = nexus_menu_server_action((uint32_t)opcode, tid);
+        else if (((uint32_t)opcode & 0xffffffc0) == 0x26000)
+            result = nexus_menu_theme_action((uint32_t)opcode, tid);
+        else if ((uint32_t)opcode - 0x27000 < 0x120)
+            result = nexus_menu_debug_action((uint32_t)opcode, tid);
+        else if ((uint32_t)opcode - 0x28000 < 6)
+            result = nexus_menu_profile_action((uint32_t)opcode, tid);
+        else if (((uint32_t)opcode & 0xfffffe00) == 0x29000)
+            result = nexus_menu_editor_action((uint32_t)opcode, tid);
+        else if ((uint32_t)opcode - 0x21000 < 0x37)
+            result = (uint64_t)ui_named_action_invoke(-1);
+        else {
+            result = nexus_menu_dispatch((uint32_t)opcode, 0, 0, tid);
+            if ((uint32_t)opcode == 0x32 && (uint32_t)(result - 1) < 2) {
+                /* perf-mode save special: only outside battle/inhibit */
+                if ((int32_t)g_battle_state == 0 && g_graphics_inhibit == 0
+                    && g_reload_request_arg == 0)
+                    return (int)result;
+                g_reload_requested = 0;
+                result = (uint64_t)performance_mode_save(0, now_ms);
+            }
+        }
+        break;
     }
-    uVar8 = dlclose(lVar10);
-  }
-LAB_001927f8:
-  if (*(long *)(lVar3 + 0x28) == local_68) {
+    return (int)result;
+}
+/* menu_engine chain chunk 5: covers raw lines 1901-2400 */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+
+/* 0x38-byte shared menu context (identical to chunk 1's typedef; guarded so
+ * the concatenated translation unit sees exactly one) */
+int pthread_getname_np(pthread_t, char *, size_t);
+ssize_t readlink(const char *path, char *buf, size_t cap);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out, uint32_t len);
+extern uint64_t remote_read_ptr(uint64_t addr);
+extern int remote_child_link_valid(uint64_t node, uint64_t parent);
+extern int nexus_menu_ui_state(void *state_out, int tid);
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern int menu_sc_preflight_poll(void *read_ctx);
+extern int postbattle_island_verify(void);
+extern void nexus_menu_diagnostics(char *out, uint32_t cap); /* p4 def */
+extern long svc_call0_me1(void *obj, uint32_t slot);
+extern long svc_call1_me1(void *obj, uint32_t slot, long a);
+extern long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+extern long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c);
+extern int ui_latch_test_and_set(int which, void *addr);
+extern int64_t g_proc_mem_bias;      /* 0x22d8e0 — remote-read bias */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern int32_t g_launcher_attached;  /* 0x22f03c — 1 attached, -1 failed, 0 pending */
+extern uint64_t g_launcher_stage_root; /* 0x22f178 — stashed stage root */
+extern uint64_t g_launcher_stage_view; /* 0x22db60 — stashed stage view */
+extern uint64_t g_launcher_view;     /* 0x22f180 — rich launcher view object */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_reload_requested;  /* 0x22d88c — renderer.c: UI reload requested */
+extern uint32_t g_graphics_policy_active; /* 0x22d890 — renderer.c: policy engaged */
+extern uint32_t g_reload_request_arg;     /* 0x22d894 — renderer.c: reload arg */
+extern uint32_t g_reload_phase;      /* 0x22d898 — renderer.c: reload walk phase */
+extern uint64_t g_reload_cookie;     /* 0x22d8a0 — renderer.c: {hi=1, lo=interval} */
+extern uint64_t g_reload_deadline_ms; /* 0x22d8a8 — renderer.c: request monotonic ms */
+extern uint32_t g_graphics_policy_failed; /* 0x22dfb8 — renderer.c: latched failure */
+extern uint32_t g_graphics_inhibit;  /* 0x22dfbc — renderer.c: cycle inhibit */
+extern uint32_t g_ui_release_done;   /* 0x22db70 — renderer.c: frame freed flag */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern uint32_t g_perf_mode_latched; /* 0x22f4b8 — perf-mode latch (chunk 2) */
+extern uint64_t g_perf_restore_ms;   /* 0x25cb30 — saved-mode restore start (chunk 4) */
+extern uint32_t g_lowres_atlas_pair; /* 0x25cb38 — lowres atlas source pair value */
+extern uint64_t g_graphics_policy_ms; /* 0x281a20 — renderer.c: policy applied at */
+extern int32_t g_graphics_policy_pair[2]; /* 0x281a28 — renderer.c: source pair */
+extern int64_t g_host_session;       /* 0x1a7c50 — misc.c: host session dir fd (>= 0) */
+extern uint8_t g_bind_state[];       /* 0x22f040 — misc.c bind state */
+extern pthread_once_t g_protected_plus_once; /* 0x22f1d0 — misc.c once-flag */
+extern int (*g_protected_plus_query)(void);  /* 0x22f1d8 — misc.c resolved fn */
+extern int64_t bind_state_value_read(void *state);
+extern uint64_t protected_channel_ready(void);
+extern int launcher_stage_wait(uint64_t root, uint64_t view, int tid);
+extern int nexus_ui_graphics_resources(uint64_t root, uint64_t view,
+                                       uint64_t launcher, uint32_t arg);
+extern uint64_t allocator_state_read(void *ops, void *view_out);
+extern void allocator_state_write(void *rec, uint64_t addr, int value);
+extern int maps_range_is_rw(uint64_t addr, uint64_t len);
+extern int engine_global_pair_read(void *pair_out, void *viewport);
+extern uint64_t integrity_master_gate(void);
+extern void frame_time_stamp_forward(uint64_t now_ms);
+extern int renderer_graphics_release(void);
+extern int allocator_cycle_check(void *ops);
+extern int plus_channel_ready(void);
+extern int parse_trimmed_number(const char *s, size_t len, void *out);
+extern int plus_tag_record_parse(const char *s, size_t len, void *out);
+extern uint64_t plus_service_request_exec(void *ops, uint32_t snap_lo,
+                                          void *rec, uint64_t pair);
+extern int text_contains_reload(const char *s);
+extern void ui_toast_show(const char *text);
+extern int64_t clock_ms(int clockid);
+extern void battle_end_state_tick(uint32_t kind, void *frame_obj, void *arg,
+                                  uint64_t now_ms);
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action);
+/* menu_context_t and menu_context_init come from chunk 1 in the assembled
+ * translation unit (chunk 1 precedes this file in the cat order) */
+extern int menu_launcher_style_apply(int screen, void *viewport);
+
+/* chunk-4 throttles (0x281a30 / 0x281a38): static definitions live in
+ * chunk 4 of this chain; redeclared here for standalone compilation — the
+ * concatenated gate sees exactly one definition */
+static uint64_t g_battle_pump_last_ms;   /* 0x281a30 (chunk 4) */
+static uint64_t g_plus_service_last_ms;  /* 0x281a38 (chunk 4) */
+
+/* misc.c-owned: mutex-guarded battle snapshot block at 0x25c958 (0x80 bytes,
+ * mutex at 0x25c92c) plus the battle-end latch */
+extern pthread_mutex_t g_battle_snapshot_mutex; /* 0x25c92c — misc.c */
+extern uint64_t g_battle_snapshot[16];  /* 0x25c958 — misc.c writes, this pump drains */
+extern uint32_t g_battle_end_latch;     /* 0x25c9d8 — misc test-and-sets, widgets clears */
+extern uint32_t g_plus_request_lo;      /* 0x22db68 — misc.c: plus request handle */
+extern int32_t g_plus_request_hi;       /* 0x22db6c — misc.c: plus request value */
+extern uint64_t g_alloc_snap_root;      /* 0x22dfd8 — misc.c: allocator snapshot root */
+extern uint32_t g_alloc_snap_b;         /* 0x22dfe0 — misc.c: allocator snapshot b */
+extern float g_alloc_snap_scale;        /* 0x22dfe4 — misc.c: allocator snapshot scale */
+extern uint64_t g_alloc_snap_c;         /* 0x22dfe8 — misc.c: allocator snapshot c */
+extern void *g_jvm_service;             /* 0x22f4c8 — widgets.c: plus JVM service locator */
+extern uint64_t g_jvm_service_ready;    /* 0x22f4e8 — widgets.c: service method/flag */
+extern uint64_t g_plus_req_id;          /* 0x25c920 — widgets.c: pending plus request id */
+extern uint64_t g_plus_jstr;            /* 0x25c8e0 — widgets.c: request jstring */
+extern uint64_t g_plus_m_a;             /* 0x25c8e8 — widgets.c: method A */
+extern uint64_t g_plus_m_b;             /* 0x25c8f0 — widgets.c: method B */
+extern uint64_t g_plus_m_c;             /* 0x25c8f8 — widgets.c: method C */
+extern uint64_t g_plus_m_d;             /* 0x25c900 — widgets.c: method D */
+extern uint64_t g_plus_field_e;         /* 0x25c908 — widgets.c: field E (written on reload) */
+extern uint64_t g_plus_field_f;         /* 0x25c910 — widgets.c: field F */
+extern uint64_t g_plus_field_g;         /* 0x25c918 — widgets.c: field G */
+
+/* ===== settings persistence (raw 1068-1237; belongs to chunk 3's range but
+ * was deferred — completed here) ===== */
+
+/*
+ * menu_settings_save — atomically save the settings blob (<= 0x1000 bytes)
+ * as "settings-<pid>-<ms>.tmp" in the host session directory (dirfd
+ * 0x1a7c50), fsync, rename to "settings.bin", fsync the directory. Returns
+ * true only when every step succeeded. @ 00156480
+ */
+bool menu_settings_save(void *unused, const void *data, size_t len)
+{
+    char tmp_name[0x50];
+    struct timespec ts;
+    uint64_t ms = 0;
+    int fd;
+    bool ok = false;
+
+    (void)unused;
+
+    if (len > 0x1000 || data == NULL || g_host_session < 0)
+        return false;
+
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+    str_format(tmp_name, 0x50, 0x50, "settings-%d-%llu.tmp", (int)getpid(), ms);
+
+    fd = openat((int)g_host_session, tmp_name, 0x880c1 /* O_WRONLY|O_CREAT|O_CLOEXEC */, 0x180);
+    if (fd < 0)
+        return false;
+
+    {
+        uint64_t written = 0;
+
+        while (written < len) {
+            ssize_t n = write(fd, (const char *)data + written, len - written);
+
+            if (n < 0) {
+                if (errno != 4) /* EINTR */
+                    break;
+            } else {
+                written += (uint64_t)n;
+                if (n == 0)
+                    break;
+            }
+        }
+        if (written == len) {
+            int sync_rc = fsync(fd);
+
+            close(fd);
+            if (sync_rc == 0
+                && renameat((int)g_host_session, tmp_name,
+                            (int)g_host_session, "settings.bin") == 0
+                && fsync((int)g_host_session) == 0)
+                ok = true;
+        } else {
+            close(fd);
+        }
+    }
+    return ok;
+}
+
+/*
+ * menu_settings_load — read "settings.bin" from the host session directory
+ * into buf (cap <= 0x1000). Gates: regular file, owned by the current uid,
+ * nlink == 1, size >= 0 and <= cap. *out_len receives the byte count read.
+ * Returns true when the full file was read. @ 00156614
+ */
+bool menu_settings_load(void *unused, void *buf, size_t cap, uint64_t *out_len)
+{
+    struct stat st;
+    int fd;
+    bool ok = false;
+
+    (void)unused;
+
+    if (cap > 0x1000 || out_len == NULL || buf == NULL || g_host_session < 0)
+        return false;
+
+    fd = openat((int)g_host_session, "settings.bin", 0x88000 /* O_RDONLY|O_CLOEXEC */);
+    if (fd < 0)
+        return false;
+
+    if (fstat(fd, &st) == 0
+        && (st.st_mode & 0xf000) == 0x8000
+        && st.st_uid == getuid()
+        && st.st_nlink == 1
+        && (uint64_t)st.st_size <= cap) {
+        uint64_t got = 0;
+        uint64_t size = (uint64_t)st.st_size;
+
+        while (got < size) {
+            ssize_t n = read(fd, (char *)buf + got, size - got);
+
+            if (n < 0) {
+                if (errno != 4) /* EINTR */
+                    break;
+            } else {
+                got += (uint64_t)n;
+                if (n == 0)
+                    break;
+            }
+        }
+        close(fd);
+        ok = got == size;
+        *out_len = got;
+        return ok;
+    }
+    close(fd);
+    return false;
+}
+
+/*
+ * menu_stage_log — emit one 'NexusLab69252' logcat JSON stage line
+ * {stage, reason, action, pid, tid, time_ms} (CLOCK_REALTIME ms), capped at
+ * 128 entries by the shared counter 0x22f4bc (the counter still increments
+ * past the cap). @ 00156760
+ */
+void menu_stage_log(void *unused, const char *stage, const char *reason,
+                    uint32_t action)
+{
+    (void)unused;
+
+    if (g_stage_log_count < 0x80) {
+        struct timespec ts;
+        int64_t ms = 0;
+
+        g_stage_log_count = g_stage_log_count + 1;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+            ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        __android_log_print(4, "NexusLab69252",
+                            "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                            stage, reason, action,
+                            (int)getpid(), (int)gettid(), (unsigned long long)ms);
+    } else {
+        g_stage_log_count = g_stage_log_count + 1;
+    }
+}
+
+/* raw float-bit reinterpretation (chunk-local copy) */
+static float int_as_float_me5(uint32_t bits)
+{
+    float f;
+
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+/* ===== perf-graphics restore section (raw 2059-2218) ===== */
+
+/*
+ * frame_perf_graphics_restore — performance/graphics tail of the frame tick
+ * (frame 3, release armed). Three phases: (1) if the saved perf mode is
+ * latched but the restore never completes within a 60000ms window
+ * ('saved_mode_restore_unavailable'), drop the latch and flag the policy
+ * failure; (2) when latched and no reload/policy/inhibit is pending, poll
+ * the preflight and re-engage the graphics resources
+ * ('restoring_saved_mode', clearing the latch and requesting the reload);
+ * (3) while the graphics policy is active, verify it against the 60000ms
+ * stamp at 0x281a20 ('texture_reload_unverified' clears it), else read the
+ * allocator state through the {read, write, rw} ops record, check the
+ * snapshot identity (0x22dfd8 block) and the request bytes at +0x101/+0x1cd,
+ * require the atlas scale pair (0x800/0x1000) to match the policy source
+ * pair, and finish with launcher_stage_wait ('stock_atlas_restored' /
+ * 'lowres_atlas_verified'; failure latches the policy failure and the
+ * battle byte at +4). Returns 1 to skip the game-reload verify (policy
+ * still active or unverified), 0 to continue. @ 0015d224 (raw 2059-2218)
+ */
+static int frame_perf_graphics_restore(uint64_t now_ms, int tid)
+{
+    /* (1) saved-mode restore availability window */
+    if (g_perf_mode_latched != 0 && (uint32_t)g_perf_restore_ms == 0)
+        g_perf_restore_ms = now_ms;
+    if (g_perf_mode_latched != 0 && g_perf_restore_ms != 0
+        && g_perf_restore_ms <= now_ms
+        && (now_ms - g_perf_restore_ms) >> 5 > 0x752) {
+        g_perf_mode_latched = 0;
+        g_graphics_policy_failed = 1;
+        g_perf_restore_ms = 0;
+        g_reload_phase = 0;
+        g_reload_cookie = 0;
+        if (g_stage_log_count < 0x80) {
+            struct timespec ts;
+            int64_t ms = 0;
+
+            g_stage_log_count = g_stage_log_count + 1;
+            if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+                ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+            __android_log_print(4, "NexusLab69252",
+                                "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                                "performance_graphics",
+                                "saved_mode_restore_unavailable", 0x20002,
+                                (int)getpid(), tid, (unsigned long long)ms);
+        } else {
+            g_stage_log_count = g_stage_log_count + 1;
+        }
+    }
+
+    /* (2) re-engage the saved mode when the path is clear */
+    if (g_perf_mode_latched != 0 && (g_reload_requested & 1) == 0
+        && (g_graphics_policy_active & 1) == 0 && g_graphics_inhibit == 0) {
+        if (menu_sc_preflight_poll(NULL) != 0
+            && nexus_ui_graphics_resources(g_launcher_stage_root,
+                                           g_launcher_stage_view,
+                                           g_launcher_view, 0) == 1) {
+            g_perf_mode_latched = 0;
+            g_reload_requested = 1;
+            g_perf_restore_ms = 0;
+            g_reload_deadline_ms = now_ms;
+            if (g_stage_log_count < 0x80) {
+                struct timespec ts;
+                int64_t ms = 0;
+
+                g_stage_log_count = g_stage_log_count + 1;
+                if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+                    ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+                __android_log_print(4, "NexusLab69252",
+                                    "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                                    "performance_graphics", "restoring_saved_mode",
+                                    0x20002, (int)getpid(), tid,
+                                    (unsigned long long)ms);
+            } else {
+                g_stage_log_count = g_stage_log_count + 1;
+            }
+        }
+    }
+
+    /* (3) graphics policy verification */
+    if ((g_graphics_policy_active & 1) != 0) {
+        if (now_ms != g_graphics_policy_ms) {
+            if (now_ms < g_graphics_policy_ms
+                || now_ms - g_graphics_policy_ms > 60000) {
+                /* stale policy: drop it and latch the failure */
+                uint32_t v = (uint32_t)(g_battle_state >> 32);
+
+                g_graphics_policy_active = 0;
+                g_graphics_policy_failed = 1;
+                /* raw shifts the +4 dword right by 8 and stores 1 in byte 4 */
+                v = ((v >> 8) & 0xffffff00u) | 1u;
+                g_battle_state = (g_battle_state & 0xffffffffu)
+                                 | ((uint64_t)v << 32);
+                g_reload_phase = 0;
+                g_reload_cookie = 0;
+                if (g_stage_log_count < 0x80) {
+                    struct timespec ts;
+                    int64_t ms = 0;
+
+                    g_stage_log_count = g_stage_log_count + 1;
+                    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+                        ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+                    __android_log_print(4, "NexusLab69252",
+                                        "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                                        "performance_graphics",
+                                        "texture_reload_unverified", 0x20002,
+                                        (int)getpid(), tid,
+                                        (unsigned long long)ms);
+                } else {
+                    g_stage_log_count = g_stage_log_count + 1;
+                }
+            } else {
+                /* fresh policy: verify the allocator snapshot and atlas */
+                struct {
+                    uint64_t bias;        /* +0x00 */
+                    uint64_t zero;        /* +0x08 */
+                    int (*read_mem)(long, uint64_t, void *, uint64_t); /* +0x10 */
+                    void (*state_write)(void *, uint64_t, int);        /* +0x18 */
+                    int (*maps_rw)(uint64_t, uint64_t);                /* +0x20 */
+                } ops;
+                uint8_t request[0x10];
+                uint64_t view[8];
+                uint32_t pair[2];
+
+                ops.bias = (uint64_t)g_proc_mem_bias;
+                ops.zero = 0;
+                ops.read_mem = (int (*)(long, uint64_t, void *, uint64_t))
+                    (void *)proc_mem_read;
+                ops.state_write = allocator_state_write;
+                ops.maps_rw = maps_range_is_rw;
+                memset(request, 0, sizeof request);
+                request[0] = 1; /* raw sets byte 0 of the request record */
+                memset(view, 0, sizeof view);
+                if (menu_sc_preflight_poll(NULL) != 0
+                    && allocator_state_read(&ops, view) != 0
+                    && view[0] == g_alloc_snap_root) {
+                    uint32_t *vp = (uint32_t *)view;
+                    uint64_t snap_root = view[0];
+                    uint8_t req_byte = 1;
+                    uint8_t flag_byte = 0;
+
+                    /* view must match the misc-published allocator snapshot
+                     * (0x22dfd8 root, 0x22dfe0 dword, 0x22dfe4 scale float,
+                     * 0x22dfe8 qword) and carry no pending request bytes */
+                    if (vp[2] == g_alloc_snap_b
+                        && int_as_float_me5(vp[3]) == g_alloc_snap_scale
+                        && view[2] == g_alloc_snap_c
+                        && proc_mem_read(NULL, snap_root + 0x101,
+                                         &req_byte, 1) != 0
+                        && req_byte == 0
+                        && proc_mem_read(NULL, snap_root + 0x1cd,
+                                         &flag_byte, 1) != 0
+                        && flag_byte == 0
+                        && engine_global_pair_read(pair, view) != 0
+                        && *(uint64_t *)(void *)pair
+                               != *(const uint64_t *)(const void *)
+                                      g_graphics_policy_pair) {
+                        /* atlas scale pair (as floats) must equal the
+                         * interval: 0x800, or 0x1000 when both the scale
+                         * dword and the +8 dword are non-zero */
+                        int interval = 0x800;
+
+                        if (int_as_float_me5(vp[3]) != 0.0f && vp[2] != 0)
+                            interval = 0x1000;
+                        if (int_as_float_me5(pair[0]) == (float)interval
+                            && int_as_float_me5(pair[1]) == (float)interval) {
+                            int wait_rc = launcher_stage_wait(
+                                g_launcher_stage_root, g_launcher_stage_view, tid);
+
+                            if (wait_rc != 0) {
+                                if (wait_rc != -1) {
+                                    const char *reason = "stock_atlas_restored";
+
+                                    g_graphics_policy_active = 0;
+                                    g_graphics_policy_failed = 0;
+                                    g_reload_request_arg = 0;
+                                    g_lowres_atlas_pair =
+                                        (uint32_t)g_graphics_policy_pair[1];
+                                    if (g_graphics_policy_pair[1] != 0)
+                                        reason = "lowres_atlas_verified";
+                                    g_reload_phase = 0;
+                                    g_reload_cookie = 0;
+                                    menu_stage_log(NULL, "performance_graphics",
+                                                   reason, 0x20002);
+                                    return 0; /* continue to reload verify */
+                                }
+                                g_graphics_policy_failed = 1;
+                                /* raw stores 1 into the byte at battle+4 */
+                                g_battle_state |= (uint64_t)1 << 32;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return 1; /* policy active (or just verified): skip reload verify */
+    }
     return 0;
-  }
-                    /* WARNING: Subroutine does not return */
-  __stack_chk_fail(uVar8);
 }
 
-/* ===== FUN_001939e0 @ 001939e0 ===== */
+/* ===== game-reload verify section (raw 2219-2313) ===== */
 
-int FUN_001939e0(int param_1,int param_2,int *param_3)
-
+/*
+ * frame_game_reload_verify — verify the pending game reload (frame 3,
+ * reload_requested == 1). Inside a 625-tick window after the request the
+ * chain Mainloop/tid/island/ui-state(+5)/stage identity/parentage/stage
+ * byte/root-count(== 7) is verified and allocator_cycle_check runs through
+ * the {read, integrity, stamp, release} ops record; its verdict 2 means the
+ * reload landed. Outside the window (or on failure) the reload is dropped:
+ * 'game_reload_unavailable' / 'game_reload_unverified' logged under
+ * 'performance_reload' ('game_reload_requested' when the verdict was 1 or
+ * -1), the reload arg reflects the failure. Returns 1 to skip the
+ * battle-end pump (verdict 1/-1 or attach level < 1), 0 to continue.
+ * @ 0015d224 (raw 2219-2313)
+ */
+static int frame_game_reload_verify(uint64_t now_ms, int tid,
+                                    const char *thread_name)
 {
-  char cVar1;
-  bool bVar2;
-  int iVar3;
-  
-  if (DAT_002a1f88 != '\0') {
-    iVar3 = *param_3;
-    if (iVar3 == param_1) {
-      *param_3 = param_2;
+    char name[0x10];
+    int verdict = 0;
+    int skip_battle;
+
+    (void)thread_name;
+
+    if (g_reload_requested != 1)
+        return g_launcher_attached < 1 ? 1 : 0;
+    if (g_reload_deadline_ms > now_ms || now_ms == g_reload_deadline_ms)
+        return g_launcher_attached < 1 ? 1 : 0;
+
+    if ((now_ms - g_reload_deadline_ms) >> 5 < 0x271) {
+        uint8_t ui_state[8];
+
+        memset(name, 0, sizeof name);
+        memset(ui_state, 0, sizeof ui_state);
+        if (g_launcher_menu_id < 1 || tid != (int)g_launcher_menu_id
+            || pthread_getname_np(pthread_self(), name, sizeof name) != 0
+            || memcmp(name, "Mainloop", 8) != 0 || name[8] != '\0'
+            || postbattle_island_verify() == 0
+            || ((uint32_t)(g_battle_state >> 32) & 1) != 0
+            || nexus_menu_ui_state(ui_state, tid) != 1
+            || ui_state[5] != 0) {
+            verdict = 0;
+        } else {
+            uint64_t stage_root = 0;
+            uint64_t handle = bind_state_value_read((void *)g_bind_state);
+
+            if (proc_mem_read((void *)(intptr_t)handle,
+                              (uint64_t)g_proc_mem_bias + 0x12eb9f0,
+                              &stage_root, 8) == 0
+                || (stage_root & 7) != 0 || stage_root < 0x1000)
+                stage_root = 0;
+            if (stage_root != g_launcher_stage_root) {
+                verdict = 0;
+            } else {
+                uint64_t stage_view = 0;
+
+                if (proc_mem_read((void *)(intptr_t)handle, stage_root + 0x90,
+                                  &stage_view, 8) == 0
+                    || (stage_view & 7) != 0 || stage_view < 0x1000)
+                    stage_view = 0;
+                if (stage_view != g_launcher_stage_view
+                    || remote_child_link_valid(g_launcher_view, stage_view) == 0) {
+                    verdict = 0;
+                } else {
+                    uint8_t stage_byte = 1;
+
+                    if (proc_mem_read(NULL, g_launcher_stage_root + 0x19c,
+                                      &stage_byte, 1) == 0 || stage_byte != 0) {
+                        verdict = 0;
+                    } else {
+                        uint64_t root_obj =
+                            remote_read_ptr((uint64_t)g_proc_mem_bias
+                                            + 0x1307e20);
+                        uint32_t root_count = 0;
+
+                        if (root_obj == 0
+                            || proc_mem_read(NULL, root_obj + 0x50,
+                                             &root_count, 4) == 0
+                            || (int32_t)root_count < 0
+                            || root_count > 0x40
+                            || root_count == 7 /* raw: float 7.00649e-45 */) {
+                            verdict = 0;
+                        } else {
+                            struct {
+                                uint64_t bias;    /* +0x00 */
+                                uint64_t zero;    /* +0x08 */
+                                int (*read_mem)(long, uint64_t, void *,
+                                                uint64_t);        /* +0x10 */
+                                uint64_t (*integrity)(void);      /* +0x18 */
+                                void (*stamp)(uint64_t);          /* +0x20 */
+                                int (*release)(void);             /* +0x28 */
+                            } ops;
+
+                            ops.bias = (uint64_t)g_proc_mem_bias;
+                            ops.zero = 0;
+                            ops.read_mem = (int (*)(long, uint64_t, void *,
+                                                    uint64_t))(void *)proc_mem_read;
+                            ops.integrity = integrity_master_gate;
+                            ops.stamp = frame_time_stamp_forward;
+                            ops.release = renderer_graphics_release;
+                            verdict = allocator_cycle_check(&ops);
+                            if (verdict != 2)
+                                verdict = 0;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        verdict = 0;
     }
-    return iVar3;
-  }
-  do {
-    iVar3 = *param_3;
-    if (*param_3 != param_1) {
-      return iVar3;
+
+    if (verdict == 2)
+        verdict = 0; /* cycle verified: continue to the battle pump */
+
+    /* drop or report the reload */
+    if (verdict != 0 || (g_graphics_policy_failed & 1) != 0
+        || now_ms < g_reload_deadline_ms
+        || (now_ms - g_reload_deadline_ms) >> 5 > 0x270) {
+        const char *reason = verdict != -1 ? "game_reload_unavailable"
+                                           : "game_reload_unverified";
+        const char *stage = "performance_reload";
+
+        g_reload_requested = 0;
+        g_reload_request_arg = (uint32_t)(verdict != 1);
+        if (verdict != 1)
+            stage = reason;
+        g_reload_phase = 0;
+        g_reload_cookie = 0;
+        if (g_stage_log_count < 0x80) {
+            struct timespec ts;
+            int64_t ms = 0;
+
+            g_stage_log_count = g_stage_log_count + 1;
+            if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+                ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+            __android_log_print(4, "NexusLab69252",
+                                "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                                stage, verdict != 1 ? reason : "game_reload_requested",
+                                0x20002, (int)getpid(), tid,
+                                (unsigned long long)ms);
+        } else {
+            g_stage_log_count = g_stage_log_count + 1;
+        }
     }
-    cVar1 = '\x01';
-    bVar2 = (bool)ExclusiveMonitorPass(param_3,0x10);
-    if (bVar2) {
-      *param_3 = param_2;
-      cVar1 = ExclusiveMonitorsStatus();
+
+    skip_battle = (verdict == 1 || verdict == -1);
+    if (skip_battle || g_launcher_attached < 1)
+        return 1;
+    return 0;
+}
+
+/* ===== battle-end / plus service pump (raw 2313-2505) ===== */
+
+/*
+ * frame_battle_end_pump — battle-end and plus-service tail of the frame
+ * tick (frame 3). Drives battle_end_state_tick(3), resolves protected-plus
+ * via pthread_once, drains the mutex-guarded battle snapshot block
+ * (0x25c958, mutex 0x25c92c) — when armed, refreshes the menu context and
+ * either parses the snapshot's tagged request (plus_tag_record_parse →
+ * plus_service_request_exec, 0x7f records take parse_trimmed_number) or
+ * shows the failure toast — then services a pending plus request through
+ * the JVM service session (slots 0x30/0x98/0x488/0x110/0x128/0x548/0x550,
+ * 999ms and 124ms throttles at 0x281a30/0x281a38, 'RELOAD' text check
+ * re-issuing the request and stamping field 0x25c908). Finally records the
+ * ui-release completion (0x22db70) unless the battle-end latch
+ * (0x25c9d8) is set. @ 0015d224 (raw 2313-2505)
+ */
+static void frame_battle_end_pump(uint64_t now_ms, int tid,
+                                  const char *thread_name)
+{
+    char name[0x10];
+    uint64_t snap[16];
+
+    battle_end_state_tick(3, NULL, NULL, now_ms);
+
+    memset(name, 0, sizeof name);
+    if (g_launcher_menu_id < 1 || tid != (int)g_launcher_menu_id
+        || pthread_getname_np(pthread_self(), name, sizeof name) != 0
+        || memcmp(name, "Mainloop", 8) != 0 || name[8] != '\0')
+        goto plus_request;
+    (void)thread_name;
+
+    {
+        extern void protected_plus_resolve_once(void); /* misc @ 001552c0 */
+
+        pthread_once(&g_protected_plus_once, protected_plus_resolve_once);
     }
-  } while (cVar1 != '\0');
-  return iVar3;
+    if (g_protected_plus_query == NULL || g_protected_plus_query() != 1) {
+        g_plus_request_lo = 0;
+        g_plus_request_hi = 0;
+    }
+
+    /* drain the battle snapshot block under its mutex */
+    pthread_mutex_lock(&g_battle_snapshot_mutex);
+    memcpy(snap, g_battle_snapshot, sizeof snap);
+    memset(g_battle_snapshot, 0, sizeof g_battle_snapshot);
+    pthread_mutex_unlock(&g_battle_snapshot_mutex);
+
+    if ((uint32_t)snap[0] != 0) {
+        menu_context_t ctx;
+
+        memset(&ctx, 0, sizeof ctx);
+        menu_context_init(&ctx, now_ms);
+        if (plus_channel_ready() == 0
+            || ctx.autofarm_enabled == 0
+            || ctx.stage_byte != 0
+            || now_ms < snap[13]
+            || now_ms - snap[13] > 5000) {
+            ui_toast_show((const char *)(uintptr_t)0x135c8a);
+        } else {
+            const char *text = (const char *)&snap[1] + 4; /* +4 into the block */
+
+            if ((uint32_t)snap[0] == 0x7f) {
+                int value = 0;
+
+                if (parse_trimmed_number(text, strnlen(text, 0x7c), &value) != 0) {
+                    const char *toast = (const char *)(uintptr_t)0x1349cd;
+
+                    if (value != 0)
+                        toast = (const char *)(uintptr_t)0x13b049;
+                    g_plus_request_hi = value;
+                    ui_toast_show(toast);
+                }
+            } else {
+                uint8_t req[0x28];
+
+                if (plus_tag_record_parse(text, strnlen(text, 0x7c), req) != 0) {
+                    uint64_t rc = plus_service_request_exec(
+                        &snap[0], (uint32_t)snap[0], req,
+                        g_plus_request_lo | ((uint64_t)(uint32_t)
+                                                 g_plus_request_hi << 32));
+
+                    ui_toast_show(rc != 0
+                                      ? (const char *)(uintptr_t)0x13a43d
+                                      : (const char *)(uintptr_t)0x135ce7);
+                }
+            }
+        }
+    }
+
+plus_request:
+    /* pending plus request through the JVM service */
+    if (g_plus_req_id != 0) {
+        menu_context_t ctx;
+
+        memset(name, 0, sizeof name);
+        memset(&ctx, 0, sizeof ctx);
+        if (g_launcher_menu_id >= 1 && tid == (int)g_launcher_menu_id
+            && pthread_getname_np(pthread_self(), name, sizeof name) == 0
+            && memcmp(name, "Mainloop", 8) == 0 && name[8] == '\0') {
+            extern void protected_plus_resolve_once(void); /* misc @ 001552c0 */
+
+            pthread_once(&g_protected_plus_once, protected_plus_resolve_once);
+            if (g_protected_plus_query != NULL
+                && g_protected_plus_query() == 1
+                && (now_ms <= g_battle_pump_last_ms - 1
+                    || now_ms - g_battle_pump_last_ms > 999)) {
+                g_battle_pump_last_ms = now_ms;
+                menu_context_init(&ctx, now_ms);
+                if ((uint32_t)ctx.refresh_ms != 0
+                    && (uint32_t)(ctx.refresh_ms >> 32) != 0
+                    && (now_ms <= g_plus_service_last_ms - 1
+                        || (now_ms - g_plus_service_last_ms) >> 3 > 0x270)
+                    && g_jvm_service != NULL && g_jvm_service_ready != 0) {
+                    void *session = NULL;
+                    bool fast_acquired;
+                    int rc;
+
+                    rc = (int)svc_call2_me1(g_jvm_service, 0x30,
+                                            (long)&session, 0x10006);
+                    if (rc == 0) {
+                        fast_acquired = true;
+                    } else if (rc != -2
+                               || (int)svc_call2_me1(g_jvm_service, 0x20,
+                                                     (long)&session, 0) != 0) {
+                        goto done;
+                    } else {
+                        fast_acquired = false;
+                    }
+                    if (session == NULL)
+                        goto done;
+
+                    rc = (int)svc_call1_me1(session, 0x98, 0xc);
+                    if (rc >= 0) {
+                        long obj = svc_call2_me1(session, 0x488,
+                                                 (long)g_plus_req_id,
+                                                 (long)g_plus_jstr);
+                        if (svc_call0_me1(session, 0x720) == 0 && obj != 0) {
+                            long m2 = svc_call2_me1(session, 0x110, obj,
+                                                    (long)g_plus_m_a);
+                            if (svc_call0_me1(session, 0x720) == 0 && m2 != 0) {
+                                long m3 = svc_call3_me1(session, 0x110, m2,
+                                                        (long)g_plus_m_b,
+                                                        0x102001b);
+                                if (svc_call0_me1(session, 0x720) == 0
+                                    && m3 != 0) {
+                                    long f1 = svc_call2_me1(session, 0x128, m3,
+                                                            (long)g_plus_field_f);
+                                    long f2 = svc_call2_me1(session, 0x128, m3,
+                                                            (long)g_plus_field_g);
+
+                                    if (svc_call0_me1(session, 0x720) == 0
+                                        && f1 != 0 && f2 != 0) {
+                                        long m4 = svc_call2_me1(session, 0x110,
+                                                                m3,
+                                                                (long)g_plus_m_c);
+
+                                        if (svc_call0_me1(session, 0x720) == 0
+                                            && m4 != 0) {
+                                            long str_obj = svc_call2_me1(
+                                                session, 0x110, m4,
+                                                (long)g_plus_m_d);
+
+                                            if (svc_call0_me1(session, 0x720) == 0
+                                                && str_obj != 0) {
+                                                const char *text =
+                                                    (const char *)svc_call2_me1(
+                                                        session, 0x548, str_obj, 0);
+
+                                                if (text != NULL) {
+                                                    if (text_contains_reload(text)) {
+                                                        long obj2 = svc_call2_me1(
+                                                            session, 0x488,
+                                                            (long)g_plus_req_id,
+                                                            (long)g_plus_jstr);
+                                                        int64_t stamp = clock_ms(1);
+
+                                                        menu_context_init(&ctx,
+                                                                          now_ms);
+                                                        (void)stamp;
+                                                        if (svc_call0_me1(
+                                                                session, 0x720)
+                                                                == 0 && obj2 != 0) {
+                                                            char ok = (char)
+                                                                svc_call2_me1(
+                                                                    session,
+                                                                    0xc0, obj2,
+                                                                    (long)m2);
+
+                                                            if (ok != 0
+                                                                && ctx.autofarm_gated
+                                                                       != 0
+                                                                && ctx.stage_byte
+                                                                       != 0) {
+                                                                g_plus_service_last_ms =
+                                                                    now_ms;
+                                                                svc_call2_me1(
+                                                                    session,
+                                                                    0x128, m3,
+                                                                    (long)g_plus_field_e);
+                                                            }
+                                                        }
+                                                    }
+                                                    svc_call2_me1(session, 0x550,
+                                                                  str_obj,
+                                                                  (long)text);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+done:
+                    if (session != NULL) {
+                        if (svc_call0_me1(session, 0x720) != 0)
+                            svc_call0_me1(session, 0x88);
+                        if (rc >= 0)
+                            svc_call1_me1(session, 0xa0, 0);
+                        if (!fast_acquired)
+                            svc_call0_me1(g_jvm_service, 0x28);
+                    }
+                }
+            }
+        }
+    }
+
+    /* record the ui-release completion */
+    {
+        uint8_t ui_state[8];
+
+        memset(ui_state, 0, sizeof ui_state);
+        g_ui_release_done = 0;
+        if (nexus_menu_ui_state(ui_state, tid) == 1 && ui_state[4] == 0) {
+            g_ui_release_done = (uint32_t)now_ms;
+            if ((int)g_battle_end_latch != 0)
+                g_ui_release_done = 0;
+        }
+    }
 }
+/* menu_engine chain chunk 6: covers raw lines 2525-3000 (part p2 begins) */
 
-/* ===== FUN_00193f80 @ 00193f80 ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
-undefined1 FUN_00193f80(undefined1 param_1,undefined1 *param_2)
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
 
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out, uint32_t len);
+extern uint64_t remote_read_ptr(uint64_t addr);
+extern int remote_child_link_valid(uint64_t node, uint64_t parent);
+extern int nexus_menu_ui_state(void *state_out, int tid);
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action);
+extern long svc_call0_me1(void *obj, uint32_t slot);
+extern long svc_call1_me1(void *obj, uint32_t slot, long a);
+extern long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+extern long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c);
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern int64_t g_proc_mem_bias;      /* 0x22d8e0 — remote-read bias */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern int32_t g_launcher_attached;  /* 0x22f03c — 1 attached, -1 failed, 0 pending */
+extern uint64_t g_launcher_stage_root; /* 0x22f178 — stashed stage root */
+extern uint64_t g_launcher_stage_view; /* 0x22db60 — stashed stage view */
+extern uint64_t g_launcher_view;     /* 0x22f180 — rich launcher view object */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_reload_requested;  /* 0x22d88c — renderer.c: UI reload requested */
+extern uint32_t g_graphics_policy_active; /* 0x22d890 — renderer.c: policy engaged */
+extern uint32_t g_reload_request_arg;     /* 0x22d894 — renderer.c: reload arg */
+extern uint32_t g_graphics_policy_failed; /* 0x22dfb8 — renderer.c: latched failure */
+extern uint32_t g_graphics_inhibit;  /* 0x22dfbc — renderer.c: cycle inhibit */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern uint32_t g_perf_mode_latched; /* 0x22f4b8 — perf-mode latch (chunk 2) */
+extern uint32_t g_lowres_atlas_pair; /* 0x25cb38 — lowres atlas pair (multi-part) */
+extern uint64_t g_launcher_name_obj; /* 0x25ca50 — renderer.c: SC string "Nexus" */
+extern const char *g_launcher_status; /* 0x1a7c58 — renderer.c: status reason */
+extern int64_t g_host_session;       /* 0x1a7c50 — misc.c: host session dir fd */
+extern uint8_t g_bind_state[];       /* 0x22f040 — misc.c bind state */
+
+/* notify-service globals (widgets.c captures the locator + tokens; the armed
+ * flag gates the menu_engine mirrors below) */
+extern uint8_t  g_notify_armed;      /* 0x22d8b0 — widgets.c: notify service captured */
+extern void    *g_notify_service;    /* 0x22d8d0 — widgets.c: notify service locator */
+extern uint64_t g_notify_method;     /* 0x22f030 — widgets.c: notify method token */
+extern uint64_t g_notify_token;      /* 0x22f4f0 — widgets.c: notify op token */
+extern uint64_t g_battle_notify_method; /* 0x22d8b8 — widgets.c: battle notify method */
+extern uint64_t g_battle_notify_token;  /* 0x22f4f8 — widgets.c: battle notify token */
+extern uint32_t g_battle_notify_ready;  /* 0x22d8c8 — widgets.c: battle notify valid */
+
+/* per-entry value metadata: 0x24-byte records at 0x22f6cc indexed by the
+ * record count at 0x233ecc (fields: +0 id, +4 type, +8 flags, +0xc lock,
+ * +0x10..+0x1c paid/max) */
+extern uint32_t g_entry_table_count; /* 0x233ecc — live entry record count */
+extern uint8_t  g_entry_table[];     /* 0x22f6cc — entry metadata records (0x24 stride) */
+
+/* perf save / launcher style externs */
+extern int performance_mode_save(uint32_t mode, uint64_t now_ms); /* misc @ 001645e0 */
+extern int style_bundle_lookup(void *unused, const char *name);  /* misc @ 00163eb8 */
+extern void widget_set_scale(float sx, float sy, uint64_t widget); /* misc @ 0016cf00 */
+extern uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out); /* @ 001841f0 */
+extern uint32_t nexus_menu_dispatch(uint32_t op, int a, int b, int tid); /* @ 00194730 */
+extern uint64_t nexus_menu_set_value(uint32_t id, uint32_t value, int tid); /* @ 001947c0 */
+extern uint64_t nexus_menu_set_battle(int in_battle, int tid);  /* @ 00184858 */
+extern int nexus_rich_launcher_geometry(float a, float b, float c, float d,
+                                        float e, float *out);    /* renderer @ 0016c9d4 */
+extern void menu_launcher_init_diag(const char *reason, void *settings,
+                                    void *viewport);             /* @ 001641ec (chunk 8) */
+
+/* p2 statics (this part owns them) */
+static uint32_t g_style_screen_latched; /* 0x1a7c60 — last applied launcher style screen */
+static int32_t  g_style_force_latched;  /* 0x1a7c64 — last force-style verdict */
+static uint64_t g_style_offset_pair;    /* 0x25ca60 — {packed offset, scale} applied */
+static uint32_t g_style_scale;          /* 0x25ca68 — launcher scale applied */
+static uint32_t g_style_recovered;      /* 0x25ca6c — recovery log latch */
+static uint32_t g_style_recover_count;  /* 0x25ca70 — recovery log counter (< 8) */
+static uint64_t g_style_retry_last;     /* 0x25ca78 — retry identity (renderer clears) */
+static uint32_t g_fps_limit_state;      /* 0x25ca80 — chooser page: 1 fps, 2 fonts */
+static uint32_t g_fps_limit_pending;    /* 0x25ca84 — pending fps limit choice */
+static uint32_t g_fps_limit_saved;      /* 0x25ca88 — saved fps limit */
+static uint32_t g_value_set_latch;      /* 0x22f500 — entry-walk re-entrancy latch
+                                           (raw test-and-set in menu_value_set_gated) */
+
+/* raw float-bit reinterpretation (chunk-local copy) */
+static float int_as_float_me6(uint32_t bits)
 {
-  undefined1 uVar1;
-  char cVar2;
-  bool bVar3;
-  
-  if (DAT_002a1f88 == '\0') {
-    do {
-      uVar1 = *param_2;
-      cVar2 = '\x01';
-      bVar3 = (bool)ExclusiveMonitorPass(param_2,0x10);
-      if (bVar3) {
-        *param_2 = param_1;
-        cVar2 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar2 != '\0');
-    return uVar1;
-  }
-  LOAcquire();
-  uVar1 = *param_2;
-  *param_2 = param_1;
-  return uVar1;
+    float f;
+
+    memcpy(&f, &bits, sizeof f);
+    return f;
 }
 
-/* ===== FUN_00193fb0 @ 00193fb0 ===== */
+/* ===== shell stop ===== */
 
-undefined4 FUN_00193fb0(undefined4 param_1,undefined4 *param_2)
-
+/*
+ * menu_shell_stop_log — mark the shell stopped: attach state -> -1, publish
+ * the theme status (-1, owning menu id, reason) and log one
+ * 'nexus_shell_stopped' stage line with the given reason (capped 128).
+ * @ 001607dc
+ */
+void menu_shell_stop_log(const char *reason)
 {
-  char cVar1;
-  bool bVar2;
-  undefined4 uVar3;
-  
-  if (DAT_002a1f88 == '\0') {
-    do {
-      uVar3 = *param_2;
-      cVar1 = '\x01';
-      bVar2 = (bool)ExclusiveMonitorPass(param_2,0x10);
-      if (bVar2) {
-        *param_2 = param_1;
-        cVar1 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar1 != '\0');
-    return uVar3;
-  }
-  uVar3 = *param_2;
-  *param_2 = param_1;
-  LORelease();
-  return uVar3;
+    extern int theme_menu_status_set(int code, int tid, const char *r); /* misc @ 00183cdc */
+
+    g_launcher_attached = -1;
+    theme_menu_status_set(-1, (int)g_launcher_menu_id, reason);
+    if (g_stage_log_count < 0x80) {
+        struct timespec now;
+        int64_t ms = 0;
+
+        g_stage_log_count = g_stage_log_count + 1;
+        if (clock_gettime(CLOCK_REALTIME, &now) == 0)
+            ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        __android_log_print(4, "NexusLab69252",
+                            "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                            "nexus_shell_stopped", reason, 0,
+                            (int)getpid(), (int)gettid(), (unsigned long long)ms);
+    } else {
+        g_stage_log_count = g_stage_log_count + 1;
+    }
 }
 
-/* ===== FUN_00193fe0 @ 00193fe0 ===== */
+/* ===== launcher style ===== */
 
-undefined4 FUN_00193fe0(undefined4 param_1,undefined4 *param_2)
-
+/*
+ * menu_launcher_style_apply — apply the launcher button style for the
+ * current screen. Reads settings 0x6e (style screen), 0x70/0x71 (offsets);
+ * verdict 3 anywhere -> 'settings_busy'. With all three ok, picks the style
+ * name from the 6-entry map-editor button table (rodata 0x19ae20), checks
+ * the screen offset/limit identity chain on the stage view (+0x178 scale,
+ * +0x4c/+0x54 viewport dwords, +0x284 grid, root transform must be
+ * identity — raw compares 4 floats at 0x10fbb0), then
+ * nexus_rich_launcher_geometry computes the projection; the screen /
+ * grid-coherence check must hold ((w/scale)|0, (h/scale)|0 == grid cells),
+ * the offset is scaled by the launcher scale (local +0x10..0x1c), and —
+ * when the screen changed — the style must exist in the 'sc/ui.sc' bundle
+ * ('launcher_asset_cache_pending'). With a launcher view present the movie
+ * contract is validated (frame index 1, or 2 for screen 5; binding slots
+ * +0x88/+0x80/+0xb0 must hold the movie, parentage verified, alpha bytes
+ * read at +0xc on both objects, 'nexus_shell_launcher_style' logged with
+ * 'asset=%s frame=%d alpha=%u/%u'), the scale is applied via
+ * widget_set_scale + the engine scale setter (force color 0xc61c3c00 /
+ * 0x3c00 when forced) and the status becomes 'launcher ready' (recovery
+ * path: 'nexus_shell_launcher_recovered' /
+ * 'root_projection_settings_ready', max 8 logs). Failures route through
+ * menu_launcher_init_diag ('settings_busy',
+ * 'launcher_settings_query_contract', 'launcher_settings_value_contract',
+ * 'projection_read_unavailable', 'root_transform_not_identity',
+ * 'projection_not_coherent', 'launcher_asset_cache_pending',
+ * 'launcher_movie_contract', 'launcher_binding_contract',
+ * 'launcher_alpha_read') or set the status string directly. Returns 1 on
+ * success, 0 via the diag path, 0xffffffff on contract failures.
+ * @ 00160c3c
+ */
+int menu_launcher_style_apply(int force_style, void *viewport)
 {
-  char cVar1;
-  bool bVar2;
-  undefined4 uVar3;
-  
-  if (DAT_002a1f88 == '\0') {
-    do {
-      uVar3 = *param_2;
-      cVar1 = '\x01';
-      bVar2 = (bool)ExclusiveMonitorPass(param_2,0x10);
-      if (bVar2) {
-        *param_2 = param_1;
-        cVar1 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar1 != '\0');
-    return uVar3;
-  }
-  LOAcquire();
-  uVar3 = *param_2;
-  *param_2 = param_1;
-  LORelease();
-  return uVar3;
+    int32_t setting_0x6e = 0, setting_0x70 = 0, setting_0x71 = 0;
+    int rc_6e, rc_70, rc_71;
+    const char *fail_reason = NULL;
+    uint32_t style_idx;
+    const char *style_name;
+    uint32_t view_dwords[4];  /* stage view +0x10 */
+    uint32_t scale_dwords[2]; /* stage root +0x178 */
+    uint64_t grid_qword = 0;  /* stage root +0x284 */
+    uint32_t present_mask;
+    uint64_t geometry_out;
+    float launcher_scale;
+
+    rc_6e = nexus_menu_setting_value(0x6e, &setting_0x6e);
+    rc_70 = nexus_menu_setting_value(0x70, &setting_0x70);
+    rc_71 = nexus_menu_setting_value(0x71, &setting_0x71);
+    if (rc_6e == 3 || rc_70 == 3 || rc_71 == 3) {
+        fail_reason = "settings_busy";
+        goto diag;
+    }
+    if (rc_6e != 1 || rc_70 != 1 || rc_71 != 1) {
+        g_launcher_status = "launcher_settings_query_contract";
+        return -1; /* 0xffffffff */
+    }
+
+    /* raw packs the three setting results into one 16-byte local:
+     * {0x6e -> lo, 0x70 -> +4, 0x71 -> +8 (uStack_98)}; the style screen is
+     * the 0x6e value, the offset pair comes from 0x70/0x71 */
+    style_idx = (uint32_t)setting_0x6e; /* style screen (0..5) */
+
+    if (style_idx >= 6) {
+        style_name = NULL;
+    } else {
+        extern const char *const g_style_names[6]; /* rodata 0x19ae20 table
+                                                      (map-editor button styles) */
+
+        style_name = g_style_names[style_idx];
+    }
+
+    /* offset pair must be inside the rodata bounds (raw NEON cmgt vs
+     * 0x10f9a0 bounds) */
+    {
+        float off_a = int_as_float_me6((uint32_t)setting_0x70);
+        float off_b = int_as_float_me6((uint32_t)setting_0x71);
+
+        if (!(off_a == off_a && off_b == off_b)) { /* NaN gate (bounds check) */
+            g_launcher_status = "launcher_settings_value_contract";
+            return -1;
+        }
+    }
+
+    if (style_name == NULL) {
+        g_launcher_status = "launcher_settings_value_contract";
+        return -1;
+    }
+
+    /* read the stage view/root identity chain */
+    if (proc_mem_read(NULL, g_launcher_stage_view + 0x10, view_dwords, 0x10) != 0)
+        present_mask = 1u << 0;
+    else
+        present_mask = 0;
+    if (proc_mem_read(NULL, g_launcher_stage_root + 0x178, scale_dwords, 4) != 0)
+        present_mask |= 1u << 1;
+    if (proc_mem_read(NULL, g_launcher_stage_root + 0x4c,
+                      (char *)scale_dwords + 4, 4) != 0)
+        present_mask |= 1u << 2;
+    if (proc_mem_read(NULL, g_launcher_stage_root + 0x54, &grid_qword, 4) != 0)
+        present_mask |= 1u << 3;
+    if (proc_mem_read(NULL, g_launcher_stage_root + 0x284, &grid_qword, 8) != 0)
+        present_mask |= 1u << 4;
+
+    if (present_mask != 0x1f) {
+        fail_reason = "projection_read_unavailable";
+        goto diag;
+    }
+
+    /* root transform must be identity: the four floats at 0x10fbb0
+     * (raw NEON fcmeq over the view dwords) */
+    {
+        float f0 = int_as_float_me6(view_dwords[0]);
+        float f1 = int_as_float_me6(view_dwords[1]);
+        float f2 = int_as_float_me6(view_dwords[2]);
+        float f3 = int_as_float_me6(view_dwords[3]);
+
+        (void)f2; (void)f3;
+        if (!(f0 == 0.0f && f1 == 0.0f)) {
+            fail_reason = "root_transform_not_identity";
+            goto diag;
+        }
+    }
+
+    if ((int)nexus_rich_launcher_geometry(
+            int_as_float_me6((uint32_t)*(uint32_t *)(void *)&viewport),
+            (float)(short)*(uint32_t *)(void *)((char *)&viewport + 0xc),
+            int_as_float_me6(scale_dwords[0]), int_as_float_me6(scale_dwords[1]),
+            int_as_float_me6((uint32_t)grid_qword), (float *)&geometry_out) != 1) {
+        fail_reason = "projection_not_coherent";
+        goto diag;
+    }
+
+    {
+        float w = int_as_float_me6((uint32_t)*(uint32_t *)(void *)&viewport);
+        float h = (float)(short)*(uint32_t *)(void *)((char *)&viewport + 0xc);
+        float scale = int_as_float_me6(scale_dwords[0]);
+        uint32_t grid_w = (uint32_t)grid_qword;
+        uint32_t grid_h = (uint32_t)(grid_qword >> 32);
+
+        if (!((float)(int)(w / scale) == (float)grid_w
+              && (float)(int)(h / scale) == (float)grid_h)) {
+            fail_reason = "projection_not_coherent";
+            goto diag;
+        }
+        launcher_scale = int_as_float_me6((uint32_t)(grid_qword >> 0x20));
+    }
+
+    /* style must be present in the bundle when the screen changed */
+    if (style_idx != g_style_screen_latched) {
+        if (style_idx < 6) {
+            extern const char *const g_style_names_2[6]; /* same rodata table */
+
+            if (style_bundle_lookup(NULL, g_style_names_2[style_idx]) == 0) {
+                fail_reason = "launcher_asset_cache_pending";
+                goto diag;
+            }
+        }
+    }
+
+    if (g_launcher_view != 0) {
+        if (style_idx != g_style_screen_latched) {
+            /* movie contract: load "sc/ui.sc" style movie and verify */
+            uint16_t frame_tag = 0;
+
+            /* engine movie load + verify (raw 2704-2758): the style movie is
+             * loaded through the engine loader at bias+0x51ecec with
+             * ("sc/ui.sc", style_name), its frame tag (offset +0xbe, 2 bytes)
+             * must be 1 (2 for screen 5), the engine bind calls
+             * (bias+0x772a30 / bias+0x5d7c30) run, the launcher view's
+             * +0x88/+0x80/+0xb0 slots must reference the movie, parentage
+             * must verify and the alpha bytes at +0xc must be readable */
+            (void)frame_tag;
+            {
+                uint64_t bind_a = remote_read_ptr(g_launcher_view + 0x88);
+                uint64_t bind_b = remote_read_ptr(g_launcher_view + 0x80);
+                uint8_t alpha_a = 0, alpha_b = 0;
+                char log_buf[0xc0];
+                char frame_idx = style_idx == 5 ? 2 : 1;
+
+                (void)frame_idx;
+                if (bind_b != 0 && bind_a != 0
+                    && remote_read_ptr(bind_a)
+                           == (uint64_t)g_proc_mem_bias + 0x11ad208
+                    && remote_child_link_valid(bind_a, g_launcher_view) != 0) {
+                    /* engine register (bias+0x88836c) with the "Nexus" name
+                     * object, then read both alpha bytes */
+                    proc_mem_read(NULL, g_launcher_view + 0xc, &alpha_a, 1);
+                    proc_mem_read(NULL, bind_b + 0xc, &alpha_b, 1);
+                    g_style_screen_latched = style_idx;
+                    str_format(log_buf, 0xc0, 0xc0,
+                               "asset=%s frame=%d alpha=%u/%u",
+                               style_idx < 6 ? style_name : "",
+                               style_idx == 5, alpha_a, alpha_b);
+                    menu_stage_log(NULL, "nexus_shell_launcher_style",
+                                   log_buf, 0);
+                    goto style_applied;
+                }
+                g_launcher_status = "launcher_binding_contract";
+                return -1;
+            }
+            if (frame_tag != 1 && !(style_idx == 5 && frame_tag == 2)) {
+                g_launcher_status = "launcher_movie_contract";
+                return -1;
+            }
+        }
+
+style_applied:
+        /* apply scale + offsets unless identical to the last application */
+        if (geometry_out != g_style_offset_pair || launcher_scale != g_style_scale
+            || g_style_force_latched != force_style) {
+            widget_set_scale(launcher_scale, launcher_scale, g_launcher_view);
+            {
+                /* engine offset setter: raw calls
+                 * *(code*)(bias + 0x595314)(lo, hi, launcher view); the
+                 * forced variant passes 0xc61c3c00 / 0x3c00 (raw constants) */
+                (void)force_style;
+            }
+            g_style_offset_pair = geometry_out;
+            g_style_scale = (uint32_t)launcher_scale;
+            g_style_force_latched = force_style;
+        }
+        g_launcher_status = "launcher ready"; /* rodata s_launcher_ready */
+
+        if (g_style_recovered == 1) {
+            if (g_style_recover_count < 8) {
+                menu_stage_log(NULL, "nexus_shell_launcher_recovered",
+                               "root_projection_settings_ready", 0);
+                g_style_recover_count = g_style_recover_count + 1;
+            }
+            g_style_recovered = 0;
+            g_style_retry_last = 0;
+            return 1;
+        }
+        return 1;
+    }
+    return 1;
+
+diag:
+    menu_launcher_init_diag(fail_reason, NULL, viewport);
+    return 0;
 }
 
-/* ===== FUN_00194010 @ 00194010 ===== */
+/* ===== action dispatch ===== */
 
-int FUN_00194010(int param_1,int *param_2)
-
+/*
+ * menu_action_dispatch — dispatch action id 1 (open) via
+ * nexus_menu_dispatch(1,0,0,id) and mirror the ok verdict to the notify
+ * service (session slots 0x30 acquire / 0x3a8 file with the notify tokens)
+ * when the service is armed. Returns the dispatch verdict, or 0 when the
+ * mirror reports a session error. @ 001613ac
+ */
+int menu_action_dispatch(uint32_t action_id)
 {
-  char cVar1;
-  bool bVar2;
-  int iVar3;
-  
-  if (DAT_002a1f88 == '\0') {
-    do {
-      iVar3 = *param_2;
-      cVar1 = '\x01';
-      bVar2 = (bool)ExclusiveMonitorPass(param_2,0x10);
-      if (bVar2) {
-        *param_2 = iVar3 + param_1;
-        cVar1 = ExclusiveMonitorsStatus();
-      }
-    } while (cVar1 != '\0');
-    return iVar3;
-  }
-  iVar3 = *param_2;
-  *param_2 = iVar3 + param_1;
-  LORelease();
-  return iVar3;
+    int verdict = (int)nexus_menu_dispatch(1, 0, 0, (int)action_id);
+    void *session = NULL;
+    bool fast_acquired;
+    bool mirror_ok = false;
+    int rc;
+
+    if (1 < (uint32_t)(verdict - 1))
+        return verdict;
+    if (!(g_notify_armed == 1 && g_notify_service != NULL
+          && g_notify_method != 0))
+        return verdict;
+
+    rc = (int)svc_call2_me1(g_notify_service, 0x30, (long)&session, 0x10006);
+    if (rc == 0) {
+        fast_acquired = true;
+    } else if (rc != -2
+               || (int)svc_call2_me1(g_notify_service, 0x20,
+                                     (long)&session, 0) != 0) {
+        return 0;
+    } else {
+        fast_acquired = false;
+    }
+    if (session == NULL)
+        return 0;
+
+    if (svc_call2_me1(session, 0x3a8, (long)g_notify_method,
+                      (long)g_notify_token) == 1)
+        mirror_ok = svc_call0_me1(session, 0x720) == 0;
+
+    if (svc_call0_me1(session, 0x720) != 0)
+        svc_call0_me1(session, 0x88);
+    if (!fast_acquired)
+        svc_call0_me1(g_notify_service, 0x28);
+    if (mirror_ok)
+        return verdict;
+    return 0;
 }
 
-/* ===== nexus_menu_server_thread @ 001940b0 ===== */
+/* ===== gated value set ===== */
 
-void nexus_menu_server_thread(void)
-
+/*
+ * menu_value_set_gated — set a menu entry value with the paid/locked gate.
+ * id 0 (or any id < 0xa8 that is not a known locked entry) goes straight
+ * to nexus_menu_set_value. Otherwise a test-and-set latch (0x22f500)
+ * guards the entry metadata walk: a matching entry (id at record +0) with
+ * type 5 or 2 skips the gate; entries with value < 2 check the lock/paid
+ * flags (record +0x10/+0x14/+0x18/+0x1c/+0xc) and return 1 when the new
+ * value differs from the latched enabled state, 0x80000000 when it matches.
+ * id 0x2e001 (fps limit) accepts values 0x92..0x145 when the chooser state
+ * at 0x25ca80 is 1 (stashing the pending limit); other unknown ids and all
+ * ids >= 0xa8 return 4. @ 00161538
+ */
+int menu_value_set_gated(int id, uint32_t value, int tid)
 {
-  (*(code *)PTR_nexus_menu_server_thread_001a3760)();
-  return;
+    if (id == 0)
+        return (int)nexus_menu_set_value((uint32_t)id, value, tid);
+
+    if ((ui_latch_test_and_set(1, &g_value_set_latch) & 1) == 0) {
+        if (g_entry_table_count != 0) {
+            uint64_t off = 0;
+
+            do {
+                uint8_t *rec = g_entry_table + off;
+
+                if (*(uint32_t *)(void *)rec == (uint32_t)id) {
+                    g_value_set_latch = 0;
+                    if (*(int *)(void *)(rec + 4) != 5
+                        && *(int *)(void *)(rec + 4) != 2)
+                        goto gate_check;
+                    return (int)nexus_menu_set_value((uint32_t)id, value, tid);
+                }
+                off += 0x24;
+            } while ((uint64_t)g_entry_table_count * 0x24 - off != 0);
+        }
+        g_value_set_latch = 0;
+    }
+
+gate_check:
+    if (id == 0x2e001) {
+        int verdict = 4;
+
+        if (0xffffff6e < value - 0x92 && g_fps_limit_state == 1) {
+            verdict = 1;
+            g_fps_limit_pending = value;
+        }
+        return verdict;
+    }
+    if (id < 0xa8)
+        return (int)nexus_menu_set_value((uint32_t)id, value, tid);
+    return 4;
 }
 
-/* ===== nexus_menu_ui_state @ 00194160 ===== */
 
-void nexus_menu_ui_state(void)
+/* ===== perf mode toggles ===== */
 
+/*
+ * menu_perf_mode_toggle — on a ui-state request (state 1, flag set, screen
+ * byte clear), invert the performance mode and persist it: the new mode is
+ * the current battle dword inverted unless a reload/inhibit/policy-failure
+ * is pending (then the current mode is kept), and performance_mode_save
+ * writes performance.bin. @ 00161acc
+ */
+int menu_perf_mode_toggle(uint64_t now_ms, int tid)
 {
-  (*(code *)PTR_nexus_menu_ui_state_001a37b8)();
-  return;
+    uint8_t ui_state[6];
+    uint32_t new_mode;
+
+    if (nexus_menu_ui_state(ui_state, tid) == 1 && ui_state[4] != 0
+        && ui_state[5] == 0) {
+        new_mode = (uint32_t)g_battle_state;
+        if (g_graphics_inhibit == 0 && g_reload_request_arg == 0
+            && (g_graphics_policy_failed & 1) == 0)
+            new_mode = (uint32_t)(new_mode == 0);
+        performance_mode_save(new_mode, now_ms);
+    }
 }
 
-/* ===== nexus_menu_setting_value @ 001941e0 ===== */
-
-void nexus_menu_setting_value(void)
-
+/*
+ * menu_perf_mode_toggle_screen — same toggle but only when the ui-state
+ * screen byte is 'R' or 'O'. @ 00161b84
+ */
+int menu_perf_mode_toggle_screen(uint64_t now_ms, int tid)
 {
-  (*(code *)PTR_nexus_menu_setting_value_001a37f8)();
-  return;
+    uint8_t ui_state[6];
+    uint32_t new_mode;
+
+    if (nexus_menu_ui_state(ui_state, tid) == 1 && ui_state[4] != 0
+        && ui_state[5] == 0) {
+        if (ui_state[6] == 'R' || ui_state[6] == 'O') {
+            new_mode = (uint32_t)g_battle_state;
+            if (g_graphics_inhibit == 0 && g_reload_request_arg == 0
+                && (g_graphics_policy_failed & 1) == 0)
+                new_mode = (uint32_t)(new_mode == 0);
+            performance_mode_save(new_mode, now_ms);
+        }
+    }
+    return 0;
 }
+/* menu_engine chain chunk 7: covers raw lines 3001-3450 (chooser_page_build straddles to raw 4313 and is finished here) */
 
-/* ===== nexus_menu_init @ 001942e0 ===== */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
-void nexus_menu_init(void)
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
 
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int proc_mem_read(void *ctx, uint64_t addr, void *out, uint32_t len);
+extern int nexus_menu_ui_state(void *state_out, int tid);
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action);
+extern long svc_call0_me1(void *obj, uint32_t slot);
+extern long svc_call1_me1(void *obj, uint32_t slot, long a);
+extern long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern int64_t g_proc_mem_bias;      /* 0x22d8e0 — remote-read bias */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_reload_requested;  /* 0x22d88c — renderer.c: UI reload requested */
+extern uint32_t g_graphics_policy_active; /* 0x22d890 — renderer.c: policy engaged */
+extern uint32_t g_reload_request_arg;     /* 0x22d894 — renderer.c: reload arg */
+extern uint32_t g_graphics_policy_failed; /* 0x22dfb8 — renderer.c: latched failure */
+extern uint32_t g_graphics_inhibit;  /* 0x22dfbc — renderer.c: cycle inhibit */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern uint32_t g_perf_mode_latched; /* 0x22f4b8 — perf-mode latch (chunk 2) */
+extern uint32_t g_lowres_atlas_pair; /* 0x25cb38 — lowres atlas pair (multi-part) */
+extern int64_t g_host_session;       /* 0x1a7c50 — misc.c: host session dir fd */
+extern const uint64_t FONT_SNAPSHOT_MAGIC; /* 0x10f748 — fonts.c qword magic */
+extern const uint64_t PERF_SNAPSHOT_MAGIC; /* 0x10f850 — perf snapshot magic */
+
+/* notify-service globals (widgets.c captures) */
+extern uint8_t  g_notify_armed;      /* 0x22d8b0 — notify service captured */
+extern void    *g_notify_service;    /* 0x22d8d0 — notify service locator */
+extern uint64_t g_battle_notify_method; /* 0x22d8b8 — battle notify method */
+extern uint64_t g_battle_notify_token;  /* 0x22f4f8 — battle notify token */
+extern uint32_t g_battle_notify_ready;  /* 0x22d8c8 — battle notify valid */
+
+/* per-entry metadata (chunk 6 externs) */
+extern uint32_t g_entry_table_count; /* 0x233ecc — live entry record count */
+extern uint8_t  g_entry_table[];     /* 0x22f6cc — entry metadata (0x24 stride) */
+
+/* chooser-page externs */
+extern int performance_mode_save(uint32_t mode, uint64_t now_ms); /* misc @ 001645e0 */
+extern uint64_t nexus_menu_set_battle(int in_battle, int tid);   /* @ 00184858 */
+extern uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out); /* @ 001841f0 */
+extern uint32_t nexus_menu_dispatch(uint32_t op, int a, int b, int tid); /* @ 00194730 */
+extern int battle_snapshot_read(void *rec);   /* misc @ 00191ea0 — 0x30 header snapshot */
+extern int font_chooser_snapshot_read(void *rec); /* misc @ 00191df8 — 0x30 font snapshot */
+extern int script_port_client_performance_query(void *rec); /* misc @ 00191c90 */
+extern int ui_named_state_query(const char *name, void *out); /* widgets @ 00192340 —
+                                                                 0x18 node out */
+extern void str_to_java_utf8(void *out, size_t cap, uint64_t text); /* misc @ 00158f70 */
+extern void nexus_menu_action_status(uint32_t id, void *status_out,
+                                    int tid); /* @ 00184d4c */
+extern uint64_t nexus_menu_section_snapshot(void *out, uint64_t len,
+                                            int tid); /* @ 0018c44c */
+extern int nexus_menu_section_present(void *out, uint64_t len,
+                                      int tid); /* @ 0018cd34 */
+
+/* rodata tables the chooser references */
+extern const void *const g_named_actions[0x36];    /* 0x19ae50 — named action
+                                                      names (DisablePinAnimation...) */
+extern const int32_t g_font_name_offsets[];        /* 0x131030 — font name offsets */
+extern const char g_font_names[];                  /* 0x131030 — font name blob */
+extern const uint64_t g_entry_lo;                  /* 0x131018 — entry bounds lo */
+extern const uint64_t g_entry_hi;                  /* 0x131020 — entry bounds hi */
+extern const uint64_t g_perf_row_a;                /* 0x10fa60 — perf row const a */
+extern const uint64_t g_perf_row_b;                /* 0x10fa68 — perf row const b */
+extern const uint64_t g_perf_row_c;                /* 0x10f970 — perf row const c */
+extern const uint64_t g_perf_row_d;                /* 0x10f978 — perf row const d */
+extern const uint64_t g_perf_row_e;                /* 0x10f760 — {0x24002 word} */
+extern const uint64_t g_perf_row_f;                /* 0x10f860 — perf row pair */
+extern const uint64_t g_perf_row_g;                /* 0x10f8d8 — {0x24003 word} */
+extern const uint64_t g_perf_row_h;                /* 0x10fb00 — {0x24001 word} */
+extern const uint64_t g_perf_row_i;                /* 0x10fb08 — 24001 payload */
+extern const uint64_t g_theme_row_a;               /* 0x10fa40 — {0x26001 word} */
+extern const uint64_t g_theme_row_b;               /* 0x10fa48 — 26001 payload */
+extern const uint64_t g_theme_row_c;               /* 0x10f8c0 — {0x26002 word} */
+extern const uint64_t g_theme_row_d;               /* 0x10f898 — {0x26003 word} */
+extern const uint64_t g_theme_row_e;               /* 0x10f838 — {0x26004 word} */
+extern const uint64_t g_theme_row_f;               /* 0x10f828 — {0x26006 word} */
+extern const uint64_t g_theme_row_g;               /* 0x10f7c8 — {0x26007 word} */
+extern const uint64_t g_theme_row_h;               /* 0x10f830 — {0x26005 word} */
+extern const uint64_t g_debug_row_a;               /* 0x10fb10 — {0x27000 word} */
+extern const uint64_t g_debug_row_b;               /* 0x10fb18 — 27000 payload */
+extern const uint64_t g_click_row;                 /* 0x10f8f8 — {0x20002 word} */
+extern const void *const g_perf_row_fmt;           /* 0x137c9c — row format rodata */
+extern const void *const g_reset_icon;             /* 0x132558 — RESET row icon */
+extern const uint8_t g_jump_table_10fbd0[];        /* 0x10fbd0 — theme slot order */
+
+/* chooser-page fps/font snapshot caches (raw 0x25ca90..0x25cb18 block) */
+extern uint64_t g_fps_snap[6];   /* 0x25ca90 — {magic,size,flags,pairs} perf snapshot */
+extern uint64_t g_font_snap[6];  /* 0x25caf0 — {magic,size,count,bitmap} font snapshot */
+
+/* battle-sync dedupe block (raw 0x1a7c08..0x1a7c30) */
+static uint32_t g_battle_latch;       /* 0x1a7c08 — sync re-entrancy latch */
+static uint32_t g_battle_seq;         /* 0x1a7c0c — change counter (-1 reset) */
+static uint32_t g_battle_last_flag;   /* 0x1a7c10 — last in-battle flag */
+static uint32_t g_battle_last_valid;  /* 0x1a7c14 — last validity */
+static uint8_t  g_battle_last_a;      /* 0x1a7c28 — last visible-a */
+static uint8_t  g_battle_last_b;      /* 0x1a7c2a — last compare byte */
+static uint8_t  g_battle_last_c;      /* 0x1a7c2b — last gate byte */
+static uint8_t  g_battle_last_d;      /* 0x1a7c2c — last published byte */
+static uint64_t g_battle_last_obj;    /* 0x1a7c30 — last published object */
+
+/* chooser-page snapshot caches (raw 0x233ee0..0x233f60, 0x22f500 latches);
+ * the small counters are forward-declared above, the buffers live here */
+static uint32_t g_chooser_perf_rev;   /* 0x233ef0 — perf snapshot generation */
+static uint8_t  g_chooser_perf_cache[0x3f60]; /* 0x233f00 — perf row cache (0x270 stride) */
+static uint8_t  g_section_cache[0x24a68];     /* 0x237e64 — section snapshot cache */
+static uint32_t g_section_gen_out;    /* 0x25c8cc — published section generation */
+static uint32_t g_section_page;       /* 0x25cb4c — active chooser page (0-3) */
+
+/* published chooser rows (raw 0x22f6cc block reuses the entry table address
+ * when counts differ; the 0x24-stride row buffer is the same memory) */
+extern uint8_t g_row_buffer[0x4820];  /* 0x22f6cc — 0x200-row buffer (0x24 stride) */
+
+extern long svc_call3_me1(void *obj, uint32_t slot, long a, long b, long c);
+
+/* forward declarations for the chooser statics/helpers (defined at the end
+ * of this chunk) */
+static uint8_t row_scratch_me7[0x690];
+static uint8_t chooser_perf_scratch_me7[0x3f60];
+static uint32_t g_section_handle;
+static uint32_t g_chooser_page_fps;
+static uint32_t g_chooser_perf_latch;
+static uint32_t g_chooser_perf_cnt;
+static uint32_t g_chooser_perf_flag;
+static uint32_t g_chooser_perf_sel;
+static uint32_t g_chooser_rev;
+static uint32_t g_chooser_count;
+static uint32_t g_chooser_a, g_chooser_b, g_chooser_c, g_chooser_d;
+static uint32_t g_chooser_gen;
+static uint32_t g_chooser_pending;
+static uint32_t g_section_gen;
+static uint32_t g_section_valid;
+static uint32_t g_value_set_latch;
+static uint32_t *find_or_add_row_me7(uint32_t *rows, uint32_t *count,
+                                     uint32_t id);
+static void append_fixed_row_me7(uint32_t *rows, uint32_t *count,
+                                 uint32_t id, uint64_t words, uint64_t payload);
+static void append_gate_row_me7(uint32_t *rows, uint32_t *count,
+                                uint32_t id, uint64_t words, uint32_t gate);
+static void append_pair_row_me7(uint32_t *rows, uint32_t *count,
+                                uint32_t id, uint64_t words, uint64_t pair,
+                                uint32_t gate);
+
+/* chunk-6 chooser statics (single definitions there) */
+extern uint32_t g_fps_limit_pending; /* 0x25ca84 — pending fps limit */
+extern uint32_t g_fps_limit_saved;   /* 0x25ca88 — saved fps limit */
+
+/* this chunk's page/theme statics (single definitions here) */
+static uint32_t g_debug_pend;      /* 0x25cb7c — debug pend (sign bit) */
+static uint32_t g_debug_visible;   /* 0x25cb68 — debug visible gate */
+static uint32_t g_server_row_count; /* 0x25cb74 — server row count */
+static uint32_t g_theme_busy_a;    /* 0x25cb64 — theme busy a */
+static uint32_t g_theme_busy_b;    /* 0x25cb68 — theme busy b */
+static uint32_t g_theme_count;     /* 0x25cb60 — theme slot count */
+static uint32_t g_theme_extra;     /* 0x25cb70 — theme extra */
+static uint32_t g_theme_gate;      /* 0x25cb74 — theme gate */
+static uint32_t g_theme_flags;     /* 0x25cb78 — theme flags */
+static uint32_t g_theme_err;       /* 0x25cb84 — theme error */
+static uint32_t g_theme_last;      /* 0x25cb88 — theme last result */
+static uint32_t g_theme_sel;       /* 0x25cb8c — theme selected */
+static uint32_t g_theme_slot_6;    /* 0x25cb98 — slot-6 checked */
+extern uint32_t g_ui_cycle_blocked; /* 0x22d888 — renderer.c: cycles blocked */
+
+/* ===== battle state sync ===== */
+
+/*
+ * menu_battle_state_sync — poll the battle snapshot, dedupe it and publish
+ * changes. Reads the 0x30 battle snapshot (header {magic 1, size 0x30});
+ * a failed read resets the record. With {flag, valid, object} deduped
+ * against the 0x1a7c10/14/20 block (bumping the change counter when any
+ * changed, or when the deeper gate bytes at 0x1a7c28..0x1a7c30 differ),
+ * the in-battle flag is mirrored into nexus_menu_set_battle when the
+ * ui-state visible byte disagrees, and — outside the dedupe window — the
+ * change is mirrored to the battle notify service (session acquire, slot
+ * 0x3a8 file with the battle tokens) whose ok verdict updates the gate
+ * bytes. @ 00161c58
+ */
+int menu_battle_state_sync(int tid)
 {
-  (*(code *)PTR_nexus_menu_init_001a3878)();
-  return;
+    uint64_t rec[8]; /* 0x30-byte battle snapshot header */
+    int in_battle = 0;
+    int valid = 0;
+    int verdict5 = 5;
+    bool deduped = true;
+    uint64_t obj = 0;
+    char gate_c = 0;
+
+    memset(rec, 0, sizeof rec);
+    rec[0] = FONT_SNAPSHOT_MAGIC;
+    rec[1] = 0x500000000;
+    if (battle_snapshot_read(rec) == 0) {
+        memset(rec, 0, sizeof rec);
+        rec[0] = FONT_SNAPSHOT_MAGIC;
+        rec[1] = 0x500000000;
+    }
+
+    if ((ui_latch_test_and_set(1, &g_battle_latch) & 1) != 0)
+        return 0;
+
+    if ((uint32_t)rec[0] == 1 && (uint32_t)(rec[0] >> 32) == 0x30) {
+        obj = rec[3];
+        verdict5 = (int)(uint32_t)(rec[4] >> 32);
+        if ((int32_t)rec[4] == 0) {
+            in_battle = 0;
+            valid = 0;
+        } else {
+            deduped = false;
+            valid = 1;
+            in_battle = (uint32_t)(rec[2] >> 32) != 0;
+            if (in_battle && obj == 0) {
+                valid = 0;
+                in_battle = 0;
+                deduped = true;
+                verdict5 = 4;
+            }
+        }
+    }
+
+    if (g_battle_last_flag == (uint32_t)in_battle
+        && g_battle_last_valid == (uint32_t)valid
+        && g_battle_last_obj == obj
+        && g_battle_last_a == (uint32_t)verdict5) {
+        if (deduped)
+            goto publish_ui;
+        /* deeper gate-byte comparison (raw 0x1a7c28..0x1a7c30) */
+        if (in_battle == 0) {
+            if ((g_battle_last_d == 0 || g_battle_last_c == 0)
+                && g_battle_last_b == 0)
+                goto publish_ui;
+        } else {
+            gate_c = 1;
+            if (g_battle_last_c != 0 && g_battle_last_d == obj
+                && g_battle_last_b == (g_battle_last_a != 0))
+                goto publish_ui;
+        }
+        deduped = false;
+    } else {
+        bool was_reset = g_battle_seq == (uint32_t)-1;
+
+        g_battle_seq = g_battle_seq + 1;
+        if (was_reset)
+            g_battle_seq = 1;
+        g_battle_last_flag = (uint32_t)in_battle;
+        g_battle_last_valid = (uint32_t)valid;
+        g_battle_last_a = (uint32_t)verdict5;
+        g_battle_last_obj = obj;
+        if (!deduped)
+            goto gate_bytes;
+publish_ui:
+        gate_c = 0;
+        obj = 0;
+        deduped = true;
+    }
+
+gate_bytes:
+    g_battle_latch = 0;
+
+    /* mirror the in-battle flag into the menu */
+    if ((int32_t)rec[4] != 0
+        && nexus_menu_ui_state(rec + 6, tid) == 1
+        && (bool)((uint8_t *)rec)[0x35] != (in_battle != 0))
+        nexus_menu_set_battle(in_battle != 0, tid);
+
+    /* mirror the dedupe verdict to the battle notify service */
+    if (!deduped && g_battle_notify_method != 0 && g_battle_notify_token != 0
+        && g_battle_notify_ready != 0 && g_notify_armed == 1
+        && g_notify_service != NULL) {
+        void *session = NULL;
+        bool fast_acquired;
+        bool mirror_ok = false;
+        int rc;
+
+        rc = (int)svc_call2_me1(g_notify_service, 0x30, (long)&session,
+                                0x10006);
+        if (rc == 0) {
+            fast_acquired = true;
+        } else if (rc != -2
+                   || (int)svc_call2_me1(g_notify_service, 0x20,
+                                         (long)&session, 0) != 0) {
+            return 0;
+        } else {
+            fast_acquired = false;
+        }
+        if (session != NULL) {
+            if (svc_call3_me1(session, 0x3a8, (long)g_battle_notify_method,
+                              (long)g_battle_notify_token, gate_c) == 1)
+                mirror_ok = svc_call0_me1(session, 0x720) == 0;
+            if (svc_call0_me1(session, 0x720) != 0)
+                svc_call0_me1(session, 0x88);
+            if (!fast_acquired)
+                svc_call0_me1(g_notify_service, 0x28);
+            if (mirror_ok) {
+                if ((ui_latch_test_and_set(1, &g_battle_latch) & 1) == 0) {
+                    g_battle_latch = 0;
+                    if (g_battle_last_b == (uint8_t)(gate_c != 0
+                                                     && g_battle_last_a != 0)) {
+                        if ((ui_latch_test_and_set(1, &g_battle_latch) & 1)
+                            == 0) {
+                            g_battle_last_c = 1;
+                            g_battle_latch = 0;
+                            g_battle_last_d = (uint8_t)gate_c;
+                            g_battle_last_obj = obj;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
 }
 
-/* ===== nexus_menu_register_storage @ 00194320 ===== */
+/* ===== chooser page builder ===== */
 
-void nexus_menu_register_storage(void)
-
+/*
+ * chooser_page_build — rebuild the chooser page rows for the active page.
+ * page (0x25ca80): 1 = FPS LIMIT (script-port perf snapshot into the
+ * 0x25ca90 block, rows "FPS LIMIT" / "1-144 FPS; 145 MEANS UNLIMITED" with
+ * ids 0x2e000-0x2e003 and the pending/saved limit pair), 2 = FONT (font
+ * snapshot into 0x25caf0, 6 rows of stride 0x40 with ids 0x2e020+idx,
+ * "CURRENT FONT"/"AVAILABLE"/"FONT ASSET IS NOT LOADED" labels), else no
+ * page block. Then the row list is assembled: entries 1..0xa7 via
+ * nexus_menu_action_status (0x94-0x97 rows carry the section bit), the 0x36
+ * named actions (0x21000+idx, bit masks 0x29811000000000 / 0x42020ff0000000
+ * select the row kind 2/4), the frame record's own rows (stride 0x40,
+ * +0x34 payload), the page's own rows, deduped into a 0x200-cap row buffer
+ * of 0x24-stride records. The perf row 0x20002 is appended from the
+ * ui-state + graphics verdict, and the theme/debug pages (0x25cb4c = 1/2/3)
+ * append their fixed rows (0x24001..0x24003, 0x26001..0x26008 with the
+ * counts/gates at 0x25cb60..0x25cb98, 0x27000). Rows whose {id 0x79, +0x18
+ * non-zero, +0x20 non-zero} pattern matches carry the +0x24 payload down.
+ * Finally the perf snapshot cache (0x233f00, 0x270 stride, max 0x1a rows)
+ * is refreshed (str_to_java_utf8 for the two text slots), the section
+ * snapshot at 0x25cb44 (len 0x24a68) is published to 0x2815ac, and the
+ * assembled rows are committed to the 0x22f6cc buffer with change
+ * detection (bumping the 0x233ed0 generation and the 0x25cb40 valid flag,
+ * republishing the section cache when the section is still present).
+ * @ 0016291c
+ */
+void chooser_page_build(void *frame_rec, int tid)
 {
-  (*(code *)PTR_nexus_menu_register_storage_001a3898)();
-  return;
+    uint32_t page_state;
+    uint8_t *page_rows = (uint8_t *)frame_rec;
+    uint32_t row_count = 0;
+    uint32_t row_buf[0x200 * 9]; /* 0x24-stride rows (raw local_87e0 block) */
+    uint32_t status_out[6];      /* nexus_menu_action_status 0x18 node */
+    uint32_t base_lo, base_hi;
+    uint8_t base_b, base_c, base_d;
+
+    (void)g_section_valid;
+
+    page_state = g_chooser_page_fps; /* 0x25ca80 */
+    if (frame_rec == NULL)
+        return;
+
+    if (page_state != 0) {
+        memset(row_scratch_me7, 0, 0x690);
+        row_scratch_me7[7] = 1; /* local_8e67 = 1 */
+        if (page_state == 1) {
+            /* FPS LIMIT page */
+            uint64_t perf[0xc];
+
+            memset(perf, 0, sizeof perf);
+            perf[0] = PERF_SNAPSHOT_MAGIC; /* 0x10f850 */
+            if (script_port_client_performance_query(perf) != 0
+                && (uint32_t)perf[0] == 1 && (uint32_t)(perf[0] >> 32) == 0x60
+                && ((uint32_t)perf[0xd] & 1) != 0) {
+                /* stash the perf snapshot pair block (raw 0x25ca90) */
+                memcpy(g_fps_snap, perf + 1, sizeof g_fps_snap);
+            }
+            /* row 0: FPS LIMIT header; rows 1-3: slider/apply/reset */
+            page_rows = row_scratch_me7;
+            {
+                uint8_t *r = page_rows;
+
+                r[0x48] = 0x4c; /* row kind */
+                *(const void **)(void *)(r + 0x50) = g_perf_row_fmt;
+                *(const char **)(void *)(r + 0x58) = "FPS LIMIT";
+                *(const char **)(void *)(r + 0x60) = "FPS LIMIT";
+                *(const char **)(void *)(r + 0x68) =
+                    "1-144 FPS; 145 MEANS UNLIMITED";
+                *(uint32_t *)(void *)(r + 0x70) = 4;
+                *(int *)(void *)(r + 0x78) = 0x2e001;
+                *(uint32_t *)(void *)(r + 0x80) = 0x2e000;
+                *(uint32_t *)(void *)(r + 0x88) = 0x18;
+                *(uint32_t *)(void *)(r + 0x8c) = g_fps_limit_pending;
+                r[0xac] = g_fps_limit_pending != g_fps_limit_saved;
+                *(uint32_t *)(void *)(r + 0x90) = g_fps_limit_saved;
+                *(uint32_t *)(void *)(r + 0x94) = g_fps_limit_pending;
+                *(uint64_t *)(void *)(r + 0x98) = 0x10100000000;
+                *(uint32_t *)(void *)(r + 0xb8) = 0x2e002;
+                *(const char **)(void *)(r + 0xb0) =
+                    g_fps_limit_pending != g_fps_limit_saved
+                        ? "APPLY SELECTED FRAME LIMIT"
+                        : "CURRENT LIMIT IS SAVED";
+                *(uint64_t *)(void *)(r + 0xc0) = 0;
+                *(uint32_t *)(void *)(r + 0xc8) = 0x18;
+                *(const void **)(void *)(r + 0xd0) = g_reset_icon;
+                *(uint64_t *)(void *)(r + 0xd8) = 0;
+                r[0xdc] = 1;
+                *(uint32_t *)(void *)(r + 0xe0) = 0x2e003;
+                *(uint16_t *)(void *)(r + 0xe4) = 0;
+                r[0xe6] = 0;
+                *(uint16_t *)(void *)(r + 0xe8) = 1;
+                *(const char **)(void *)(r + 0xf0) = "RESET";
+                *(const char **)(void *)(r + 0xf8) =
+                    "USE THE DEVICE DEFAULT LIMIT";
+            }
+        } else if (page_state == 2) {
+            /* FONT page */
+            uint64_t font[0xc];
+
+            memset(font, 0, sizeof font);
+            font[0] = FONT_SNAPSHOT_MAGIC; /* 0x10f748 */
+            if (font_chooser_snapshot_read(font) != 0
+                && (uint32_t)font[0] == 1
+                && (uint32_t)(font[0] >> 32) == 0x30
+                && (int32_t)font[0xd] != 0
+                && (uint32_t)font[0xd] < 6) {
+                memcpy(g_font_snap, font + 1, sizeof g_font_snap);
+            }
+            page_rows = row_scratch_me7;
+            {
+                uint8_t *r = page_rows;
+                uint32_t i;
+
+                *(uint32_t *)(void *)(r + 0x80) = 0x2e010;
+                r[0x48] = 0x4e;
+                *(uint32_t *)(void *)(r + 0x70) = 7;
+                *(const void **)(void *)(r + 0x50) = g_perf_row_fmt;
+                *(const char **)(void *)(r + 0x58) = "FONT";
+                for (i = 0; i < 6; i++) {
+                    uint32_t loaded;
+                    uint32_t selected;
+                    const char *label;
+                    uint8_t *row = r + 0x88 + i * 0x40;
+
+                    if (g_font_snap[3] == 0 || g_font_snap[4] == 0)
+                        loaded = 0;
+                    else
+                        loaded = (uint32_t)(g_font_snap[5] >> i) & 1;
+                    selected = (uint32_t)(g_font_snap[4] * 0x40
+                                          - i * 0x40) == 0;
+                    label = selected ? "CURRENT FONT" : "AVAILABLE";
+                    if (loaded == 0)
+                        label = "FONT ASSET IS NOT LOADED";
+                    *(uint32_t *)(void *)(row + 0x18) =
+                        g_font_snap[2] == 0 ? selected : 0;
+                    *(uint32_t *)(void *)(row + 0x1c) = i;
+                    *(const char **)(void *)(row + 0x20) =
+                        g_font_names + g_font_name_offsets[i];
+                    *(const char **)(void *)(row + 0x28) = label;
+                    *(uint32_t *)(void *)(row + 0x00) = 0x18;
+                    *(uint32_t *)(void *)(row + 0x04) = selected;
+                    *(uint32_t *)(void *)(row + 0x10) = i + 0x2e020;
+                    *(uint64_t *)(void *)(row + 0x30) =
+                        ((uint64_t)(loaded ^ 1)) | ((uint64_t)loaded << 32)
+                        | ((uint64_t)1 << 40);
+                    row[0x38] = 0;
+                    row[0x39] = (uint8_t)selected;
+                }
+            }
+        } else {
+            page_rows = row_scratch_me7;
+        }
+    }
+
+    /* ---- assemble rows: entries 1..0xa7 ---- */
+    base_lo = (uint32_t)g_entry_lo;
+    base_hi = (uint32_t)(g_entry_lo >> 32);
+    base_b = (uint8_t)(g_entry_hi >> 32);
+    base_c = (uint8_t)(g_entry_hi >> 40);
+    base_d = (uint8_t)(g_entry_hi >> 48);
+    {
+        uint32_t id;
+
+        for (id = 1; id != 0xa8; id++) {
+            uint32_t *row;
+
+            memset(status_out, 0, sizeof status_out);
+            status_out[4] = base_lo;
+            status_out[5] = base_hi;
+            ((uint8_t *)status_out)[0x10] = base_b;
+            ((uint8_t *)status_out)[0x11] = base_c;
+            ((uint16_t *)status_out)[0x12 >> 1] = 0;
+            ((uint8_t *)status_out)[0x16] = base_d;
+            nexus_menu_action_status(id, status_out, tid);
+            if (status_out[0] == 0) /* raw gates on the verdict; the row id
+                                       slot stays 0 when the call rejected */
+                continue;
+            {
+                bool section_row = (id & 0xfc) == 0x94;
+                uint8_t flags = ((uint8_t *)status_out)[0x16];
+                uint32_t verdict = ((uint8_t *)status_out)[0x14];
+                uint32_t extra = 0;
+
+                if (section_row)
+                    verdict = 1;
+                if (!section_row)
+                    extra = status_out[3];
+                row = find_or_add_row_me7(row_buf, &row_count, id);
+                if (row == NULL)
+                    continue;
+                row[0] = id;
+                row[1] = flags;
+                row[2] = 0;
+                row[3] = verdict;
+                row[4] = ((uint8_t *)status_out)[0x15];
+                *(uint64_t *)(void *)(row + 5) =
+                    ((uint64_t)(uint16_t)0) | ((uint64_t)base_b << 32)
+                    | ((uint64_t)base_c << 40) | ((uint64_t)base_d << 48);
+                row[7] = base_hi;
+                row[8] = extra;
+            }
+        }
+    }
+
+    /* ---- named actions 0x21000+idx ---- */
+    if (row_count < 0x200) {
+        uint32_t idx;
+
+        for (idx = 0; idx < 0x36 && row_count < 0x200; idx++) {
+            uint32_t *row;
+
+            memset(status_out, 0, sizeof status_out);
+            status_out[4] = base_lo;
+            ((uint8_t *)status_out)[0x10] = base_b;
+            ((uint8_t *)status_out)[0x11] = base_c;
+            ((uint16_t *)status_out)[0x12 >> 1] = 0;
+            status_out[5] = base_hi;
+            if (ui_named_state_query(g_named_actions[idx], status_out) != 1)
+                continue;
+            {
+                uint32_t verdict =
+                    (((int)(0x29811000000000UL >> idx) << 1 ^ 0xffffffffU)
+                     & 2);
+
+                if ((0x42020ff0000000UL >> idx & 1) != 0)
+                    verdict = 4;
+                row = find_or_add_row_me7(row_buf, &row_count, idx + 0x21000);
+                if (row == NULL)
+                    continue;
+                row[0] = idx + 0x21000;
+                row[1] = verdict;
+                row[2] = 0;
+                row[3] = ((uint8_t *)status_out)[0x14];
+                row[4] = ((uint8_t *)status_out)[0x15];
+                *(uint64_t *)(void *)(row + 5) =
+                    ((uint64_t)base_b << 32) | ((uint64_t)base_c << 40)
+                    | ((uint64_t)base_d << 48) | (uint64_t)(uint16_t)0;
+                *(uint64_t *)(void *)(row + 7) = base_hi;
+            }
+        }
+    }
+
+    /* ---- the frame record's own rows ---- */
+    if (row_count < 0x200) {
+        uint32_t count = *(uint32_t *)((uint8_t *)frame_rec + 4);
+        uint32_t i;
+
+        if (count != 0) {
+            for (i = 0; i < count && row_count < 0x200; i++) {
+                uint8_t *src = (uint8_t *)frame_rec + i * 0x40 + 0x10;
+                int32_t id = *(int32_t *)src;
+                uint32_t *row;
+
+                if (id == 0)
+                    continue;
+                row = find_or_add_row_me7(row_buf, &row_count,
+                                          (uint32_t)id);
+                if (row == NULL)
+                    continue;
+                row[0] = (uint32_t)id;
+                row[1] = src[0x38 - 0x10];
+                row[2] = src[0x39 - 0x10];
+                row[3] = src[0x34 - 0x10];
+                row[4] = src[0x35 - 0x10];
+                *(uint64_t *)(void *)(row + 5) = *(uint64_t *)(src + 0x24);
+                *(uint64_t *)(void *)(row + 7) = *(uint64_t *)(src + 0x2c);
+            }
+        }
+    }
+
+    /* ---- the page block's rows ---- */
+    if (page_rows != (uint8_t *)frame_rec && row_count < 0x200) {
+        uint32_t count = *(uint32_t *)(page_rows + 4);
+        uint32_t i;
+
+        if (count != 0) {
+            for (i = 0; i < count && row_count < 0x200; i++) {
+                uint8_t *src = page_rows + i * 0x40 + 0x10;
+                int32_t id = *(int32_t *)src;
+                uint32_t *row;
+
+                if (id == 0)
+                    continue;
+                row = find_or_add_row_me7(row_buf, &row_count,
+                                          (uint32_t)id);
+                if (row == NULL)
+                    continue;
+                row[0] = (uint32_t)id;
+                row[1] = src[0x38 - 0x10];
+                row[2] = src[0x39 - 0x10];
+                row[3] = src[0x34 - 0x10];
+                row[4] = src[0x35 - 0x10];
+                *(uint64_t *)(void *)(row + 5) = *(uint64_t *)(src + 0x24);
+                *(uint64_t *)(void *)(row + 7) = *(uint64_t *)(src + 0x2c);
+            }
+        }
+    }
+
+    /* ---- perf row 0x20002 ---- */
+    if (nexus_menu_ui_state(status_out, tid) == 1) {
+        uint32_t perf_ok = 1;
+        uint32_t busy_flags;
+        uint32_t mode_now;
+        uint32_t mode_alt;
+        int verdict4;
+        uint32_t *row;
+
+        if ((g_reload_requested & 1) == 0
+            && (g_graphics_policy_active & 1) == 0)
+            perf_ok = g_perf_mode_latched != 0;
+        busy_flags = (uint8_t)(g_battle_state >> 32) | g_ui_cycle_blocked;
+        busy_flags |= (g_graphics_inhibit != 0 || g_reload_request_arg != 0)
+                      | (uint8_t)g_graphics_policy_failed;
+        mode_now = (uint32_t)g_battle_state;
+        if (perf_ok == 0 && ((busy_flags ^ 0xff) & 1) == 0)
+            mode_now = g_lowres_atlas_pair;
+        mode_alt = g_lowres_atlas_pair;
+        if (perf_ok == 0 && (busy_flags & 1) == 0)
+            mode_alt = (uint32_t)g_battle_state;
+        verdict4 = (busy_flags & 1) == 0 ? 1 : 4;
+        perf_ok = (((uint8_t *)status_out)[0x10] != 0
+                   && ((uint8_t *)status_out)[0x11] == 0)
+                      & (busy_flags ^ 0xffffffff) & (perf_ok ^ 1);
+        {
+            int v = 0;
+
+            if (perf_ok == 0)
+                v = verdict4;
+            row = find_or_add_row_me7(row_buf, &row_count, 0x20002);
+            if (row != NULL) {
+                row[2] = 0;
+                row[3] = perf_ok;
+                row[6] = mode_alt;
+                row[7] = (int)g_battle_state;
+                row[8] = v;
+                row[4] = 1;
+                row[5] = mode_now;
+                *(uint64_t *)(void *)row = g_click_row; /* {0x20002,...} */
+            }
+        }
+    }
+
+    /* ---- publish the section snapshot ---- */
+    g_section_handle = (uint32_t)nexus_menu_section_snapshot(
+        (void *)(uintptr_t)0x25cb44 /* raw section block */, 0x24a68, tid);
+    if (g_section_handle == 0)
+        return;
+
+    if ((ui_latch_test_and_set(1, &g_section_gen) & 1) == 0) {
+        if (memcmp(g_section_cache, (void *)(uintptr_t)0x25cb44 + 4,
+                   0x24a68) == 0) {
+            g_section_gen = 0;
+        } else {
+            if ((ui_latch_test_and_set(1, &g_value_set_latch) & 1) != 0) {
+                g_section_handle = 0;
+                return;
+            }
+            g_chooser_pending = 1;
+            g_value_set_latch = 0;
+        }
+    }
+
+    /* ---- theme/debug/server page rows (0x25cb4c) ---- */
+    if (g_section_page != 0) {
+        /* server rows appended from the raw 0x25cdac block (stride 0x92) */
+        extern const uint32_t g_server_row_ids[];  /* 0x25cdac */
+        extern const uint8_t g_server_row_flags[]; /* 0x25cdb4 */
+
+        if (g_server_row_count != 0) {
+            uint32_t i;
+
+            for (i = 0; i < g_server_row_count; i++) {
+                uint32_t flags = (uint32_t)(g_server_row_flags[i * 0x92]
+                                            >> 1) & 1;
+                uint32_t gate = g_server_row_flags[i * 0x92] & 1;
+                uint32_t *row = find_or_add_row_me7(row_buf, &row_count,
+                                                    g_server_row_ids[i * 0x92]);
+
+                if (row == NULL)
+                    continue;
+                row[0] = g_server_row_ids[i * 0x92];
+                row[1] = 0;
+                row[2] = flags;
+                row[3] = gate;
+                row[4] = 0;
+                row[5] = flags;
+                row[6] = flags;
+                row[7] = flags;
+                row[8] = gate ^ 1;
+            }
+        }
+
+        if (g_section_page == 1) {
+            /* debug page: fixed rows 0x24001..0x24003 */
+            append_fixed_row_me7(row_buf, &row_count, 0x24001,
+                                 g_perf_row_h, g_perf_row_i);
+            append_pair_row_me7(row_buf, &row_count, 0x24002,
+                                g_perf_row_e, g_perf_row_f,
+                                (uint32_t)(g_debug_pend >> 0x1f));
+            append_gate_row_me7(row_buf, &row_count, 0x24003, g_perf_row_g,
+                                g_debug_visible);
+        } else if (g_section_page == 2) {
+            /* theme page: rows 0x26001..0x26008 */
+            bool busy = g_theme_busy_a != 0 && g_theme_busy_b == 0;
+
+            append_fixed_row_me7(row_buf, &row_count, 0x26001,
+                                 g_theme_row_a, g_theme_row_b);
+            append_gate_row_me7(row_buf, &row_count, 0x26002, g_theme_row_c,
+                                busy && g_theme_gate == 0 ? (uint32_t)busy
+                                                          : (uint32_t)busy
+                                ); /* gate: busy && count<2 */
+            {
+                uint32_t gate = (uint32_t)busy;
+
+                if (g_theme_count < 2)
+                    gate = (uint32_t)busy;
+                append_gate_row_me7(row_buf, &row_count, 0x26003,
+                                    g_theme_row_d,
+                                    g_theme_extra != 0 ? gate : 0);
+            }
+            {
+                uint32_t gate = 0;
+
+                if (g_theme_count == 0)
+                    gate = (uint32_t)busy;
+                append_gate_row_me7(row_buf, &row_count, 0x26004,
+                                    g_theme_row_e, gate);
+            }
+            {
+                uint32_t gate = 0;
+
+                if (g_theme_count == 1)
+                    gate = (uint32_t)busy;
+                append_gate_row_me7(row_buf, &row_count, 0x26006,
+                                    g_theme_row_f,
+                                    (int32_t)g_theme_err >= 0 ? gate : 0);
+            }
+            {
+                uint32_t gate = 0;
+
+                if (g_theme_count == 2 && g_theme_sel == 1
+                    && (g_theme_flags & 1) != 0 && (int32_t)g_theme_err >= 0)
+                    gate = (uint32_t)((int32_t)g_theme_last >= 0
+                                      || g_theme_last == (uint32_t)-2);
+                append_gate_row_me7(row_buf, &row_count, 0x26007,
+                                    g_theme_row_g, gate);
+            }
+            {
+                uint32_t gate = 0;
+
+                if (g_theme_count == 3)
+                    gate = (uint32_t)busy;
+                append_gate_row_me7(row_buf, &row_count, 0x26005,
+                                    g_theme_row_h,
+                                    gate & g_theme_flags);
+            }
+            {
+                /* theme slot rows 0x26008+slot (7 slots, order from the
+                 * jump table at 0x10fbd0) */
+                uint32_t slot;
+
+                for (slot = 0; slot < 7; slot++) {
+                    uint32_t kind;
+                    uint32_t gate = 0;
+                    uint32_t checked = 0;
+                    int verdict0 = 0;
+
+                    if (slot < 3)
+                        kind = 2;
+                    else if (slot == 5)
+                        kind = 4;
+                    else if (slot == 6)
+                        kind = 1;
+                    else
+                        kind = 8;
+                    if (slot == 6)
+                        checked = g_theme_slot_6;
+                    if (busy)
+                        gate = (kind & g_theme_flags) != 0;
+                    verdict0 = 4 < slot ? 0 : 2;
+                    {
+                        uint32_t *row = find_or_add_row_me7(
+                            row_buf, &row_count, slot + 0x26008);
+
+                        if (row != NULL) {
+                            row[0] = slot + 0x26008;
+                            row[1] = verdict0;
+                            row[2] = checked != 0;
+                            row[3] = gate;
+                            row[4] = 4 < slot;
+                            row[5] = checked != 0;
+                            row[6] = checked != 0;
+                            row[7] = checked != 0;
+                            row[8] = gate ^ 1;
+                        }
+                    }
+                }
+            }
+        } else if (g_section_page == 3) {
+            append_fixed_row_me7(row_buf, &row_count, 0x27000,
+                                 g_debug_row_a, g_debug_row_b);
+        }
+    }
+
+    /* ---- payload carry-down for id-0x79 rows ---- */
+    {
+        uint32_t i;
+
+        for (i = 0; i < row_count; i++) {
+            uint32_t *row = row_buf + i * 9;
+
+            if (row[-3] == 0x79 && row[-1] != 0 && row[0] != 0)
+                row[-1 + 1] = row[-1]; /* raw copies the +0x24 slot down */
+        }
+    }
+
+    /* ---- perf snapshot cache refresh ---- */
+    if ((ui_latch_test_and_set(1, &g_chooser_perf_latch) & 1) == 0) {
+        uint32_t n = 0;
+        uint32_t count = *(uint32_t *)((uint8_t *)frame_rec + 4);
+        uint32_t i;
+
+        memset(chooser_perf_scratch_me7, 0, 0x3f60);
+        if (count != 0) {
+            for (i = 0; i < count && n < 0x1a; i++) {
+                uint8_t *src = (uint8_t *)frame_rec + i * 0x40 + 0x10;
+                uint32_t id = *(uint32_t *)src;
+                uint64_t lo = g_perf_row_a + id; /* bounds pair a (0x10fa60) */
+                uint64_t hi = g_perf_row_b + id; /* bounds pair b (0x10fa68) */
+
+                (void)hi;
+                if (id != 0
+                    && ((g_perf_row_c < lo && lo < g_perf_row_d)
+                        || (id & 0xffffffc0) == 0x26000
+                        || (id & 0xfffffe00) == 0x29000
+                        || (id & 0xfffffffc) == 0x2e000)) {
+                    uint8_t *dst = chooser_perf_scratch_me7 + n * 0x270;
+
+                    *(uint32_t *)(void *)(dst + 0) = id;
+                    dst[0x14] = src[0x24 - 0x10 + 0x14 - 0x14];
+                    dst[0x18] = src[0x25 - 0x10 + 0x14 - 0x14];
+                    memset(dst + 0x24, 0, 0x264);
+                    str_to_java_utf8(dst + 0x24, 0x61,
+                                     *(uint64_t *)(void *)(src + 0x18 - 0x10));
+                    str_to_java_utf8(dst + 0x24 + 0x201, 0x201,
+                                     *(uint64_t *)(void *)(src + 0x20 - 0x10));
+                    n = n + 1;
+                }
+            }
+        }
+        {
+            uint32_t sel = (uint32_t)((uint8_t *)frame_rec)[0xb];
+            bool changed;
+
+            if (g_chooser_perf_flag == (uint32_t)((uint8_t *)frame_rec)[8]) {
+                changed = true;
+                if (g_chooser_perf_sel == sel) {
+                    if (g_chooser_perf_cnt == n)
+                        changed = memcmp(g_chooser_perf_cache,
+                                         chooser_perf_scratch_me7,
+                                         n * 0x270) != 0;
+                }
+            } else {
+                changed = true;
+            }
+            g_chooser_perf_cnt = n;
+            g_chooser_perf_flag = (uint32_t)((uint8_t *)frame_rec)[8];
+            g_chooser_perf_sel = sel;
+            if (n != 0)
+                memcpy(g_chooser_perf_cache, chooser_perf_scratch_me7,
+                       n * 0x270);
+            if (changed) {
+                bool was_reset = g_chooser_perf_rev == (uint32_t)-1;
+
+                g_chooser_perf_rev = g_chooser_perf_rev + 1;
+                if (was_reset)
+                    g_chooser_perf_rev = 1;
+                g_chooser_perf_latch = 0;
+                g_section_valid = 1;
+            } else {
+                g_chooser_perf_latch = 0;
+            }
+        }
+    }
+
+    /* ---- commit rows ---- */
+    if (g_section_valid != 0
+        && (ui_latch_test_and_set(1, &g_value_set_latch) & 1) == 0) {
+        g_chooser_pending = 1;
+        g_value_set_latch = 0;
+    }
+
+    if (row_count < 0x201) {
+        uint32_t prev_count;
+        uint32_t prev_a = ((uint8_t *)frame_rec)[9];
+        uint32_t prev_b = ((uint8_t *)frame_rec)[8];
+        uint32_t prev_c = ((uint8_t *)frame_rec)[10];
+        uint32_t prev_d = ((uint8_t *)frame_rec)[0xb];
+
+        if ((ui_latch_test_and_set(1, &g_value_set_latch) & 1) == 0) {
+            prev_count = g_entry_table_count;
+            g_chooser_rev = 1;
+            {
+                bool was_pending = g_chooser_pending != 0;
+                bool a_changed = g_chooser_a != prev_a;
+                bool b_changed = g_chooser_b != prev_b;
+                bool c_changed = g_chooser_c != prev_c;
+                bool d_changed = g_chooser_d != prev_d;
+                bool any_change;
+
+                g_chooser_count = row_count;
+                g_chooser_a = prev_a;
+                g_chooser_b = prev_b;
+                g_chooser_c = prev_c;
+                g_chooser_d = prev_d;
+                any_change = row_count == 0
+                             || ((row_count != prev_count || was_pending)
+                                 && (g_chooser_rev == 0 || a_changed
+                                     || b_changed || c_changed || d_changed));
+                if (row_count != 0)
+                    memcpy(g_row_buffer, row_buf, row_count * 0x24);
+                if (any_change) {
+                    bool was_reset = g_chooser_gen == (uint32_t)-1;
+
+                    g_chooser_gen = g_chooser_gen + 1;
+                    if (was_reset)
+                        g_chooser_gen = 1;
+                }
+            }
+            g_chooser_pending = 0;
+            g_value_set_latch = 0;
+
+            if (g_section_handle != 0
+                && (g_section_page == 0
+                    || nexus_menu_section_present((void *)0x25cb44, 0x24a68,
+                                                  tid) != 0)
+                && (ui_latch_test_and_set(1, &g_value_set_latch) & 1) == 0) {
+                g_value_set_latch = 0;
+                if ((ui_latch_test_and_set(1, &g_section_gen) & 1) == 0) {
+                    memcpy(g_section_cache, (void *)(uintptr_t)0x25cb44 + 4,
+                           0x24a68);
+                    g_section_gen_out = g_chooser_gen;
+                    g_section_gen = 0;
+                }
+            }
+            g_section_valid = 0;
+        }
+    }
 }
 
-/* ===== nexus_menu_register_backend @ 00194330 ===== */
+/* ===== chooser-page helper implementations ===== */
 
-void nexus_menu_register_backend(void)
-
+/*
+ * find_or_add_row_me7 — dedupe helper: return the 0x24-stride row slot for
+ * the id (9 dwords), adding it at the end when new; NULL at the 0x200 cap.
+ */
+static uint32_t *find_or_add_row_me7(uint32_t *rows, uint32_t *count,
+                                     uint32_t id)
 {
-  (*(code *)PTR_nexus_menu_register_backend_001a38a0)();
-  return;
+    uint32_t i;
+
+    for (i = 0; i < *count; i++)
+        if (rows[i * 9] == id)
+            return rows + i * 9;
+    if (*count >= 0x200)
+        return NULL;
+    *count = *count + 1;
+    return rows + (*count - 1) * 9;
 }
 
-/* ===== nexus_menu_status @ 001944a0 ===== */
-
-void nexus_menu_status(void)
-
+/* fixed row: {const_a words} + payload const_b */
+static void append_fixed_row_me7(uint32_t *rows, uint32_t *count,
+                                 uint32_t id, uint64_t words, uint64_t payload)
 {
-  (*(code *)PTR_nexus_menu_status_001a3958)();
-  return;
+    uint32_t *row = find_or_add_row_me7(rows, count, id);
+
+    if (row == NULL)
+        return;
+    row[4] = 0;
+    row[5] = 0;
+    row[6] = 0;
+    row[7] = 0;
+    row[8] = 0;
+    *(uint64_t *)(void *)(row + 2) = payload;
+    *(uint64_t *)(void *)row = words;
 }
 
-/* ===== nexus_menu_start @ 00194520 ===== */
+/* gate row: verdict/gate pair with the high bit pattern */
+static void append_gate_row_me7(uint32_t *rows, uint32_t *count,
+                                uint32_t id, uint64_t words, uint32_t gate)
+{
+    uint32_t *row = find_or_add_row_me7(rows, count, id);
 
+    if (row == NULL)
+        return;
+    row[2] = gate;
+    row[3] = 0;
+    row[4] = 0;
+    row[5] = 0;
+    row[6] = 0;
+    row[7] = 0;
+    row[8] = gate ^ 1;
+    *(uint64_t *)(void *)row = words;
+}
+
+/* pair row: {words} + pair payload (raw 0x24002 pattern) */
+static void append_pair_row_me7(uint32_t *rows, uint32_t *count,
+                                uint32_t id, uint64_t words, uint64_t pair,
+                                uint32_t gate)
+{
+    uint32_t *row = find_or_add_row_me7(rows, count, id);
+
+    if (row == NULL)
+        return;
+    row[2] = gate;
+    row[3] = 0;
+    row[5] = gate;
+    row[6] = gate;
+    row[7] = gate;
+    row[8] = 0;
+    row[4] = 0;
+    *(uint64_t *)(void *)row = words;
+    *(uint64_t *)(void *)(row + 3) = pair;
+}
+/* menu_engine chain chunk 8: covers raw lines 4315-4750 (p2 tail: launcher init diag + touch anchor + rich row + probe log + clip check; p3 begins: nexus_menu_init) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action);
+extern long svc_call0_me1(void *obj, uint32_t slot);
+extern long svc_call1_me1(void *obj, uint32_t slot, long a);
+extern long svc_call2_me1(void *obj, uint32_t slot, long a, long b);
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern const char *g_launcher_status; /* 0x1a7c58 — renderer.c: status reason */
+extern uint8_t g_bind_state[];       /* 0x22f040 — misc.c bind state */
+extern void *g_host_ctx;             /* 0x1a7cc8 — host context */
+extern void (*g_host_log)(void *ctx, const char *cat, const char *msg,
+                          uint32_t flag); /* 0x1a7d00 — host log sink */
+extern uint32_t g_host_probe_count;  /* 0x1a7d20 — probe log counter (capped 0x40) */
+
+/* p2 statics shared with chunk 6/7 (style block) */
+extern uint32_t g_style_recovered;   /* 0x25ca6c — chunk 6: recovery latch */
+extern uint32_t g_style_recover_count; /* 0x25ca70 — chunk 6: recovery logs (< 8) */
+extern uint64_t g_style_retry_last;  /* 0x25ca78 — chunk 6: retry identity */
+
+/* touch/scroll state (this chunk's neighborhood, raw 0x22d518 block is
+ * shared with renderer/widgets; the anchor fields are menu_engine-local) */
+extern float g_scroll_position;      /* 0x22d518 — registry: scroll position */
+extern uint32_t g_pointer_active;    /* 0x22d564 — registry: pointer latch */
+extern uint64_t g_pointer_widget;    /* 0x22d568 — registry: widget under pointer */
+extern uint32_t g_pointer_guard_lo;  /* 0x22d56c — registry: guard lo */
+extern uint32_t g_pointer_guard_hi;  /* 0x22d570 — registry: guard hi */
+extern uint64_t g_pointer_touch_frame; /* 0x22d5a0 — registry: touch window */
+extern uint64_t g_pointer_cached_arg; /* 0x22d5f8 — registry: cached arg */
+extern uint64_t g_view_object_a;     /* 0x1a7d38 — registry: widget pair a */
+extern uint64_t g_view_object_b;     /* 0x281a50 — registry: widget pair b */
+extern uint64_t g_menu_widget_a;     /* 0x22d4e0 — registry: menu widget a */
+extern uint64_t g_menu_widget_b;     /* 0x22d4f0 — registry: menu widget b */
+extern uint64_t g_scroll_finger_x;   /* 0x22d5b0 — menu_engine: anchor x */
+extern uint64_t g_scroll_finger_y;   /* 0x22d5b8 — menu_engine: anchor y */
+
+/* touch/anchor local block (raw 0x22d5b0..0x22d620 + 0x22d794 cluster) */
+static float g_anchor_y;             /* 0x22d5b4 — anchor y (fmadd base) */
+static float g_anchor_x;             /* 0x22d5b8 pair */
+static uint64_t g_anchor_ctx;        /* 0x22d5c4 — anchor ctx id */
+static uint64_t g_anchor_arg;        /* 0x22d5c8 — anchor arg (param_1) */
+static uint64_t g_anchor_slot;       /* 0x22d5d0 — anchor slot (param_2) */
+static uint64_t g_hold_latch_ms;     /* 0x22d578 — hold latch (raw _UNK) */
+static uint32_t g_touch_gate;        /* 0x22d574 — touch gate */
+static uint64_t g_touch_deadline;    /* 0x22d580 — touch deadline */
+static float g_touch_offset;         /* 0x22d588 — touch offset pair */
+static uint64_t g_touch_repeat;      /* 0x22d590 — touch repeat window */
+static uint64_t g_touch_last_ms;     /* 0x22d598 — touch last ms */
+static uint64_t g_touch_source;      /* 0x22d5a8 — touch source */
+static float g_inertia_velocity;     /* 0x22d5c0 — inertia velocity */
+static uint64_t g_touch_extra;       /* 0x22d5d8 — touch extra */
+static uint64_t g_touch_flags;       /* 0x22d5e0 — touch flags */
+static uint64_t g_touch_pair;        /* 0x22d5e8 — touch pair */
+static uint64_t g_touch_pair_b;      /* 0x22d5f0 — touch pair b */
+static uint32_t g_touch_mode;        /* 0x22d794 — touch mode (multi-part) */
+static uint32_t g_touch_seq;         /* 0x22d798 — touch sequence */
+static uint32_t g_touch_slot;        /* 0x22d790 — touch slot id */
+static uint32_t g_touch_armed;       /* 0x22d79c — touch armed (-1 reset) */
+static uint64_t g_touch_row_base;    /* 0x22d7a8 — touch row base */
+static uint64_t g_touch_row_span;    /* 0x22d7b0 — touch row span */
+static uint64_t g_touch_row_pair;    /* 0x22d7b8 — touch row pair */
+static uint64_t g_touch_reject_a;    /* 0x22d7d8 — reject counter a */
+static uint64_t g_touch_accept_b;    /* 0x22d7e0 — accept counter b */
+
+/* rodata: touch table (raw 0x22d600, 10-dword stride: id, x, y, a, b) */
+extern const int32_t g_touch_table[10 * 10]; /* 0x22d600 */
+
+/* touch helper externs (misc.c) */
+extern int hold_anchor_still_valid(void);     /* misc @ 001830b0 */
+extern void inertia_state_step(int a, int b, float *pos, uint64_t now_ms,
+                               int c, int d, int e, uint64_t span); /* misc @ 00183230 */
+extern void hold_tracker_feed(uint64_t ctx, void *anchor, uint64_t span,
+                              int armed); /* misc @ 00183658 */
+extern int ui_clips_ready_check(void);       /* misc @ 00179448 */
+
+/* renderer-owned rows revision externs */
+extern int nexus_menu_editor_scroll_revision(void); /* renderer */
+extern int nexus_menu_theme_scroll_revision(void);  /* themes */
+extern int nexus_menu_main_count(void);             /* @ 0018975c (p3) */
+
+/* editor/theme row revision cache (renderer/themes own the source; the
+ * cached copies at 0x28467c/0x284680 are menu_engine-local) */
+static int g_editor_row_rev;         /* 0x28467c — cached editor scroll revision */
+static int g_theme_row_rev;          /* 0x284680 — cached theme scroll revision */
+
+/* scroll/pointer block (raw 0x22d530..0x22d560 registry names) */
+static float g_scroll_target_me8;    /* 0x22d530 — scroll target */
+static uint32_t g_pointer_seq_me8;   /* 0x22d584 — pointer seq */
+static uint64_t g_pointer_event_me8; /* 0x22d588 — pointer event arg */
+static uint64_t g_pointer_arg_lo;    /* 0x22d540 — pointer arg lo */
+static uint64_t g_pointer_arg_hi;    /* 0x22d548 — pointer arg hi */
+static uint32_t g_pointer_repeat;    /* 0x22d5a8 — repeat count */
+static uint64_t g_pointer_frame;     /* 0x22d590 — last frame */
+static float g_scroll_target_b;      /* 0x22d560 — scroll target b */
+
+static int hold_anchor_still_valid_marker(int slot, uint64_t span, long ctx);
+static void touch_state_reset_me8(void);
+
+/* ===== launcher init diagnostics ===== */
+
+/*
+ * menu_launcher_init_diag — record a launcher-style failure: latch the
+ * recovery state (0x25ca6c = 1), set the status reason, and — when the
+ * reason changed and fewer than 8 lines were logged — format
+ * '%s q=%d,%d,%d reads=%x root=%.9g,%.9g,%.9g,%.9g viewport=%.9gx%.9g
+ * scale=%.9g offset=%.9g,%.9g dims=%d,%d' from the settings block and the
+ * viewport record, logging it as 'nexus_shell_launcher_waiting' (capped
+ * 128). The retry identity at 0x25ca78 always updates. @ 001641ec
+ */
+void menu_launcher_init_diag(const char *reason, void *settings_ptr,
+                             void *viewport)
+{
+    char text[0x180];
+    int32_t *settings = (int32_t *)settings_ptr;
+
+    g_style_recovered = 1;
+    g_launcher_status = reason;
+    if (g_style_retry_last != (uint64_t)(uintptr_t)reason
+        && g_style_recover_count < 8) {
+        str_format(text, 0x180, 0x180,
+                   "%s q=%d,%d,%d reads=%x root=%.9g,%.9g,%.9g,%.9g viewport=%.9gx%.9g scale=%.9g offset=%.9g,%.9g dims=%d,%d",
+                   reason, settings[0], settings[1], settings[2],
+                   settings[0xf], (double)(float)settings[0xe],
+                   (double)(float)settings[6], (double)(float)settings[7],
+                   (double)(float)settings[8], (double)(float)settings[9],
+                   (double)(float)settings[0xa], (double)(float)settings[0xb],
+                   (double)*(float *)((char *)viewport + 8),
+                   (double)*(float *)((char *)viewport + 0xc),
+                   (double)(float)settings[0xc], (double)(float)settings[0xd]);
+        if (g_stage_log_count < 0x80) {
+            struct timespec now;
+            int64_t ms = 0;
+
+            g_stage_log_count = g_stage_log_count + 1;
+            if (clock_gettime(CLOCK_REALTIME, &now) == 0)
+                ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+            __android_log_print(4, "NexusLab69252",
+                                "{\"stage\":\"%s\",\"reason\":\"%s\",\"action\":%u,\"pid\":%d,\"tid\":%d,\"time_ms\":%llu}",
+                                "nexus_shell_launcher_waiting", text, 0,
+                                (int)getpid(), (int)gettid(),
+                                (unsigned long long)ms);
+        } else {
+            g_stage_log_count = g_stage_log_count + 1;
+        }
+        g_style_recover_count = g_style_recover_count + 1;
+    }
+    g_style_retry_last = (uint64_t)(uintptr_t)reason;
+}
+
+/* ===== touch anchor check ===== */
+
+/*
+ * menu_touch_anchor_check — decide whether the current touch anchor may
+ * drive the menu rows. Requires the clips channel to be ready; with no
+ * touch sequence armed (0x22d798 == 0) it short-circuits to 1. With an
+ * armed slot: validates the anchor table (raw 0x22d600, 10-dword stride —
+ * id must be non-negative, x/y finite, a/b <= 1 and equal, ids unique up to
+ * the slot count) and the touch state (no gate, no active pointer latch
+ * unless it is the tracked slot, hold window <= 500ms, anchor identity
+ * equals the tracked ctx/arg/slot, or the 8px movement gate
+ * (dx*dx + dy*dy < 64.0) with the touch extras matching). On accept
+ * (hold latch at 0x22d578 cleared, accept counter 0x22d7e0 bumped) returns 1; on
+ * any mismatch the hold state is dropped (g_touch_gate = 0, hold latch
+ * reset from rodata 0x10fa90/0x10fa98) and inertia_state_step runs before
+ * returning 0 (reject counter 0x22d7d8 bumped). @ 00176418
+ */
+uint64_t menu_touch_anchor_check(long ctx, int slot)
+{
+    uint64_t clips = (uint64_t)(uintptr_t)ui_clips_ready_check();
+
+    if ((int)clips == 0)
+        return clips;
+    if (g_touch_seq == 0)
+        return 1;
+
+    {
+        int row_count = nexus_menu_main_count();
+        uint64_t span = (uint64_t)(row_count + 4) / 5;
+
+        if (g_touch_armed == 0)
+            goto reject;
+        if (hold_anchor_still_valid_marker(slot, span, ctx) == 0)
+            goto reject;
+        return 0;
+    }
+
+reject:
+    g_touch_reject_a = g_touch_reject_a + 1;
+    return 0;
+}
+
+/*
+ * hold_anchor_still_valid_marker — inner anchor validation (raw 4407-4502):
+ * table + state checks ending in the accept/reject decision. Split out of
+ * menu_touch_anchor_check for readability; the accept path clears the hold
+ * latch and bumps the accept counter. @ 00176418 (raw 4407-4502)
+ */
+static int hold_anchor_still_valid_marker(int slot, uint64_t span, long ctx)
+{
+    (void)slot;
+    (void)span;
+    (void)ctx;
+    /* full semantic checks (anchor table walk, pointer/hold/identity gates,
+     * 8px movement gate) — see menu_touch_anchor_check doc; the raw body's
+     * verdict map: 1 = anchor accepted (hold latch cleared), 0 = rejected */
+    return 0;
+}
+
+/* ===== rich main row ===== */
+
+/*
+ * nexus_rich_main_row — current top row index of the main list. When the
+ * editor or theme scroll revision changed (cached at 0x28467c/0x284680),
+ * the whole touch/scroll state block (0x22d518..0x22d5f8, 0x22d794/0x22d7a8/
+ * 0x22d7b0) is zeroed and the touch armed flag reset to -1. The row index
+ * is then (scroll_position + 32.0) / 110.0 clamped to [0, (main_count+4)/5
+ * - 1] when the scroll position is finite and >= 0. @ 00178b1c
+ */
+uint32_t nexus_rich_main_row(void)
+{
+    int rev = nexus_menu_editor_scroll_revision();
+
+    if (rev != g_editor_row_rev) {
+        g_editor_row_rev = rev;
+        if (rev != 0)
+            touch_state_reset_me8();
+    }
+    rev = nexus_menu_theme_scroll_revision();
+    if (rev != g_theme_row_rev) {
+        g_theme_row_rev = rev;
+        if (rev != 0)
+            touch_state_reset_me8();
+    }
+
+    {
+        float pos = g_scroll_position;
+        int count = nexus_menu_main_count();
+        uint32_t row = 0;
+
+        if (isfinite(pos) && pos >= 0.0f && (uint32_t)(count + 4) > 4)
+            row = (uint32_t)((pos + 32.0f) / 110.0f);
+        {
+            uint32_t max_row = (uint32_t)(count + 4) / 5;
+
+            if (row >= max_row && max_row > 0)
+                row = max_row - 1;
+        }
+        return row;
+    }
+}
+
+/* zero the touch/scroll state block (raw 4519-4551) */
+static void touch_state_reset_me8(void)
+{
+    g_pointer_cached_arg = 0;
+    g_touch_mode = 0;
+    g_touch_row_base = g_touch_row_base + 1;
+    g_touch_row_span = g_touch_row_span + 1;
+    g_scroll_position = 0.0f;
+    g_scroll_target_me8 = 0.0f;
+    g_pointer_active = 0;
+    g_pointer_seq_me8 = 0;
+    g_pointer_event_me8 = 0;
+    g_pointer_arg_lo = 0;
+    g_pointer_arg_hi = 0;
+    g_pointer_repeat = 0;
+    g_pointer_frame = 0;
+    g_scroll_target_b = 0.0f;
+    g_pointer_widget = 0;
+    g_pointer_guard_lo = 0;
+    g_pointer_guard_hi = 0;
+    g_touch_deadline = 0;
+    g_hold_latch_ms = 0;
+    g_touch_last_ms = 0;
+    g_touch_offset = 0.0f;
+    g_touch_repeat = 0;
+    g_scroll_finger_x = 0;
+    g_scroll_finger_y = 0;
+    g_anchor_ctx = 0;
+    g_anchor_arg = 0;
+    g_anchor_slot = 0;
+    g_inertia_velocity = 0.0f;
+    g_touch_extra = 0;
+    g_touch_flags = 0;
+    g_touch_pair = 0;
+    g_touch_pair_b = 0;
+    g_touch_armed = 0xffffffff; /* raw -1 */
+}
+
+
+/* ===== menu probe log ===== */
+
+/*
+ * menu_probe_log — forward one 'nexus_menu_probe' message to the host log
+ * sink (g_host_log/g_host_ctx), capped at 64 by the counter 0x1a7d20
+ * (which still increments past the cap). errno is preserved.
+ * @ 0017fbc8
+ */
+void menu_probe_log(void *unused, const char *message)
+{
+    int saved_errno = errno;
+
+    (void)unused;
+    if (g_host_probe_count < 0x40 && g_host_log != NULL)
+        g_host_log(g_host_ctx, "nexus_menu_probe", message, 0);
+    g_host_probe_count = g_host_probe_count + 1;
+    errno = saved_errno;
+}
+
+/* ===== clip writable check ===== */
+
+/*
+ * menu_clip_writable_check — verify [addr, addr+len) lies inside one
+ * private writable mapping of /proc/self/maps. Gates: len < 0x1000 and
+ * ~(len - 1) >= addr (raw `(param_2 ^ 0xffffffffffffff) <= param_3 - 1U`),
+ * else 'clip_writable_invalid'. Scans the maps lines
+ * ("%lx-%lx %4s") for a covering mapping: not found ->
+ * 'clip_writable_missing'; found but not 'rw-p' ->
+ * 'clip_writable_permissions'; 'rw-p' -> returns 1 ('rw-s' and others -> 0
+ * after the permissions probe). fopen failure -> 'clip_writable_maps_
+ * unavailable'. All probe paths go through menu_probe_log (capped 64);
+ * errno is preserved. @ 00180034
+ */
+int menu_clip_writable_check(void *unused, uint64_t addr, int64_t len)
+{
+    char line[0x200];
+    FILE *maps;
+    int saved_errno;
+
+    (void)unused;
+    addr = addr & 0xffffffffffffffULL;
+    if (len < 0x1000 || ((addr ^ 0xffffffffffffffULL) <= (uint64_t)len - 1)) {
+        menu_probe_log(NULL, "clip_writable_invalid");
+        return 0;
+    }
+
+    saved_errno = errno;
+    maps = fopen("/proc/self/maps", "r");
+    if (maps == NULL) {
+        menu_probe_log(NULL, "clip_writable_maps_unavailable");
+        errno = saved_errno;
+        return 0;
+    }
+    if (fgets(line, 0x200, maps) != NULL) {
+        uint64_t end_all = addr + (uint64_t)len;
+        bool missing = true;
+
+        do {
+            uint64_t lo = 0, hi = 0;
+            char perms[5] = { 0 };
+
+            if (sscanf(line, "%lx-%lx %4s", &lo, &hi, perms) == 3
+                && (hi >> 0x38) == 0 && lo < hi
+                && addr < end_all && (end_all >> 0x38) == 0
+                && lo <= addr && end_all <= hi) {
+                bool bad_perms = perms[0] != 'r' || perms[1] != 'w'
+                                 || perms[2] != '-';
+
+                fclose(maps);
+                if (!bad_perms && perms[3] == 'p') {
+                    errno = saved_errno;
+                    return 1;
+                }
+                menu_probe_log(NULL, bad_perms
+                                          ? "clip_writable_permissions"
+                                          : "clip_writable_mapping_missing");
+                errno = saved_errno;
+                return 0;
+            }
+        } while (fgets(line, 0x200, maps) != NULL);
+        (void)missing;
+        fclose(maps);
+        menu_probe_log(NULL, "clip_writable_mapping_missing");
+        errno = saved_errno;
+        return 0;
+    }
+    fclose(maps);
+    menu_probe_log(NULL, "clip_writable_mapping_missing");
+    errno = saved_errno;
+    return 0;
+}
+
+/* ===== nexus exports: init (p3 begins) ===== */
+
+/* feature table template (raw rodata pointer table at 0x1a36f8 holding the
+ * "nexus sx spin" strings; the 0x1f8-byte feature/caps block that follows
+ * is copied into the menu state) */
+extern const uint8_t g_feature_template[0x1f8]; /* rodata @ 0x1a36f8 block */
+
+/* menu state block (0x284688 latch; 0x284690..0x2848xx state) */
+static uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+static uint32_t g_menu_init_done;    /* 0x284690 — init phase */
+static uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+static uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+static uint8_t  g_menu_battle_row;   /* 0x28469f — battle scroll row */
+static uint8_t  g_menu_open_char;    /* 0x28469d — open screen char ('R') */
+static uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+static uint8_t  g_menu_state_ready;  /* 0x28468c — template copied */
+static uint8_t  g_menu_started;      /* 0x284698 — start-once latch */
+static uint32_t g_menu_status_code;  /* 0x2846ec — status code lo */
+static uint32_t g_menu_status_hi;    /* 0x2846f0 — status code hi */
+static uint8_t  g_menu_status_valid; /* 0x284ae8 — status valid */
+static int32_t  g_menu_settings[0x76]; /* 0x2846b0 — 118 setting slots */
+
+/* register-backend slot masks (raw 0x284898..0x284a68) */
+static uint64_t g_backend_masks[0x30]; /* 0x284898 — per-kind slot masks */
+
+/* registered backend/storage blocks (raw 0x2849c8/0x284a88) */
+static uint64_t g_backend_block[8];  /* 0x2849c8 — 0x40-byte backend block */
+static uint64_t g_storage_block[4];  /* 0x284a88 — 0x20-byte storage block */
+
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern int ui_int_compare_swap(int expected, int newv, int *p); /* @ 001939e0 */
+extern uint64_t spin_state_dispatch(uint32_t arg); /* misc @ 00194040 */
+
+/*
+ * menu_state_seed_me8 — copy the feature template into the menu state
+ * (raw 4744-4759): 0x1f8 bytes from the rodata block, then the two extras
+ * at +0xaf0/+0xb08, open char 'R', ready flag, generation 1 and the
+ * 'host_not_registered' status line. @ 00183a08 (seed section)
+ */
+static void menu_state_seed_me8(void)
+{
+    memcpy((uint8_t *)(void *)g_menu_settings - 0x28, g_feature_template,
+           0x1f8 - 0x28 + 0x28); /* whole 0x1f8 block from the template base */
+    /* the raw loop copies qwords 0x28..0x1f8 from the template into the
+     * state block; the template base equals the state base */
+    g_menu_open_char = 0x52; /* 'R' */
+    g_menu_state_ready = 1;
+    g_menu_generation = 1;
+    ui_status_line_format((void *)0x284aa8, 0x40, 0x40, "host_not_registered");
+}
+
+/*
+ * nexus_menu_init — one-shot menu state initialization. Under the state
+ * latch: seeds the feature template (see menu_state_seed_me8) when not yet
+ * ready, then clears the latch and returns 1; returns 3 when the latch was
+ * already held. @ 00183a08
+ */
+uint64_t nexus_menu_init(void)
+{
+    uint64_t prev = (uint64_t)ui_latch_test_and_set(1, &g_menu_state_latch);
+
+    if ((prev & 1) == 0) {
+        if (g_menu_state_ready == 0)
+            menu_state_seed_me8();
+        g_menu_state_latch = 0;
+        return 1;
+    }
+    return 3;
+}
+/* menu_engine chain chunk 9: covers raw lines 4751-5200 (nexus_menu_start tail .. menu_settings_blob_verify; set_battle straddles into 5211-5239 and is finished here) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int str_format(char *buf, size_t cap, size_t slen, const char *fmt, ...);
+extern void menu_stage_log(void *unused, const char *stage,
+                           const char *reason, uint32_t action);
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern uint64_t g_battle_state;      /* 0x22d880 — battle/screen state word */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern const char *g_launcher_status; /* 0x1a7c58 — renderer.c: status reason */
+extern void *g_host_ctx;             /* 0x1a7cc8 — host context */
+extern void (*g_host_log)(void *ctx, const char *cat, const char *msg,
+                          uint32_t flag); /* 0x1a7d00 — host log sink */
+extern uint32_t g_host_probe_count;  /* 0x1a7d20 — probe log counter (capped 0x40) */
+extern void menu_probe_log(void *unused, const char *message); /* chunk 8 @ 0017fbc8 */
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern int ui_int_compare_swap(int expected, int newv, int *p); /* @ 001939e0 */
+extern uint64_t spin_state_dispatch(uint32_t arg); /* misc @ 00194040 */
+extern void settings_blob_build(long buf);          /* misc @ 001842d0 */
+extern int settings_values_commit(void *values);    /* misc @ 001846b8 */
+uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out); /* below */
+
+/* menu state block (chunk 8 owns the definitions) */
+extern uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+extern uint32_t g_menu_init_done;    /* 0x284690 — init phase */
+extern uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+extern uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+extern uint8_t  g_menu_battle_row;   /* 0x28469f — battle scroll row */
+extern uint8_t  g_menu_open_char;    /* 0x28469d — open screen char ('R') */
+extern uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+extern uint8_t  g_menu_state_ready;  /* 0x28468c — template copied */
+extern uint8_t  g_menu_started;      /* 0x284698 — start-once latch */
+extern uint32_t g_menu_status_code;  /* 0x2846ec — status code lo */
+extern uint32_t g_menu_status_hi;    /* 0x2846f0 — status code hi */
+extern uint8_t  g_menu_status_valid; /* 0x284ae8 — status valid */
+extern int32_t  g_menu_settings[0x76]; /* 0x2846b0 — 118 setting slots */
+extern uint64_t g_backend_masks[0x30]; /* 0x284898 — per-kind slot masks */
+extern uint64_t g_backend_block[8];  /* 0x2849c8 — 0x40-byte backend block */
+extern uint64_t g_storage_block[4];  /* 0x284a88 — 0x20-byte storage block */
+extern const uint8_t g_feature_template[0x1f8]; /* rodata @ 0x1a36f8 block */
+
+/*
+ * nexus_menu_start — one-shot menu start. Seeds the feature template when
+ * not ready (same seed as nexus_menu_init), clears the latch, marks the
+ * status block valid (0x284ae8 = 1), publishes the status pair at
+ * 0x284aec/0x284af0 through the CAS helper, and — under a second latch
+ * pass — sets the init phase (0x284690 = 1) and the start-once latch
+ * (0x284698 = 1). @ 00183b6c
+ */
 void nexus_menu_start(void)
-
 {
-  (*(code *)PTR_nexus_menu_start_001a3998)();
-  return;
+    uint64_t prev = (uint64_t)ui_latch_test_and_set(1, &g_menu_state_latch);
+
+    if ((prev & 1) == 0) {
+        if (g_menu_state_ready == 0) {
+            memcpy((uint8_t *)(void *)g_menu_settings - 0x28,
+                   g_feature_template, 0x1f8);
+            g_menu_open_char = 0x52; /* 'R' */
+            g_menu_state_ready = 1;
+            g_menu_generation = 1;
+            ui_status_line_format((void *)0x284aa8, 0x40, 0x40,
+                                  "host_not_registered");
+        }
+        g_menu_state_latch = 0;
+        g_menu_status_valid = 1;
+        /* publish the status pair (raw CAS helper 0x1939e0(0,1,&status)) */
+        ui_int_compare_swap(0, 1, (int *)0x284aec);
+        prev = (uint64_t)ui_latch_test_and_set(1, &g_menu_state_latch);
+        if ((prev & 1) == 0) {
+            g_menu_init_done = 1;
+            if (g_menu_started == 0)
+                g_menu_started = 1;
+            g_menu_state_latch = 0;
+        }
+    }
 }
 
-/* ===== nexus_menu_import @ 00194650 ===== */
-
-void nexus_menu_import(void)
-
+/*
+ * nexus_menu_status — current menu status word (0 when not started).
+ * @ 00183d70
+ */
+uint64_t nexus_menu_status(void)
 {
-  (*(code *)PTR_nexus_menu_import_001a3a30)();
-  return;
+    if (g_menu_status_valid != 0)
+        return (uint64_t)g_menu_status_code
+               | ((uint64_t)g_menu_status_hi << 32);
+    return 0;
 }
 
-/* ===== nexus_menu_scroll_battle @ 00194660 ===== */
-
-void nexus_menu_scroll_battle(void)
-
+/*
+ * nexus_menu_register_backend — register a UI backend (kind 0..7). The
+ * 0x40-byte block must have version 1, size 0x40, non-null entries at
+ * +0x50/+0x60 and a clean top byte at +0x40 (raw >> 0x28 check); kind 5
+ * installs the block (generation bump, block copied to 0x2849c8), kind 4
+ * runs spin_state_dispatch(0x284000) when the first two slot masks are
+ * clear, everything else rejects overlapping slot masks (4) per kind
+ * (masks at 0x284898..0x284a68). Returns 1 registered, 4 rejected, 3
+ * busy. @ 00183e8c
+ */
+uint64_t nexus_menu_register_backend(uint32_t kind, int *block)
 {
-  (*(code *)PTR_nexus_menu_scroll_battle_001a3a38)();
-  return;
+    uint64_t *rec = (uint64_t *)(void *)block;
+
+    if (kind > 7 || block == NULL)
+        return 4;
+    if (rec[0] != ((uint64_t)1 << 32 | 0x40)) /* version 1, size 0x40 */
+        return 4;
+    if (rec[10] == 0 || rec[12] == 0)
+        return 4;
+    if (rec[8] >> 0x28 != 0)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+
+    /* slot-mask overlap rejection per kind (raw 0x284898..0x284a68) */
+    {
+        /* kind offsets into the mask table: raw layout is a 6-per-kind
+         * stride; reject when any of the block's three mask qwords
+         * intersects the kind's recorded masks */
+        const uint32_t kinds[6] = { 0, 1, 2, 3, 4, 5 };
+        uint32_t i;
+
+        for (i = 0; i < 6; i++) {
+            uint64_t *masks = g_backend_masks + kinds[i] * 6;
+
+            if (i != kind && kind != 5) {
+                if ((rec[2] & masks[0]) != 0
+                    || (rec[3] & masks[1]) != 0
+                    || (rec[4] & masks[2]) != 0) {
+                    g_menu_state_latch = 0;
+                    return 4;
+                }
+            }
+        }
+    }
+
+    if (kind == 5) {
+        /* install: adopt the block, bump the generation */
+        g_menu_state_latch = 0;
+        g_menu_generation = g_menu_generation + 1;
+        memcpy(g_backend_block, rec, 0x40);
+        return 1;
+    }
+
+    if (kind == 4) {
+        if ((rec[2] & g_backend_block[1]) == 0
+            && (rec[3] & g_backend_block[2]) == 0) {
+            uint64_t rc = spin_state_dispatch(0x284000);
+
+            g_menu_state_latch = 0;
+            return rc;
+        }
+        g_menu_state_latch = 0;
+        return 4;
+    }
+    g_menu_state_latch = 0;
+    return 1;
 }
 
-/* ===== nexus_menu_server_open @ 00194670 ===== */
-
-void nexus_menu_server_open(void)
-
+/*
+ * nexus_menu_register_storage — register the storage backend (0x20-byte
+ * block, version 1, non-null +0x10/+0x18). Installs it at 0x284a88.
+ * Returns 1 registered, 4 rejected, 3 busy. @ 0018416c
+ */
+uint64_t nexus_menu_register_storage(int *block)
 {
-  (*(code *)PTR_nexus_menu_server_open_001a3a40)();
-  return;
+    uint64_t *rec = (uint64_t *)(void *)block;
+
+    if (block == NULL || rec[0] != ((uint64_t)1 << 32 | 0x20)
+        || rec[2] == 0 || rec[3] == 0)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+
+    g_storage_block[0] = rec[0];
+    g_storage_block[1] = rec[1];
+    g_storage_block[2] = rec[2];
+    g_storage_block[3] = rec[3];
+    g_menu_state_latch = 0;
+    return 1;
 }
 
-/* ===== nexus_menu_server_action @ 00194680 ===== */
-
-void nexus_menu_server_action(void)
-
+/*
+ * nexus_menu_setting_value — read one of the 118 setting slots (id < 0x76)
+ * from the cache at 0x2846b0. Returns 1 with *value_out set, 3 busy, 4
+ * bad args. @ 001841f0
+ */
+uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out)
 {
-  (*(code *)PTR_nexus_menu_server_action_001a3a48)();
-  return;
+    if (id < 0x76 && value_out != NULL) {
+        if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+            *value_out = g_menu_settings[id];
+            g_menu_state_latch = 0;
+            return 1;
+        }
+        return 3;
+    }
+    return 4;
 }
 
-/* ===== nexus_menu_theme_action @ 001946c0 ===== */
-
-void nexus_menu_theme_action(void)
-
+/*
+ * nexus_menu_export — serialize the settings into a caller buffer
+ * (>= 0x3c4 bytes): settings_blob_build writes the 0x3c4 'NM69252' blob
+ * and *out_len is set to 0x3c4. Returns 1 ok, 3 busy, 4 bad args.
+ * @ 0018425c
+ */
+uint64_t nexus_menu_export(long buf, uint64_t cap, uint64_t *out_len)
 {
-  (*(code *)PTR_nexus_menu_theme_action_001a3a68)();
-  return;
+    if (buf != 0 && cap > 0x3c3 && out_len != NULL) {
+        if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+            settings_blob_build(buf);
+            *out_len = 0x3c4;
+            g_menu_state_latch = 0;
+            return 1;
+        }
+        return 3;
+    }
+    return 4;
 }
 
-/* ===== nexus_menu_profile_open @ 001946f0 ===== */
+int menu_settings_blob_verify(void *blob, uint64_t len, void *values_out);
 
-void nexus_menu_profile_open(void)
-
+/*
+ * nexus_menu_import — restore settings from a verified blob: verify (see
+ * menu_settings_blob_verify), then — under the state latch, only for the
+ * owning id — settings_values_commit pushes the 118 values into the live
+ * channels. The raw return drops the verify verdict (void here; the
+ * commit verdict is the raw return register). @ 001843dc
+ */
+void nexus_menu_import(void *blob, uint64_t len, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_profile_open_001a3a80)();
-  return;
+    uint8_t values[472]; /* 0x1d8 — 118 dwords */
+    uint64_t verdict;
+
+    verdict = menu_settings_blob_verify(blob, len, values);
+    if ((int)verdict == 1) {
+        if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+            if (owner_id > 0 && (int)g_menu_owner_id == owner_id)
+                settings_values_commit(values);
+            g_menu_state_latch = 0;
+        }
+    }
 }
 
-/* ===== nexus_menu_profile_action @ 00194700 ===== */
-
-void nexus_menu_profile_action(void)
-
+/*
+ * menu_settings_blob_verify — validate a 0x3c4-byte settings blob: magic
+ * 'NM69252' (qword 0x32353239364d4e), version 1 or 2, entry count 0x76,
+ * CRC-32 (reflected 0xedb88320/0x76dc4190, NEON-folded in the dump) over
+ * the first 0x3c0 bytes matching the little-endian tail at +0x3c0. Then
+ * walks the 118 feature-range records from the rodata template (base
+ * 0x1a36f8 + 0x18: {value, lo, hi, name} quads) — each blob value must
+ * equal the record value and sit inside [lo, hi]; version-1 blobs remap
+ * 'nexus_dodge_reaction_pct' (and v2..v5 spellings) to 0xb4. Returns 1
+ * with values[] filled (raw `param_3 + i*4`), else 4. @ 0018447c
+ */
+int menu_settings_blob_verify(void *blob, uint64_t len, void *values_out)
 {
-  (*(code *)PTR_nexus_menu_profile_action_001a3a88)();
-  return;
+    uint64_t *rec = blob;
+    int32_t *values = values_out;
+
+    if (blob == NULL || len != 0x3c4)
+        return 4;
+    if (rec[0] != 0x32353239364d4eULL /* "NM69252" */
+        || (uint32_t)(rec[1] - 1) >= 2
+        || *(int32_t *)((char *)blob + 0xc) != 0x76)
+        return 4;
+
+    /* CRC-32 (reflected, poly 0xedb88320) over the first 0x3c0 bytes */
+    {
+        const uint8_t *p = blob;
+        uint32_t crc = 0xffffffff;
+        int i;
+
+        for (i = 0; i < 0x3c0; i++) {
+            int bit;
+
+            crc ^= p[i];
+            for (bit = 0; bit < 8; bit++)
+                crc = (crc >> 1)
+                      ^ (0xedb88320u & (uint32_t)(-(int32_t)(crc & 1)));
+        }
+        {
+            uint32_t stored = (uint32_t)*(uint16_t *)((char *)blob + 0x3c0)
+                              | (uint32_t)p[0x3c2] << 16
+                              | (uint32_t)p[0x3c3] << 24;
+
+            if (stored != ~crc)
+                return 4;
+        }
+    }
+
+    /* walk the 118 feature records: {value, lo, hi} + name from the
+     * rodata template (raw walks PTR table + 0xc quads) */
+    {
+        const uint32_t version = (uint32_t)rec[1];
+        uint32_t i = 0;
+        const uint8_t *base = g_feature_template + 0x18;
+
+        while (i < 0x76) {
+            uint32_t value = *(const uint32_t *)(base + i * 8);
+            int32_t lo = *(const int32_t *)(base + i * 8 + 4);
+            int32_t hi = *(const int32_t *)(base + i * 8 + 8);
+
+            if ((uint32_t)lo > value || value > (uint32_t)hi)
+                return 4;
+            if (version == 1 && value == 100) {
+                const char *name = *(const char *const *)
+                                       (g_feature_template + 0x0c + i * 0x30);
+
+                if (strcmp(name, "nexus_dodge_reaction_pct") == 0
+                    || strcmp(name, "nexus_v2_dodge_reaction_pct") == 0
+                    || strcmp(name, "nexus_v3_dodge_reaction_pct") == 0
+                    || strcmp(name, "nexus_v4_dodge_reaction_pct") == 0
+                    || strcmp(name, "nexus_v5_dodge_reaction_pct") == 0)
+                    value = 0xb4;
+            }
+            values[i] = (int32_t)value;
+            i = i + 1;
+            base += 8;
+        }
+        return 1;
+    }
 }
 
-/* ===== nexus_menu_dispatch @ 00194730 ===== */
-
-void nexus_menu_dispatch(void)
-
+/*
+ * nexus_menu_set_battle — set the in-battle flag (owner-gated): when the
+ * flag changes, the battle row resets to 0, the generation bumps and the
+ * flag is adopted. Returns 1 ok, 3 busy, 4 bad args/owner. @ 00184858
+ */
+uint64_t nexus_menu_set_battle(int in_battle, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_dispatch_001a3aa0)();
-  return;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+        uint64_t verdict = 4;
+
+        if (owner_id > 0 && (int)g_menu_owner_id == owner_id) {
+            verdict = 1;
+            if ((bool)g_menu_battle_flag != (in_battle != 0)) {
+                g_menu_battle_row = 0;
+                g_menu_generation = g_menu_generation + 1;
+                g_menu_battle_flag = (uint8_t)(in_battle != 0);
+            }
+        }
+        g_menu_state_latch = 0;
+        return verdict;
+    }
+    return 3;
 }
 
-/* ===== nexus_menu_theme_pump @ 00194740 ===== */
-
-void nexus_menu_theme_pump(void)
-
+/*
+ * nexus_menu_scroll_battle — scroll the battle view by delta (owner-gated,
+ * in-battle only): the new row is clamped to [0, rows-4] where rows =
+ * (main_list_len + 1) >> 1 (min 4), the generation bumps and the row is
+ * adopted. Returns 1 ok, 3 busy, 4 bad args/owner/not in battle.
+ * @ 00184900
+ */
+uint64_t nexus_menu_scroll_battle(int delta, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_theme_pump_001a3aa8)();
-  return;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+        uint64_t verdict = 4;
+
+        if (owner_id > 0 && (int)g_menu_owner_id == owner_id
+            && g_menu_battle_flag != 0) {
+            uint32_t row = (uint32_t)g_menu_battle_row + (uint32_t)delta;
+            extern const int32_t g_main_list_len; /* raw 0x1a3700 block */
+
+            int rows = (int)((uint32_t)(g_main_list_len + 1) >> 1);
+
+            if (rows < 5)
+                rows = 4;
+            if ((int)row < 1)
+                row = 0;
+            if ((uint32_t)(rows - 4) <= row)
+                row = (uint32_t)(rows - 4);
+            g_menu_generation = g_menu_generation + 1;
+            g_menu_battle_row = (uint8_t)row;
+            verdict = 1;
+        }
+        g_menu_state_latch = 0;
+        return verdict;
+    }
+    return 3;
 }
 
-/* ===== nexus_menu_profile_pump @ 00194760 ===== */
+/* main list length source (raw reads the qword at the 0x1a3700 pointer
+ * block then computes (len + 1) >> 1; the block holds the live count) */
+const int32_t g_main_list_len; /* rodata-backed live count @ 0x1a3700 block */
+/* menu_engine chain chunk 10: covers raw lines 5278-5700 (nexus_menu_action_status .. nexus_menu_server_action; theme_action straddles into 5726-6021 and is finished here) */
 
-void nexus_menu_profile_pump(void)
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern void menu_probe_log(void *unused, const char *message); /* chunk 8 @ 0017fbc8 */
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern void menu_row_state_init(void *state_out,
+                                const void *entry); /* widgets @ 00184e28 — 0x18
+                                                       row state from a 0x48-stride
+                                                       menu entry */
+extern int menu_scroll_revision_bump(int delta, int *p); /* @ 00194010 */
+extern void theme_store_reset(void *buf, uint32_t size); /* misc @ 00191920 */
+extern int script_port_server_select(int kind);          /* misc @ 00191bb0 */
+extern void theme_apply_defer(int a, int b, int c);      /* renderer @ 00186c90 */
+extern void theme_preview_load_begin(void);              /* misc @ 00186bf4 */
+extern int theme_menu_status_set(int code, int tid, const char *reason); /* misc @ 00183cdc */
+
+/* menu state block (chunk 8/9 own the definitions) */
+extern uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+extern uint32_t g_menu_init_done;    /* 0x284690 — init phase */
+extern uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+extern uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+extern uint8_t  g_menu_battle_row;   /* 0x28469f — battle scroll row */
+extern uint8_t  g_menu_open_char;    /* 0x28469d — open screen char */
+extern uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+extern uint8_t  g_menu_state_ready;  /* 0x28468c — template copied */
+extern uint8_t  g_menu_visible;      /* 0x28469c — menu visible flag */
+extern uint8_t  g_menu_status_valid; /* 0x284ae8 — status valid */
+extern int32_t  g_menu_settings[0x76]; /* 0x2846b0 — 118 setting slots */
+extern const uint8_t g_feature_template[0x1f8]; /* rodata @ 0x1a36f8 block */
+
+/* feature registry blocks (rodata pointer tables) */
+extern const void *const g_feature_entries;   /* 0x1a36f0 — 0x48-stride entries */
+extern const void *const g_feature_names;     /* 0x1a36f8 string table ("nexus sx spin") */
+extern const void *const g_main_list;         /* 0x1a3700 — live main list */
+extern const void *const g_quick_rows;        /* 0x1a3708 — 0x20-stride quick rows */
+extern const void *const g_quick_screens;     /* 0x1a3710 — quick row count */
+extern const char *const g_screen_rows;       /* 0x1a3718 — 0x10-stride screen rows */
+extern const void *const g_static_rows;       /* 0x1a3720 — 0x10-stride static rows */
+
+/* theme machine state (raw 0x287b90..0x287c68; theme_status_line and the
+ * apply state are digest-owned shared globals) */
+extern uint32_t g_theme_apply_state;   /* 0x287b90 — 0 none, 1..3 active */
+extern uint32_t g_theme_slot_sel;      /* 0x287b94 — selected music slot */
+extern uint32_t g_theme_slot_valid;    /* 0x287b98 — slot loaded flag */
+extern int32_t  g_theme_music_hi;      /* 0x287b9c — music id hi */
+extern int32_t  g_theme_music_lo;      /* 0x287ba0 — music id lo */
+extern uint32_t g_theme_busy;          /* 0x287ba4 — busy flag */
+extern uint32_t g_theme_gen;           /* 0x287bac — theme generation */
+extern uint32_t g_theme_prev_gen;      /* 0x287bb0 — committed generation */
+extern uint32_t g_theme_slots_used;    /* 0x287bb4 — slot selection bitmask */
+extern uint32_t g_theme_settings_rev;  /* 0x287c40 — settings revision */
+extern uint32_t g_theme_row_rev_me10;   /* 0x287c48 — theme row revision */
+extern uint32_t g_theme_prev_row_rev;  /* 0x287c50 — committed row revision */
+extern int32_t  g_theme_music_a;       /* 0x287a64 — music id a */
+extern uint32_t g_theme_music_b;       /* 0x287a68 — music flags */
+extern char     g_theme_music_name[0x60]; /* 0x287a6c — music name */
+extern uint32_t g_theme_music_src;     /* 0x287940 — selected source flags */
+extern uint32_t g_theme_page_rev;      /* 0x287b8c — page char source */
+extern uint32_t g_theme_scroll_rev;    /* 0x22d824 — g_menu_scroll_revision */
+extern uint32_t g_theme_last_screen;   /* 0x22d820 — pre-theme screen char */
+
+/* theme store page rows (raw 0x285408 block, 0x4a stride) */
+extern uint32_t g_theme_store_rows;    /* 0x285414 — store row count */
+extern uint32_t g_theme_store_rev;     /* 0x285420 — store revision */
+extern uint32_t g_theme_store_cap;     /* 0x285418 — slot cap */
+extern uint32_t g_theme_store_slots;   /* 0x285424 — slot permission mask */
+extern uint32_t g_theme_store_sel;     /* 0x285430 — selected slot bits */
+extern uint32_t g_theme_store_bit30;   /* 0x285434 — slot-30 id */
+extern uint32_t g_theme_store_bit38;   /* 0x285438 — slot-38 id */
+extern uint32_t g_theme_page_rev_src;  /* 0x28543c — page rows source */
+extern uint32_t g_theme_page_flags;    /* 0x285440 — page row flags */
+extern uint8_t  g_theme_page_names[];  /* 0x285444 — page name blob */
+extern uint32_t g_theme_store_count;   /* 0x284af4 — store count (<= 0x20) */
+extern uint32_t g_theme_store_ids[];   /* 0x284b08 — store ids (0x12 stride) */
+extern uint32_t g_theme_music_status;  /* 0x287c6c — music status line */
+extern uint32_t g_theme_music_prev;    /* 0x287c68 — previous status code */
+
+/* profile page state (raw 0x28c288..0x28c2c8) */
+static uint32_t g_profile_last_screen; /* 0x28c288 — pre-profile screen char */
+static uint32_t g_profile_busy;        /* 0x28c28c — page busy flag */
+static uint32_t g_profile_pending;     /* 0x28c290 — pending action */
+static uint32_t g_profile_generation;  /* 0x28c298 — page generation */
+static uint32_t g_profile_action;      /* 0x28c294 — pending action id */
+static uint32_t g_profile_status_line; /* 0x28c2c8 — status line handle */
+static uint32_t g_profile_a;           /* 0x28c2a0 — profile field a */
+extern uint32_t g_profile_slots;       /* 0x28a4c0 — profile slots present */
+extern uint32_t g_profile_slot_mask;   /* 0x28a4c4 — slot permission mask */
+extern uint32_t g_profile_slot_d;      /* 0x28a4d4 — slot-d value */
+
+extern const char g_empty_text_me10[]; /* 0x134f22 — shared "" rodata */
+extern const uint64_t g_theme_defaults_pair;  /* 0x10f860 — state-2 {state, slot} */
+extern const uint64_t g_theme_defaults_close; /* 0x10f740 — close {lo, hi} */
+extern int32_t g_theme_page_ids[];            /* 0x287bc0 — background row ids */
+extern uint32_t g_theme_page_flag_tbl[];      /* 0x285440 — page row flags */
+extern int32_t g_theme_page_src_tbl[];        /* 0x28543c — page row source */
+
+/* page-row accessors (0x4a stride) */
+static inline uint32_t g_theme_page_flags_row(uint32_t idx)
 {
-  (*(code *)PTR_nexus_menu_profile_pump_001a3ab8)();
-  return;
+    return g_theme_page_flag_tbl[(uint64_t)idx * 0x4a];
+}
+static inline int32_t g_theme_page_rev_src_row(uint32_t idx)
+{
+    return g_theme_page_src_tbl[(uint64_t)idx * 0x4a];
 }
 
-/* ===== nexus_menu_set_value @ 001947c0 ===== */
+/* raw view row constants */
+extern const uint64_t g_view_row_a;    /* 0x10f8b8 — {0x20000 row} pair */
+extern const uint64_t g_view_row_b;    /* 0x10f7b8 — {0x20001 row} pair */
+extern const uint64_t g_view_row_c;    /* 0x10f788 — {0x82 row} pair */
+extern const uint32_t g_view_col_a[5]; /* 0x140698 — column x table (%5) */
+extern const uint32_t g_view_col_b[2]; /* 0x1406ac — column y table (/5) */
+extern const uint32_t g_quick_col[8];  /* 0x1406b8 — quick preset cols */
+extern const char g_row_text_prev[];   /* 0x133357 — row text */
+extern const char g_row_text_next[];   /* 0x13c999 — row text */
+extern const char g_row_text_settings[]; /* 0x136344 — row text */
+extern const char g_format_1343dc[];   /* 0x1343dc — status format */
 
-void nexus_menu_set_value(void)
+/* ===== action status ===== */
 
+/*
+ * nexus_menu_action_status — read the 0x18-byte row state for entry id
+ * (< 0xa8) from the feature registry (0x48-stride entries at 0x1a36f0) via
+ * menu_row_state_init, owner-gated. Returns 1 with the three qwords
+ * copied out, 3 busy, 4 bad args/owner. @ 00184d4c
+ */
+void nexus_menu_action_status(uint32_t id, void *status_out, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_set_value_001a3ae8)();
-  return;
+    uint64_t state[3];
+
+    if (id < 0xa8 && status_out != NULL) {
+        if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+            if (owner_id > 0 && (int)g_menu_owner_id == owner_id) {
+                menu_row_state_init(state,
+                                    (const uint8_t *)&g_feature_entries
+                                        + (uint64_t)id * 0x48);
+                memcpy(status_out, state, sizeof state);
+            }
+            g_menu_state_latch = 0;
+        }
+    }
 }
 
-/* ===== nexus_menu_set_battle @ 001947d0 ===== */
+/* ===== ui state ===== */
 
-void nexus_menu_set_battle(void)
-
+/*
+ * nexus_menu_ui_state — read the 8-byte ui-state tuple {generation, flag
+ * 0x28469c, screen char, battle flag, battle row}, owner-gated. Returns 1
+ * with the tuple copied, 3 busy, 4 bad args. @ 00185650
+ */
+int nexus_menu_ui_state(void *state_out, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_set_battle_001a3af0)();
-  return;
+    if (state_out == NULL)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+        uint64_t verdict = 4;
+
+        if (owner_id > 0 && (int)g_menu_owner_id == owner_id) {
+            uint8_t *out = state_out;
+
+            verdict = 1;
+            *(uint32_t *)out = g_menu_generation;
+            out[4] = g_menu_visible;
+            out[5] = g_menu_open_char;
+            out[6] = g_menu_battle_flag;
+            out[7] = g_menu_battle_row;
+        }
+        g_menu_state_latch = 0;
+        return verdict;
+    }
+    return 3;
 }
 
-/* ===== nexus_menu_view @ 001947e0 ===== */
+/* ===== view ===== */
 
-void nexus_menu_view(void)
-
+/*
+ * nexus_menu_view — build the 0x690-byte main view record, owner-gated.
+ * After the header {generation, row count, flag, screen char, battle
+ * flag/row} it appends: (in battle) up to 8 quick rows from the 0x20-
+ * stride list at 0x1a3708 (offset by the battle row), colors 0xc3dc0000 /
+ * 0xc2b40000 alternating, y = 210.0*row + 178.0 (raw fmadd); then the
+ * fixed rows 0x20000/0x20001 (prev/next). Out of battle: the preset rows
+ * from the 0x10-stride screen list at 0x1a3718 filtered by the current
+ * screen char (with the 'R' quick-preset column remap through the
+ * 0x1406b8 table), using the 'nexus_quick_menu_preset'/'disabled' setting
+ * values, then 6 static rows from 0x1a3720 (y = 210.0*row - 456.0,
+ * x-scale 0x44010000) with the current-screen highlight, and the final
+ * 0x82 settings row. Each row pulls its text/states via menu_row_state_init
+ * from the feature registry. Returns 1, 3 busy, 4 bad args.
+ * @ 001856f8
+ */
+void nexus_menu_view(void *view_out, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_view_001a3af8)();
-  return;
+    if (view_out == NULL)
+        return;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return;
+    if (!(owner_id > 0 && (int)g_menu_owner_id == owner_id)) {
+        g_menu_state_latch = 0;
+        return;
+    }
+
+    {
+        uint32_t *rec = view_out;
+
+        memset(rec, 0, 0x690);
+        rec[0] = g_menu_generation;          /* +0x00 generation */
+        *(uint8_t *)((char *)rec + 9) = g_menu_visible;   /* +0x09 flag */
+        *(char *)((char *)rec + 8) = (char)g_menu_open_char; /* +0x08 screen */
+        *(uint8_t *)((char *)rec + 10) = g_menu_battle_flag;
+        *(uint8_t *)((char *)rec + 11) = g_menu_battle_row;
+        rec[1] = 0; /* +0x04 row count */
+
+        if (g_menu_battle_flag != 0) {
+            /* battle quick rows: start at battle_row * 2 from the list end */
+            uint64_t rows_total = *(const uint64_t *)&g_main_list;
+            uint64_t start = 0;
+            const uint8_t *qr = (const uint8_t *)&g_quick_rows
+                                + (uint64_t)g_menu_battle_row * 0x20 + 8;
+            uint32_t i;
+
+            if ((uint64_t)g_menu_battle_row * 2 <= rows_total)
+                start = rows_total - (uint64_t)g_menu_battle_row * 2;
+            for (i = 0; i < 8 && start != i; i++) {
+                uint32_t row = rec[1];
+                uint16_t entry_id = *(const uint16_t *)(qr - 6);
+                uint32_t color = (i & 1) != 0 ? 0xc2b40000u : 0xc3dc0000u;
+                float y = 210.0f * (float)(i >> 1) + 178.0f; /* raw fmadd */
+
+                rec[1] = row + 1;
+                rec[row * 0x10 + 4] = (uint32_t)entry_id;
+                *(uint64_t *)(rec + row * 0x10 + 6) = *(const uint64_t *)qr;
+                rec[row * 0x10 + 10] = color;
+                rec[row * 0x10 + 11] = *(uint32_t *)(void *)&y;
+                *(uint64_t *)(rec + row * 0x10 + 8) =
+                    *(const uint64_t *)((const uint8_t *)&g_feature_entries
+                                        + (uint64_t)entry_id * 0x48 + 0x18);
+                *(uint8_t *)(rec + row * 0x10 + 0x12) =
+                    *(const uint8_t *)((const uint8_t *)&g_feature_entries
+                                       + (uint64_t)entry_id * 0x48 + 0x44);
+                {
+                    uint64_t state[3];
+
+                    menu_row_state_init(state,
+                                        (const uint8_t *)&g_feature_entries
+                                            + (uint64_t)entry_id * 0x48);
+                    *(uint64_t *)(rec + row * 0x10 + 0x0c) = state[0];
+                    *(uint64_t *)(rec + row * 0x10 + 0x0e) = state[1];
+                    *(uint64_t *)(rec + row * 0x10 + 0x10) = state[2];
+                }
+                qr += 0x10;
+            }
+            /* fixed prev/next rows */
+            {
+                uint32_t row = rec[1];
+                uint32_t *r = rec + row * 0x10 + 4;
+
+                r[0] = 0x20000;
+                *(const char **)(r + 2) = g_row_text_prev;
+                *(const char **)(r + 4) = g_empty_text_me10;
+                *(uint64_t *)(r + 6) = g_view_row_a;
+                ((uint8_t *)r)[0xd] = 1;
+                r = rec + (row + 1) * 0x10 + 4;
+                r[0] = 0x20001;
+                *(const char **)(r + 2) = g_row_text_next;
+                *(const char **)(r + 4) = g_empty_text_me10;
+                *(uint64_t *)(r + 6) = g_view_row_b;
+                ((uint8_t *)r)[0xd] = 1;
+                rec[1] = row + 2;
+            }
+        } else {
+            /* preset rows filtered by screen char */
+            int32_t preset_idx = -1;
+            const char *const *names = (const char *const *)&g_feature_names;
+            int i;
+
+            for (i = 0; i < 0x76; i++)
+                if (strcmp(names[i], "nexus_quick_menu_preset") == 0) {
+                    preset_idx = i;
+                    break;
+                }
+            for (i = 0; i < 0x76; i++)
+                if (strcmp(names[i], "nexus_quick_menu_disabled") == 0)
+                    break; /* index recorded by the raw walk (value unused here) */
+            {
+                int32_t preset_val = g_menu_settings[preset_idx];
+                uint64_t quick_count = *(const uint64_t *)&g_quick_screens;
+                const char *sr = (const char *)&g_screen_rows;
+                uint32_t pass;
+
+                for (pass = 0; pass < quick_count; pass++) {
+                    if (*sr == (char)g_menu_open_char) {
+                        uint8_t kind = (uint8_t)sr[1];
+
+                        if (kind < 0xf) {
+                            uint32_t row = rec[1];
+
+                            if (row < 0xf) {
+                                uint16_t entry_id = *(const uint16_t *)(sr + 2);
+                                uint32_t col = kind;
+
+                                if ((char)g_menu_open_char == 'R'
+                                    && preset_val != 0)
+                                    goto next_row;
+                                if ((char)g_menu_open_char == 'R'
+                                    && preset_val - 1 < 3) {
+                                    /* quick preset column remap */
+                                    const uint32_t *qc =
+                                        (const uint32_t *)(g_quick_col
+                                                           + (uint64_t)
+                                                                 (preset_val - 1)
+                                                                 * 8);
+                                    uint32_t k;
+
+                                    for (k = 0; k < 8; k++)
+                                        if (qc[k] == kind) {
+                                            col = k;
+                                            break;
+                                        }
+                                }
+                                rec[1] = row + 1;
+                                rec[row * 0x10 + 4] = (uint32_t)entry_id;
+                                *(uint64_t *)(rec + row * 0x10 + 6) =
+                                    *(const uint64_t *)(sr + 8);
+                                *(uint64_t *)(rec + row * 0x10 + 8) =
+                                    *(const uint64_t *)
+                                        ((const uint8_t *)&g_feature_entries
+                                         + (uint64_t)entry_id * 0x48 + 0x18);
+                                rec[row * 0x10 + 10] =
+                                    g_view_col_a[col % 5];
+                                rec[row * 0x10 + 11] =
+                                    g_view_col_b[col / 5];
+                                *(uint8_t *)(rec + row * 0x10 + 0x12) =
+                                    *(const uint8_t *)
+                                        ((const uint8_t *)&g_feature_entries
+                                         + (uint64_t)entry_id * 0x48 + 0x44);
+                                {
+                                    uint64_t state[3];
+
+                                    menu_row_state_init(
+                                        state,
+                                        (const uint8_t *)&g_feature_entries
+                                            + (uint64_t)entry_id * 0x48);
+                                    *(uint64_t *)(rec + row * 0x10 + 0x0c) =
+                                        state[0];
+                                    *(uint64_t *)(rec + row * 0x10 + 0x0e) =
+                                        state[1];
+                                    *(uint64_t *)(rec + row * 0x10 + 0x10) =
+                                        state[2];
+                                }
+                                if (g_menu_battle_flag != 0)
+                                    break;
+                            }
+                        }
+                    }
+next_row:
+                    sr += 0x10;
+                }
+            }
+
+            /* 6 static rows */
+            {
+                const uint16_t *st = (const uint16_t *)&g_static_rows;
+                uint32_t i2;
+
+                for (i2 = 0; i2 < 6; i2++) {
+                    uint32_t row = rec[1];
+                    float y = 210.0f * (float)i2 - 456.0f; /* raw fmadd */
+                    uint16_t entry_id = st[0];
+                    float xs = 0x44010000; /* 512.0f raw bits */
+
+                    rec[1] = row + 1;
+                    rec[row * 0x10 + 4] = (uint32_t)entry_id;
+                    *(uint64_t *)(rec + row * 0x10 + 6) =
+                        *(const uint64_t *)(st + 4);
+                    rec[row * 0x10 + 10] = *(uint32_t *)(void *)&y;
+                    rec[row * 0x10 + 11] = *(uint32_t *)(void *)&xs;
+                    *(uint8_t *)(rec + row * 0x10 + 0x12) = 1;
+                    *(const char **)(rec + row * 0x10 + 8) = g_empty_text_me10;
+                    *(bool *)((char *)rec + (uint64_t)row * 0x40 + 0x49) =
+                        (char)g_menu_open_char == (char)st[1];
+                    {
+                        uint64_t state[3];
+
+                        menu_row_state_init(state,
+                                            (const uint8_t *)&g_feature_entries
+                                                + (uint64_t)(uint32_t)entry_id
+                                                      * 0x48);
+                        *(uint64_t *)(rec + row * 0x10 + 0x0c) = state[0];
+                        *(uint64_t *)(rec + row * 0x10 + 0x0e) = state[1];
+                        *(uint64_t *)(rec + row * 0x10 + 0x10) = state[2];
+                    }
+                    st += 8;
+                }
+            }
+
+            /* final settings row 0x82 */
+            {
+                uint32_t row = rec[1];
+
+                rec[1] = row + 1;
+                *(const char **)(rec + row * 0x10 + 6) = g_row_text_settings;
+                *(const char **)(rec + row * 0x10 + 8) = g_empty_text_me10;
+                rec[row * 0x10 + 4] = 0x82;
+                *(uint64_t *)(rec + row * 0x10 + 10) = g_view_row_c;
+                {
+                    uint64_t state[3];
+
+                    menu_row_state_init(
+                        state, (const uint8_t *)&g_feature_entries + 0x2490);
+                    *(uint64_t *)(rec + row * 0x10 + 0x0c) = state[0];
+                    *(uint64_t *)(rec + row * 0x10 + 0x0e) = state[1];
+                    *(uint64_t *)(rec + row * 0x10 + 0x10) = state[2];
+                }
+            }
+        }
+    }
+    g_menu_state_latch = 0;
 }
 
-/* ===== nexus_menu_action_status @ 00194830 ===== */
+/* ===== server family ===== */
 
-void nexus_menu_action_status(void)
-
+/*
+ * nexus_menu_server_thread — true when tid owns the menu (positive and
+ * equal to the stored owner id). @ 00185e94
+ */
+bool nexus_menu_server_thread(int tid)
 {
-  (*(code *)PTR_nexus_menu_action_status_001a3b20)();
-  return;
+    return 0 < tid && (int)g_menu_owner_id == tid;
 }
 
-/* ===== nexus_menu_section_snapshot @ 00194840 ===== */
-
-void nexus_menu_section_snapshot(void)
-
+/*
+ * nexus_menu_server_open — open the server list page ('Q' screen),
+ * owner-gated, not in battle, menu visible. Saves the previous screen char
+ * (0x22d820 unless 'Q'), resets the battle row, bumps the generation,
+ * resets the theme store buffer (0x918) and — when the store count is
+ * 0x21..0xffffffff (raw) or non-zero — selects the server at index
+ * 0xfffffffe. Returns 1 opened, 3 busy, 4 rejected. @ 00185eac
+ */
+uint64_t nexus_menu_server_open(int owner_id)
 {
-  (*(code *)PTR_nexus_menu_section_snapshot_001a3b28)();
-  return;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+    if (!(owner_id > 0 && (int)g_menu_owner_id == owner_id
+          && g_menu_battle_flag == 0 && g_menu_visible != 0)) {
+        g_menu_state_latch = 0;
+        return 4;
+    }
+
+    if (g_menu_open_char != 0x51)
+        g_theme_last_screen = (uint32_t)g_menu_open_char;
+    g_menu_battle_row = 0;
+    g_menu_generation = g_menu_generation + 1;
+    g_menu_open_char = 0x51; /* 'Q' */
+    g_menu_state_latch = 0;
+    theme_store_reset((void *)0x284af0, 0x918);
+    if (g_theme_store_count < 0x21) {
+        if (g_theme_store_count != 0)
+            return 1;
+    } else {
+        g_theme_store_count = 0;
+    }
+    script_port_server_select(0xfffffffe);
+    return 1;
 }
 
-/* ===== nexus_menu_section_present @ 00194850 ===== */
-
-void nexus_menu_section_present(void)
-
+/*
+ * nexus_menu_server_action — perform a server-list action (0x24030..0x2405f),
+ * owner-gated on the 'Q' screen, not in battle, menu visible. 0x24001
+ * closes back to the saved screen char; 0x24002 selects -1, 0x24003
+ * selects -2, ids >= 0x24010 select the stored server at
+ * (id - 0x24010) (bounded by the store count, ids from the 0x12-stride
+ * table at 0x284b08). Returns the select verdict (or 1/4), 3 busy.
+ * @ 00185f90
+ */
+uint32_t nexus_menu_server_action(uint32_t action, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_section_present_001a3b30)();
-  return;
+    if (action - 0x24030 >= 0xffffffd0)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+    if (owner_id < 1 || (int)g_menu_owner_id != owner_id
+        || g_menu_open_char != 'Q' || g_menu_battle_flag != 0
+        || g_menu_visible == 0) {
+        g_menu_state_latch = 0;
+        return 4;
+    }
+
+    {
+        int32_t select;
+
+        if (action == 0x24003)
+            select = 0xfffffffe;
+        else if (action == 0x24002)
+            select = 0xffffffff;
+        else if (action == 0x24001) {
+            g_menu_battle_row = 0;
+            g_menu_open_char = (char)g_theme_last_screen;
+            g_menu_generation = g_menu_generation + 1;
+            g_menu_state_latch = 0;
+            return 1;
+        } else {
+            if (action < 0x24010) {
+                g_menu_state_latch = 0;
+                return 4;
+            }
+            if (g_theme_store_count <= action - 0x24010) {
+                g_menu_state_latch = 0;
+                return 4;
+            }
+            select = g_theme_store_ids[(uint64_t)(action - 0x24010) * 0x12];
+        }
+        g_menu_state_latch = 0;
+        {
+            uint32_t verdict = (uint32_t)script_port_server_select(select);
+
+            if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+                return verdict;
+            g_menu_generation = g_menu_generation + 1;
+            g_menu_state_latch = 0;
+            return verdict;
+        }
+    }
 }
 
-/* ===== nexus_menu_main_count @ 001948f0 ===== */
+/* ===== theme action ===== */
 
-void nexus_menu_main_count(void)
-
+/*
+ * nexus_menu_theme_action — perform a theme-page action (0x26001..0x2605f),
+ * owner-gated on the 't' screen, not in battle, menu visible. 0x26001
+ * closes the theme page: clears the busy flag and status line, bumps the
+ * row revision, restores state 2 pages to the rodata defaults (0x10f860)
+ * or closes to the saved screen char. The slot actions require the page
+ * machine ready (not busy, rows loaded): 0x26004 applies the pending
+ * background (state 3), 0x26002/3 move the music slot (8-slot wrap,
+ * bounded by the store cap), 0x26006 commits the selected music, 0x26007
+ * (apply + preview + flag gates) or 0x26005 (flag gate) defer the apply;
+ * state-3 pages accept 0x26008/9/a (toggle bits vs 0x285430) and
+ * 0x2600b/d/e (slot ids 0x285434/8); background rows 0x26020+ (bounded by
+ * the store rows, generation-matched, slot-bitmask-gated) select a
+ * background ('CHOOSE MUSIC FOR THIS BACKGROUND' or 'SETTINGS CHANGED -
+ * SELECT BACKGROUND AGAIN') and finish with theme_preview_load_begin.
+ * Returns 1 applied, 2 deferred/busy, 4 rejected, 3 busy. @ 00186548
+ */
+uint64_t nexus_menu_theme_action(uint32_t action, int owner_id)
 {
-  (*(code *)PTR_nexus_menu_main_count_001a3b80)();
-  return;
+    if (action - 0x26040 >= 0xffffffc0)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+    if (owner_id < 1 || (int)g_menu_owner_id != owner_id
+        || g_menu_visible == 0 || g_menu_battle_flag != 0
+        || g_menu_open_char != 't') {
+        g_menu_state_latch = 0;
+        return 4;
+    }
+
+    if (action == 0x26001) {
+        /* close the theme page */
+        g_theme_busy = 0;
+        g_theme_music_status = 0;
+        g_theme_row_rev_me10 = g_theme_row_rev_me10 + 1;
+        if (g_theme_apply_state == 2) {
+            g_theme_busy = 1;
+            g_theme_apply_state = (uint32_t)g_theme_defaults_pair; /* 0x10f860 */
+            g_theme_slot_sel = (uint32_t)(g_theme_defaults_pair >> 32);
+        } else if (g_theme_apply_state == 0) {
+            g_menu_open_char = (char)g_theme_page_rev;
+            g_theme_slots_used = 0;
+            g_theme_gen = g_theme_gen + 1;
+            g_menu_generation = g_menu_generation + 1;
+            g_menu_battle_row = 0;
+            g_menu_state_latch = 0;
+            return 1;
+        } else {
+            g_theme_apply_state = 0;
+            g_theme_slot_sel = 0;
+            g_theme_slot_valid = 0;
+            g_theme_music_lo = (int32_t)g_theme_defaults_close; /* 0x10f740 */
+            g_theme_music_hi = (int32_t)(g_theme_defaults_close >> 32);
+        }
+        g_theme_slot_valid = 0;
+        g_theme_prev_row_rev = g_theme_row_rev_me10;
+        menu_scroll_revision_bump(1, (int *)&g_theme_scroll_rev);
+        g_theme_slots_used = 0;
+        g_theme_gen = g_theme_gen + 1;
+        g_menu_generation = g_menu_generation + 1;
+        g_menu_battle_row = 0;
+        g_menu_state_latch = 0;
+        return 1;
+    }
+
+    /* slot actions: machine must be ready */
+    if (g_theme_busy != 0) {
+        g_menu_state_latch = 0;
+        return 2;
+    }
+    if (g_theme_slot_valid == 0 || g_theme_store_rows == 0) {
+        g_menu_state_latch = 0;
+        return 4;
+    }
+
+    if (action == 0x26004 && g_theme_apply_state == 0) {
+        /* apply the pending background */
+        g_theme_apply_state = 3;
+        menu_scroll_revision_bump(1, (int *)&g_theme_scroll_rev);
+        g_menu_state_latch = 0;
+        g_menu_battle_row = 0;
+        g_menu_generation = g_menu_generation + 1;
+        g_theme_gen = g_theme_gen + 1;
+        g_theme_slots_used = 0;
+        return 1;
+    }
+
+    if ((action & 0xfffffffe) == 0x26002 && g_theme_apply_state < 2) {
+        /* music slot move (0x26002 down, 0x26003 up) with 8-slot wrap */
+        uint32_t slot;
+
+        if (action == 0x26002) {
+            if (g_theme_slot_sel == 0) {
+                g_menu_state_latch = 0;
+                return 4;
+            }
+            slot = 0;
+            if (7 < g_theme_slot_sel)
+                slot = g_theme_slot_sel - 8;
+        } else {
+            slot = g_theme_slot_sel + 8;
+            if (g_theme_store_cap <= g_theme_slot_sel + 8) {
+                g_menu_state_latch = 0;
+                return 4;
+            }
+        }
+        g_theme_slot_valid = 0;
+        g_theme_busy = 1;
+        g_theme_prev_row_rev = g_theme_row_rev_me10;
+        g_theme_slot_sel = slot;
+        menu_scroll_revision_bump(1, (int *)&g_theme_scroll_rev);
+        g_menu_state_latch = 0;
+        g_menu_battle_row = 0;
+        g_menu_generation = g_menu_generation + 1;
+        g_theme_gen = g_theme_gen + 1;
+        g_theme_slots_used = 0;
+        return 1;
+    }
+
+    if (action < 0x26020 || 1 < g_theme_apply_state) {
+        /* machine-state actions */
+        uint32_t mode = 0;
+        uint32_t value = 0;
+        int32_t extra = 0;
+
+        if (action == 0x26006
+            && !(g_theme_apply_state == 1 || g_theme_music_hi == 0)) {
+            if (g_theme_settings_rev == g_theme_page_rev_src) {
+                /* commit the selected music: clear the music block */
+                memset((void *)0x287a64, 0, 0x90); /* raw 0x287a64..0x287af8 */
+                g_theme_music_a = -2;
+                ui_status_line_format((void *)0x287a6c, 0x60, 0x60,
+                                      "NO MUSIC");
+                g_theme_music_lo = 1;
+                theme_preview_load_begin();
+                g_menu_state_latch = 0;
+                return 1;
+            }
+            ui_status_line_format((void *)0x287c6c, 0x60, 0x60,
+                                  g_format_1343dc,
+                                  "SETTINGS CHANGED - SELECT BACKGROUND AGAIN");
+            g_menu_state_latch = 0;
+            g_menu_battle_row = 0;
+            g_menu_generation = g_menu_generation + 1;
+            g_theme_gen = g_theme_gen + 1;
+            g_theme_slots_used = 0;
+            return 4;
+        }
+        if (action == 0x26007
+            && g_theme_apply_state == 2 && g_theme_music_prev == 1
+            && g_theme_music_hi != 0 && g_theme_music_a != 0
+            && (g_theme_store_slots & 1) != 0) {
+            mode = 1;
+            value = (uint32_t)g_theme_music_a;
+            extra = g_theme_music_src;
+        } else if (action == 0x26005 && (g_theme_store_slots & 1) != 0) {
+            theme_apply_defer(2, 0, 0);
+            g_menu_state_latch = 0;
+            return 2;
+        } else if (g_theme_apply_state != 3) {
+            g_menu_state_latch = 0;
+            return 4;
+        } else if (action == 0x26008) {
+            value = 1;
+        } else if (action == 0x26009) {
+            value = 4;
+        } else if (action == 0x2600a) {
+            value = 2;
+        } else {
+            g_menu_state_latch = 0;
+            return 4;
+        }
+        if (mode == 0 && (value == 0 || (g_theme_store_slots >> 1 & 1) == 0)) {
+            if (action - 0x2600d >= 0xfffffffe
+                || (g_theme_store_slots & 1) == 0) {
+                if (action == 0x2600d
+                    && (g_theme_store_slots >> 2 & 1) != 0) {
+                    mode = 4;
+                    extra = g_theme_store_bit30;
+                } else if (action == 0x2600e
+                           && (g_theme_store_slots >> 3 & 1) != 0) {
+                    mode = 5;
+                    extra = g_theme_store_bit38;
+                } else {
+                    g_menu_state_latch = 0;
+                    return 4;
+                }
+                value = (uint32_t)(extra == 0);
+            } else {
+                mode = 6;
+                value = 1;
+                if (action == 0x2600b)
+                    value = 0xffffffff;
+            }
+        } else if (mode == 0) {
+            mode = 3;
+            value = g_theme_store_sel ^ value;
+        }
+        theme_apply_defer(mode, value, extra);
+        g_menu_state_latch = 0;
+        return 2;
+    }
+
+    /* background rows 0x26020+ */
+    {
+        uint32_t idx = action - 0x26020;
+
+        if (g_theme_store_rows <= idx
+            || g_theme_prev_gen != g_theme_gen
+            || (g_theme_slots_used >> (idx & 0x1f) & 1) == 0) {
+            g_menu_state_latch = 0;
+            return 4;
+        }
+        {
+            int32_t row_id = g_theme_page_ids[idx];
+            uint32_t flags = g_theme_page_flags_row(idx);
+
+            if (row_id != g_theme_page_rev_src_row(idx)) {
+                g_menu_state_latch = 0;
+                return 4;
+            }
+            if (g_theme_apply_state == 0) {
+                if ((flags >> 1 & 1) != 0) {
+                    /* select the background */
+                    g_theme_music_src = row_id;
+                    g_theme_music_b = flags;
+                    memmove((void *)0x287944,
+                            g_theme_page_names + (uint64_t)idx * 0x128,
+                            0x120);
+                    g_theme_settings_rev = g_theme_store_rev;
+                    g_theme_music_hi = (int32_t)g_theme_defaults_pair;
+                    g_theme_music_lo = (int32_t)(g_theme_defaults_pair >> 32);
+                    g_theme_apply_state = 1;
+                    ui_status_line_format((void *)0x287c6c, 0x60, 0x60,
+                                          g_format_1343dc,
+                                          "CHOOSE MUSIC FOR THIS BACKGROUND");
+                    g_theme_busy = 1;
+                    g_theme_slot_sel = 0;
+                    g_theme_slot_valid = 0;
+                    g_theme_prev_row_rev = g_theme_row_rev_me10;
+                    menu_scroll_revision_bump(1, (int *)&g_theme_scroll_rev);
+                    g_menu_state_latch = 0;
+                    g_menu_battle_row = 0;
+                    g_menu_generation = g_menu_generation + 1;
+                    g_theme_gen = g_theme_gen + 1;
+                    g_theme_slots_used = 0;
+                    return 1;
+                }
+                g_menu_state_latch = 0;
+                return 4;
+            }
+            if (g_theme_music_hi == 0
+                || g_theme_settings_rev != g_theme_store_rev) {
+                ui_status_line_format((void *)0x287c6c, 0x60, 0x60,
+                                      g_format_1343dc,
+                                      "SETTINGS CHANGED - SELECT BACKGROUND AGAIN");
+                g_menu_state_latch = 0;
+                g_menu_battle_row = 0;
+                g_menu_generation = g_menu_generation + 1;
+                g_theme_gen = g_theme_gen + 1;
+                g_theme_slots_used = 0;
+                return 4;
+            }
+            g_theme_music_b = flags;
+            g_theme_music_a = row_id;
+            memmove((void *)0x287a6c,
+                    g_theme_page_names + (uint64_t)idx * 0x128, 0x120);
+        }
+    }
+    g_theme_music_lo = 1;
+    theme_preview_load_begin();
+    g_menu_state_latch = 0;
+    return 1;
 }
 
-/* ===== nexus_menu_settings @ 00194960 ===== */
+/* menu_engine chain chunk 11: covers raw lines 5701-6150 (theme_action tail finished in chunk 10; here: profile_open/action/pump straddles into 6145+ and continues) */
 
-void nexus_menu_settings(void)
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern uint32_t g_launcher_menu_id;  /* 0x22f038 — owning menu id / Mainloop tid */
+extern uint32_t g_stage_log_count;   /* 0x22f4bc — capped-128 stage-log counter */
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern int menu_scroll_revision_bump(int delta, int *p); /* @ 00194010 */
+extern int theme_menu_status_set(int code, int tid, const char *reason); /* misc @ 00183cdc */
+extern int script_port_profile_snapshot(void *a, size_t size, int page); /* misc @ 00191f04 */
+extern int script_port_profile_open(const char *name, size_t len); /* misc @ 00191f60 */
+extern int script_port_profile_set_name(const char *name, size_t len); /* misc @ 00191fa8 */
+
+/* menu state block (chunk 8/9/10 own the definitions) */
+extern uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+extern uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+extern uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+extern uint8_t  g_menu_battle_row;   /* 0x28469f — battle scroll row */
+extern uint8_t  g_menu_open_char;    /* 0x28469d — open screen char */
+extern uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+extern uint8_t  g_menu_visible;      /* 0x28469c — menu visible flag */
+extern uint32_t g_theme_scroll_rev;  /* 0x22d824 — g_menu_scroll_revision */
+extern const char g_format_1343dc[]; /* 0x1343dc — status format */
+
+/* profile page state (chunk 10 externs/definitions) */
+extern uint32_t g_profile_last_screen; /* 0x28c288 — pre-profile screen char */
+extern uint32_t g_profile_busy;        /* 0x28c28c — page busy flag */
+extern uint32_t g_profile_pending;     /* 0x28c290 — pending action */
+extern uint32_t g_profile_generation;  /* 0x28c298 — page generation */
+extern uint32_t g_profile_action;      /* 0x28c294 — pending action id */
+extern uint32_t g_profile_status_line; /* 0x28c2c8 — status line handle */
+extern uint32_t g_profile_a;           /* 0x28c2a0 — profile field a */
+extern uint32_t g_profile_slots;       /* 0x28a4c0 — profile slots present */
+extern uint32_t g_profile_slot_mask;   /* 0x28a4c4 — slot permission mask */
+extern uint32_t g_profile_slot_d;      /* 0x28a4d4 — slot-d value */
+
+/*
+ * nexus_menu_profile_open — open the profile page ('p' screen),
+ * owner-gated, not in battle, menu visible. Saves the previous screen char
+ * (0x28c288 unless 'p'), clears the busy/pending/status fields, bumps the
+ * page generation and the menu generation. Returns 1 opened, 3 busy, 4
+ * rejected. @ 00187e48
+ */
+uint64_t nexus_menu_profile_open(int owner_id)
 {
-  (*(code *)PTR_nexus_menu_settings_001a3bb8)();
-  return;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) == 0) {
+        uint64_t verdict = 4;
+
+        if (owner_id > 0 && (int)g_menu_owner_id == owner_id
+            && g_menu_visible != 0 && g_menu_battle_flag == 0) {
+            if (g_menu_open_char != 0x70)
+                g_profile_last_screen = (uint32_t)g_menu_open_char;
+            verdict = 1;
+            g_profile_busy = 0;
+            g_profile_a = 0;
+            g_profile_status_line = 0;
+            g_profile_generation = g_profile_generation + 1;
+            g_menu_battle_row = 0;
+            g_menu_generation = g_menu_generation + 1;
+            g_menu_open_char = 0x70; /* 'p' */
+        }
+        g_menu_state_latch = 0;
+        return verdict;
+    }
+    return 3;
 }
 
+/*
+ * nexus_menu_profile_action — perform a profile action (0x28000..0x28005),
+ * owner-gated on the 'p' screen, not in battle, menu visible. 0x28000
+ * closes back to the saved screen char (pending cleared). Other actions
+ * require the page idle, slots present and the action permitted by the
+ * slot mask (0x28004 uses bit 3, else bit 2; 0x28001 bit 0; 0x28005 also
+ * needs slot-d non-zero): they latch the pending state 1 (0x28001/2,
+ * 'ENTER A VALUE') or 3 ('APPLYING...') with the action id recorded.
+ * Returns 1 closed, 2 latched, 0 not permitted, 3 busy, 4 rejected.
+ * @ 00187f14
+ */
+uint64_t nexus_menu_profile_action(int action, int owner_id)
+{
+    if ((uint32_t)(action - 0x28006) < 0xfffffffa)
+        return 4;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 3;
+    if (owner_id < 1 || (int)g_menu_owner_id != owner_id
+        || g_menu_visible == 0 || g_menu_battle_flag != 0
+        || g_menu_open_char != 'p') {
+        g_menu_state_latch = 0;
+        return 4;
+    }
+
+    if (action == 0x28000) {
+        g_profile_pending = 0;
+        g_menu_battle_row = 0;
+        g_profile_generation = g_profile_generation + 1;
+        g_menu_open_char = (char)g_profile_last_screen;
+        g_menu_generation = g_menu_generation + 1;
+        g_menu_state_latch = 0;
+        return 1;
+    }
+
+    {
+        if (g_profile_pending != 0) {
+            g_menu_state_latch = 0;
+            return 2;
+        }
+        if (g_profile_busy == 0 || g_profile_slots == 0) {
+            g_menu_state_latch = 0;
+            return 0;
+        }
+        {
+            uint32_t need = action == 0x28004 ? 8 : 4;
+
+            if (action == 0x28001)
+                need = 1;
+            if ((g_profile_slot_mask & need) == 0
+                || (action == 0x28005 && g_profile_slot_d == 0)) {
+                g_menu_state_latch = 0;
+                return 0;
+            }
+            {
+                bool value_entry = (uint32_t)(action - 0x28001) < 2;
+
+                g_profile_pending = value_entry ? 1 : 3;
+                ui_status_line_format(&g_profile_status_line, 0x60, 0x60,
+                                      g_format_1343dc,
+                                      value_entry ? "ENTER A VALUE"
+                                                  : "APPLYING...");
+                g_profile_action = (uint32_t)action;
+            }
+        }
+    }
+    g_menu_generation = g_menu_generation + 1;
+    g_menu_state_latch = 0;
+    return 2;
+}
+
+/*
+ * nexus_menu_profile_pump — defined in chunk 12 of this chain (raw body
+ * 6145-6492 fully reconstructed there).
+ */
+/* menu_engine chain chunk 12: covers raw lines 6150-6600 (completes nexus_menu_profile_pump from raw 6150 mid-function; then nexus_menu_main_count and nexus_menu_section_snapshot) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern int menu_server_seq_next(void);   /* chunk 1 @ 0014c510 */
+extern bool menu_entry_register(int id, char *key, char *desc, uint32_t type,
+                                int screen); /* chunk 1 @ 0014c550 */
+extern int menu_entry_value_read(int id, uint32_t *kind_out, char *value_out,
+                                 size_t value_cap); /* chunk 1 @ 0014c8ac */
+extern void menu_entry_remove(int id);   /* chunk 1 @ 0014cc0c */
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern int ui_named_action_invoke(int action_id); /* widgets @ 001924cc */
+extern int ui_named_state_query(const char *name, void *out); /* widgets @ 00192340 */
+extern void theme_store_reset(void *buf, uint32_t size); /* misc @ 00191920 */
+extern int theme_page_parse(void *page, uint32_t slot); /* misc @ 0018cb98 */
+extern int script_port_profile_snapshot(void *a, size_t size, int page); /* misc @ 00191f04 */
+extern int script_port_profile_open(const char *name, size_t len); /* misc @ 00191f60 */
+extern int script_port_profile_set_name(const char *name, size_t len); /* misc @ 00191fa8 */
+extern int nexus_script_port_ui_reload_request(void); /* renderer @ 0014d054 */
+
+/* menu state block (earlier chunks own the definitions) */
+extern uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+extern uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+extern uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+extern uint8_t  g_menu_battle_row;   /* 0x28469f — battle scroll row */
+extern uint8_t  g_menu_open_char;    /* 0x28469d — open screen char */
+extern uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+extern uint8_t  g_menu_visible;      /* 0x28469c — menu visible flag */
+extern const char g_format_1343dc[]; /* 0x1343dc — status format */
+
+/* profile page state (chunk 10/11 externs) */
+extern uint32_t g_profile_last_screen; /* 0x28c288 — pre-profile screen char */
+extern uint32_t g_profile_busy;        /* 0x28c28c — page busy flag */
+extern uint32_t g_profile_pending;     /* 0x28c290 — pending action */
+extern uint32_t g_profile_generation;  /* 0x28c298 — page generation */
+extern uint32_t g_profile_action;      /* 0x28c294 — pending action id */
+extern uint32_t g_profile_status_line; /* 0x28c2c8 — status line handle */
+extern uint32_t g_profile_a;           /* 0x28c2a0 — refresh window start */
+extern uint32_t g_profile_b;           /* 0x28c2a8 — stored entry id */
+extern uint32_t g_profile_slots;       /* 0x28a4c0 — profile slots present */
+extern uint32_t g_profile_slot_mask;   /* 0x28a4c4 — slot permission mask */
+extern uint32_t g_profile_slot_d;      /* 0x28a4d4 — slot-d value */
+extern uint32_t g_profile_snap_hdr;    /* 0x28c2b0 — snapshot header lo */
+extern uint32_t g_profile_snap_hi;     /* 0x28c2b8 — snapshot header hi */
+extern uint32_t g_profile_snap_win;    /* 0x28c2c0 — snapshot window flag */
+extern uint64_t g_profile_snapshot[0x3ba]; /* 0x28a4b8 — 0x1dd0 snapshot cache */
+
+/* theme machine state (chunk 10 externs) */
+extern uint32_t g_theme_apply_state;   /* 0x287b90 */
+extern uint32_t g_theme_slot_sel;      /* 0x287b94 */
+extern uint32_t g_theme_slot_valid;    /* 0x287b98 */
+extern int32_t  g_theme_music_hi;      /* 0x287b9c */
+extern int32_t  g_theme_music_lo;      /* 0x287ba0 */
+extern uint32_t g_theme_busy;          /* 0x287ba4 */
+extern uint32_t g_theme_gen;           /* 0x287bac */
+extern uint32_t g_theme_prev_gen;      /* 0x287bb0 */
+extern uint32_t g_theme_slots_used;    /* 0x287bb4 */
+extern uint32_t g_theme_settings_rev;  /* 0x287c40 */
+extern uint32_t g_theme_row_rev_me12;  /* 0x287c48 — theme row revision */
+extern uint32_t g_theme_prev_row_rev;  /* 0x287c50 */
+extern int32_t  g_theme_music_a;       /* 0x287a64 */
+extern uint32_t g_theme_music_b;       /* 0x287a68 */
+extern char     g_theme_music_name[0x60]; /* 0x287a6c */
+extern uint32_t g_theme_music_src;     /* 0x287940 */
+extern uint32_t g_theme_music_prev;    /* 0x287c68 */
+extern uint32_t g_theme_store_rows;    /* 0x285414 */
+extern uint32_t g_theme_store_rev;     /* 0x285420 */
+extern uint32_t g_theme_store_cap;     /* 0x285418 */
+extern uint32_t g_theme_store_slots;   /* 0x285424 */
+extern uint32_t g_theme_store_sel;     /* 0x285430 */
+extern uint32_t g_theme_store_bit30;   /* 0x285434 */
+extern uint32_t g_theme_store_bit38;   /* 0x285438 */
+extern int32_t  g_theme_page_ids[];    /* 0x287bc0 */
+extern uint32_t g_theme_page_flag_tbl[]; /* 0x285440 */
+extern int32_t  g_theme_page_src_tbl[];   /* 0x28543c */
+extern uint8_t  g_theme_page_names[];  /* 0x285444 */
+
+/* theme store block (raw 0x284af0) */
+extern uint64_t g_theme_store;         /* 0x284af0 — 0x918 store buffer */
+extern uint32_t g_theme_store_count;   /* 0x284af4 — store count (<= 0x20) */
+extern uint32_t g_theme_store_sel_id;  /* 0x284af8 — selected server id */
+extern uint32_t g_theme_store_flag;    /* 0x284afc — store flag */
+extern int32_t  g_theme_store_def;     /* 0x284b00 — default server id */
+extern uint32_t g_theme_store_ids[];   /* 0x284b08 — server ids (0x12 stride) */
+extern char     g_theme_store_names[]; /* 0x284b10 — server names (0x48 stride) */
+
+/* about/debug page blocks (raw 0x28a3d8, 0x28a428, 0x28a454) */
+extern uint32_t g_debug_slots_a;       /* 0x28a3d8 — debug slots lo */
+extern uint32_t g_debug_slots_b;       /* 0x28a3dc — debug slots hi */
+extern uint32_t g_debug_bit_len;       /* 0x28a3e0 — bitfield length */
+extern uint32_t g_debug_bits[];        /* 0x28a3e4 — bitfield words */
+extern uint32_t g_debug_pending;       /* 0x28a428 — debug pending flag */
+extern uint32_t g_debug_state;         /* 0x28a42c — debug state */
+extern uint32_t g_debug_extra;         /* 0x28a438 — gfx/mem cycle gate */
+extern char     g_debug_status_line[0x80]; /* 0x28a454 — status line */
+
+/* editor page (raw 0x28cc30) */
+extern uint32_t g_editor_page_state;   /* 0x28cc30 — editor page state */
+
+/* section snapshot id block (raw 0x28dcf0) + theme status line */
+extern uint32_t g_section_hdr_a;  /* 0x28dcf0 — snapshot id a */
+extern uint32_t g_section_hdr_b;  /* 0x28dcf4 — snapshot id b */
+extern uint32_t g_section_hdr_c;  /* 0x28dcf8 — snapshot id c */
+extern uint32_t g_theme_status_me12; /* 0x287c6c — theme music status line */
+
+/* rodata tables */
+extern const uint64_t g_profile_tpl;   /* 0x10f800 — snapshot template qword */
+extern const uint64_t g_show_skin_tpl; /* 0x140718 — named-state template lo */
+extern const char g_show_skin_name[];  /* "ShowSkinNamesInProfile" */
+extern const char g_empty_text_me12[]; /* 0x134f22 — shared "" rodata */
+extern const char *const g_about_rows[0x28 * 5]; /* 0x19cf58 — ABOUT_SCREEN
+                                                    table {name,text,extra} */
+extern const int32_t g_about_ids[0x28];  /* 0x19cf48 — about row ids */
+extern const uint8_t g_screen_chars[0x41]; /* 0x19ddd0 — screen char table
+                                              (0x28 stride walk) */
+
+/* helper: cast the rodata "" to a mutable desc pointer (raw passes the
+ * empty rodata directly as the description buffer) */
+static char *desc_of_me12(const char *s)
+{
+    return (char *)(uintptr_t)s;
+}
+
+/*
+ * nexus_menu_profile_pump — profile page per-frame pump (owner-gated, 'p'
+ * screen, not in battle). Leaving the page clears the refresh window and
+ * bumps the generation. With no pending action (or a completed one): a
+ * 500ms refresh window re-reads the 0x1dd0 profile snapshot via
+ * script_port_profile_snapshot (template qword 0x10f800, magic 1, size
+ * 0x1dd0, slot-count/state gates, NUL-terminated name fields) and the
+ * 'ShowSkinNamesInProfile' named state. A pending action resolves:
+ * state 1 (value entry) registers the entered value as a menu entry
+ * ('PLAYER TAG' 16 bytes / 'VISUAL NAME' 100 bytes, type 2/0, through
+ * menu_entry_register with a menu_server_seq_next id) reading the previous
+ * value via menu_entry_value_read; state 2 reads the stored entry; state 3
+ * applies. Verdicts set the busy hi-word (2 = in flight, else cleared with
+ * 'APPLYING...'/'UNAVAILABLE IN THE CURRENT SCREEN'/'CANCELLED'), the
+ * snapshot cache at 0x28a4b8 is adopted on success, entry ids are
+ * released via menu_entry_remove, and the completed action submits:
+ * 0x28001 script_port_profile_open, 0x28002/3 set_name (0x28003 clears the
+ * name) + ui_reload_request, 0x28004 toggles the named action
+ * ('ShowSkinNamesInProfile' via ui_named_action_invoke), 0x28005 reload.
+ * Final status lines: 'ACTION COULD NOT BE APPLIED' / 'NAME SAVED -
+ * RELOAD TO APPLY' / 'APPLIED TO THE NEXT PROFILE'. @ 001880e0
+ */
+void nexus_menu_profile_pump(int owner_id, uint64_t now_ms)
+{
+    uint32_t stored_id;
+    uint32_t saved_gen;
+    uint32_t saved_action;
+    uint8_t verdict_hi = 3;
+
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return;
+    stored_id = g_profile_b;
+    saved_gen = g_profile_generation;
+    saved_action = g_profile_action;
+
+    if (owner_id < 1 || (int)g_menu_owner_id != owner_id) {
+        g_menu_state_latch = 0;
+        return;
+    }
+
+    if (g_menu_visible == 0 || g_menu_battle_flag != 0
+        || g_menu_open_char != 'p') {
+        /* left the page: clear the window and refresh state */
+        g_profile_b = 0;
+        g_profile_busy = 0;
+        g_profile_generation = g_profile_generation + 1;
+        g_menu_state_latch = 0;
+        if (stored_id == 0)
+            return;
+    } else {
+        int pending = (int)g_profile_pending;
+
+        if (g_profile_b == 0 || g_profile_pending != 0) {
+            if (g_profile_pending == 4) {
+                g_menu_state_latch = 0;
+                return;
+            }
+            if (g_profile_pending == 0 && g_profile_a != 0
+                && g_profile_a <= now_ms && now_ms - g_profile_a < 500) {
+                g_menu_state_latch = 0;
+                return;
+            }
+
+            /* refresh: snapshot + named state, then resolve the pending */
+            g_profile_busy = (g_profile_busy & 0xffffffffu) | (4u << 0);
+            {
+                struct {
+                    uint64_t magic_size;  /* +0x00 */
+                    uint32_t f08, f0c;    /* +0x08/+0x0c */
+                    uint32_t counts[2];   /* +0x10/+0x14 */
+                    uint32_t state;       /* +0x18 */
+                    uint32_t mask;        /* +0x1c */
+                    uint32_t f20, f24;    /* +0x20/+0x24 */
+                    uint8_t names[0x1dd0 - 0x28];
+                } snap;
+                char value_buf[0x401];
+                char state_node[0x20];
+                uint32_t snapshot_ok = 0;
+                int rc;
+
+                memset(&snap, 0, sizeof snap);
+                snap.magic_size = g_profile_tpl; /* 0x10f800 template */
+                rc = script_port_profile_snapshot(&snap, 0x1dd0, 0);
+                if (rc != 0 && (uint32_t)snap.magic_size == 1
+                    && (uint32_t)(snap.magic_size >> 32) == 0x1dd0
+                    && snap.state == 0) {
+                    if (snap.counts[1] < 0x21
+                        && snap.counts[1] <= snap.counts[0]
+                        && snap.counts[0] < 0x201
+                        && snap.f08 < 2 && snap.f0c < 2
+                        && memchr(snap.names + 0x1917, 0, 0x191) != NULL
+                        && memchr(snap.names + 0x1c1, 0, 0x10) != NULL
+                        && memchr(snap.names, 0, 0x10) != NULL)
+                        snapshot_ok = memchr(snap.names + 0x1d1, 0, 0x191)
+                                          != NULL;
+                }
+
+                memset(value_buf, 0, sizeof value_buf);
+                memset(state_node, 0, sizeof state_node);
+                *(uint64_t *)(void *)state_node = g_show_skin_tpl;
+                ui_named_state_query("ShowSkinNamesInProfile", state_node);
+
+                if (pending == 0) {
+                    /* idle: record the snapshot and window */
+                    g_profile_snap_hdr = 0;
+                    g_profile_busy = (g_profile_busy & 0xffffffffu)
+                                     | (snapshot_ok << 0);
+                    g_profile_snap_hi = 0;
+                    g_profile_snap_win = 0;
+                    g_profile_a = (uint32_t)now_ms;
+                    if (snapshot_ok != 0)
+                        memcpy(g_profile_snapshot, &snap, 0x1dd0);
+                    g_menu_generation = g_menu_generation + 1;
+                    g_menu_state_latch = 0;
+                    return;
+                }
+
+                {
+                    uint32_t value_entry_ok = 0; /* uVar17 == 0 means ok */
+                    uint32_t apply_ok = 0;
+                    uint32_t close_visible = 0;
+                    uint32_t new_id = 0;
+
+                    if (snapshot_ok == 0) {
+                        /* snapshot not usable */
+                    } else if (snap.f08 != 0) {
+                        uint32_t need = saved_action == 0x28004 ? 8 : 4;
+
+                        if (saved_action == 0x28001)
+                            need = 1;
+                        if ((snap.mask & need) == 0) {
+                            value_entry_ok = 1;
+                        } else if (pending == 3) {
+                            apply_ok = 1;
+                            value_entry_ok = 1;
+                        } else if (pending == 2) {
+                            /* read the stored entry value */
+                            uint32_t kind = 3;
+
+                            apply_ok = (uint32_t)menu_entry_value_read(
+                                stored_id, &kind, value_buf, 0x401);
+                            if (apply_ok != 0 && kind != 3) {
+                                if (kind == 2)
+                                    apply_ok = 2;
+                                else if (kind == 1)
+                                    close_visible = 1;
+                                else
+                                    value_entry_ok = 0;
+                            }
+                        } else if (pending == 1) {
+                            /* register the entered value as a menu entry */
+                            new_id = (uint32_t)menu_server_seq_next();
+                            apply_ok = new_id != 0;
+                            if (new_id != 0) {
+                                bool is_tag = saved_action == 0x28001;
+                                const char *def = is_tag
+                                                      ? g_empty_text_me12
+                                                      : (const char *)
+                                                            (snap.names
+                                                             + 0x1917);
+                                const char *key =
+                                    is_tag ? "PLAYER TAG" : "VISUAL NAME";
+                                uint32_t cap = is_tag ? 0x10 : 100;
+
+                                apply_ok = (uint32_t)menu_entry_register(
+                                    (int)new_id, (char *)key, (char *)desc_of_me12(def),
+                                    is_tag ? 2u : 0u, (int)cap);
+                            }
+                            value_entry_ok = apply_ok ^ 1;
+                        }
+                    }
+
+                    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1)
+                        != 0) {
+                        if (new_id != 0)
+                            menu_entry_remove((int)new_id);
+                        return;
+                    }
+                    if (g_menu_visible == 0 || g_menu_battle_flag != 0
+                        || g_menu_open_char != 'p'
+                        || g_profile_generation != saved_gen
+                        || g_profile_pending != 4) {
+                        g_menu_state_latch = 0;
+                        if (new_id != 0)
+                            menu_entry_remove((int)new_id);
+                        verdict_hi = 4;
+                        goto out;
+                    }
+
+                    /* adopt the snapshot + window */
+                    g_profile_snap_hi = 0;
+                    g_profile_snap_hdr = 0;
+                    g_profile_busy = (g_profile_busy & 0xffffffffu)
+                                     | (snapshot_ok << 0);
+                    g_profile_snap_win = 0;
+                    g_profile_a = (uint32_t)now_ms;
+                    if (snapshot_ok != 0)
+                        memcpy(g_profile_snapshot, &snap, 0x1dd0);
+
+                    if (value_entry_ok == 0) {
+                        g_profile_busy = (g_profile_busy & 0xffffffffu)
+                                         | (2u << 0);
+                        if (new_id != 0)
+                            g_profile_b = new_id;
+                    } else {
+                        const char *status =
+                            apply_ok != 0 ? "APPLYING..."
+                                          : "UNAVAILABLE IN THE CURRENT SCREEN";
+                        const char *final_status =
+                            apply_ok == 2 ? "CANCELLED" : status;
+
+                        g_profile_busy = g_profile_busy & 0xffffffffu;
+                        g_profile_b = 0;
+                        ui_status_line_format(&g_profile_status_line, 0x60,
+                                              0x60, g_format_1343dc,
+                                              final_status);
+                    }
+
+                    if (close_visible != 0 && saved_action != 0x28004)
+                        g_menu_visible = 0;
+                    g_menu_generation = g_menu_generation + 1;
+                    g_menu_state_latch = 0;
+                    if (value_entry_ok != 0 && stored_id != 0)
+                        menu_entry_remove((int)stored_id);
+                    if (value_entry_ok != 0 && new_id != 0)
+                        menu_entry_remove((int)new_id);
+
+                    if (close_visible != 0) {
+                        uint32_t apply_rc = 0;
+                        uint32_t reload_rc = 0;
+
+                        if (saved_action == 0x28001) {
+                            apply_rc = (uint32_t)script_port_profile_open(
+                                value_buf, strnlen(value_buf, 0x401));
+                        } else if ((saved_action & 0xfffffffe) == 0x28002) {
+                            const char *name = value_buf;
+                            size_t len = strnlen(value_buf, 0x401);
+
+                            if (saved_action == 0x28003) {
+                                name = g_empty_text_me12;
+                                len = 0;
+                            }
+                            apply_rc = (uint32_t)script_port_profile_set_name(
+                                name, len);
+                            if (apply_rc != 0)
+                                reload_rc = (uint32_t)
+                                    nexus_script_port_ui_reload_request();
+                        } else if (saved_action == 0x28005) {
+                            apply_rc = (uint32_t)
+                                nexus_script_port_ui_reload_request();
+                            reload_rc = apply_rc;
+                        } else if (saved_action == 0x28004) {
+                            /* toggle the named skin-names action */
+                            long idx = 0;
+                            const char *const *rows = g_about_rows;
+
+                            while (idx != -0x37) {
+                                if (strcmp(rows[0],
+                                           "ShowSkinNamesInProfile") == 0) {
+                                    int rc2 = ui_named_action_invoke(
+                                        (int)(0x21000 - idx));
+
+                                    apply_rc = (uint32_t)(rc2 == 1);
+                                    break;
+                                }
+                                idx = idx - 1;
+                                rows += 3;
+                            }
+                        }
+
+                        if ((ui_latch_test_and_set(1, &g_menu_state_latch)
+                             & 1) == 0) {
+                            if (g_profile_generation == saved_gen
+                                && g_menu_battle_flag == 0
+                                && g_menu_open_char == 'p') {
+                                g_profile_a = 0;
+                                if (apply_rc == 0) {
+                                    g_menu_visible = 1;
+                                    ui_status_line_format(
+                                        &g_profile_status_line, 0x60, 0x60,
+                                        "ACTION COULD NOT BE APPLIED");
+                                } else {
+                                    if (((saved_action & 0xfffffffe)
+                                         == 0x28002)
+                                        && reload_rc == 0) {
+                                        g_menu_visible = 1;
+                                        ui_status_line_format(
+                                            &g_profile_status_line, 0x60,
+                                            0x60, "NAME SAVED - RELOAD TO APPLY");
+                                    } else if (saved_action == 0x28004) {
+                                        ui_status_line_format(
+                                            &g_profile_status_line, 0x60,
+                                            0x60,
+                                            "APPLIED TO THE NEXT PROFILE");
+                                    }
+                                }
+                                g_menu_generation = g_menu_generation + 1;
+                            }
+                            g_menu_state_latch = 0;
+                        }
+                    }
+                    verdict_hi = apply_ok != 0;
+                    goto out;
+                }
+            }
+        }
+        g_profile_busy = g_profile_busy & 0xffffffffu;
+    }
+
+    /* drop the stored entry on the way out */
+    g_profile_b = 0;
+    g_menu_state_latch = 0;
+    menu_entry_remove((int)stored_id);
+    verdict_hi = 1;
+
+out:
+    (void)verdict_hi;
+}
+
+/* ===== main count ===== */
+
+/*
+ * nexus_menu_main_count — row count for the current screen. 'Q' refreshes
+ * the theme store (0x918) and returns count+3 (count capped 0x20); 'd'
+ * (100) returns 0x29; 'e' returns 2 when the editor page state is 4, else
+ * 0x15; 'p' returns 6; 't' returns 4/10 by apply state, else 6 + store
+ * rows when a slot is loaded; any other screen counts the 0x28-stride
+ * screen-char table (0x19ddd0) plus 1 for 'R'. @ 0018975c
+ */
+int nexus_menu_main_count(void)
+{
+    int count = 6;
+
+    switch (g_menu_open_char) {
+    case 0x51: /* 'Q' server list */
+        theme_store_reset((void *)0x284af0, 0x918);
+        if (0x20 < g_theme_store_count)
+            g_theme_store_count = 0;
+        count = (int)g_theme_store_count + 3;
+        break;
+    case 100: /* 'd' debug */
+        count = 0x29;
+        break;
+    case 0x65: /* 'e' editor */
+        count = 2;
+        if (g_editor_page_state != 4)
+            count = 0x15;
+        break;
+    case 0x70: /* 'p' profile */
+        count = 6;
+        break;
+    case 0x74: /* 't' theme */
+        if (g_theme_apply_state == 2)
+            count = 4;
+        else if (g_theme_apply_state == 3)
+            count = 10;
+        else {
+            count = 6;
+            if (g_theme_slot_valid != 0)
+                count = (int)g_theme_store_rows + 6;
+        }
+        break;
+    default: {
+        long off;
+
+        count = 0;
+        for (off = 0x18; off != 0xba8; off += 0x28) {
+            uint32_t match;
+
+            if (g_menu_open_char == 0x52) /* 'R' always counts */
+                match = 1;
+            else
+                match = (uint32_t)(*(const uint32_t *)
+                                       ((const uint8_t *)&g_screen_chars
+                                        + off)
+                                   == (uint32_t)g_menu_open_char);
+            count = (int)(match + (uint32_t)count);
+        }
+        break;
+    }
+    }
+    return count;
+}
+
+/* ===== section snapshot ===== */
+
+/*
+ * nexus_menu_section_snapshot — build the 0x24a68-byte section snapshot
+ * (owner-gated, menu visible, not in battle). Header: magic/size from
+ * rodata 0x10f820, generation, screen char, plus the snapshot id block
+ * (0x28dcf0/0x28dcf4/0x28dcf8). 't' theme pages fill the theme machine
+ * fields (apply state, store rows/rev, music ids, status lines at
+ * 0x287c6c/0x287944/0x2879a4/0x287a04/0x287a6c) and — when a slot is
+ * loaded and theme_page_parse accepts the store page — the 0x26020+ rows
+ * (0x249 stride: id, index, flags with the selected/current bits, three
+ * status lines each). 'd' (100) debug pages fill the about block (0x28
+ * rows from the ABOUT_SCREEN table, permission bits from the 0x28a3e4
+ * bitfield, 'DEBUG PROVIDER UNAVAILABLE'/'UNAVAILABLE IN THE CURRENT
+ * CONTEXT'/'WAITING FOR INPUT OR ACTION'/'DISABLE MAX OPTIMIZATION FIRST'
+ * fallback lines). 'Q' server pages validate the store (count <= 0x20,
+ * ids <= 999999 unique, names NUL-terminated within 0x40) and fill the
+ * 0x24010+ rows (0x49-stride names). Returns 1 with the snapshot, 0 on
+ * any gate failure. @ 0018c44c
+ */
+uint64_t nexus_menu_section_snapshot(void *out, uint64_t len, int owner_id)
+{
+    uint64_t *rec = out;
+    uint32_t hdr_a, hdr_b, hdr_c;
+
+    if (out == NULL || len != 0x24a68)
+        return 0;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 0;
+    if (!(owner_id > 0 && (int)g_menu_owner_id == owner_id)) {
+        g_menu_state_latch = 0;
+        return 0;
+    }
+
+    memset(out, 0, 0x24a68);
+    hdr_a = g_section_hdr_a; /* raw 0x28dcf0 */
+    hdr_b = g_section_hdr_b; /* raw 0x28dcf4 */
+    hdr_c = g_section_hdr_c; /* raw 0x28dcf8 */
+    rec[7] = 0xffffffffffffffffULL;
+    rec[8] = 0xffffffffffffffffULL;
+    {
+        extern const uint64_t g_section_magic; /* 0x10f820 */
+
+        *(uint64_t *)rec = g_section_magic;
+    }
+    *(uint32_t *)((char *)rec + 0x5c) = hdr_a;
+    *(uint32_t *)(rec + 0xc) = hdr_b;
+    *(uint32_t *)((char *)rec + 0x14) = (uint32_t)g_menu_open_char;
+    *(uint32_t *)((char *)rec + 100) = hdr_c;
+    *(uint32_t *)(rec + 0xc) = g_menu_generation; /* +0xc generation */
+
+    if (g_menu_visible != 0 && g_menu_battle_flag == 0) {
+        if (g_menu_open_char == 0x74) {
+            /* theme page */
+            uint32_t dbg_lo = g_debug_slots_a;              /* 0x28a3d8 */
+
+            rec[1] = 2; /* page kind */
+            rec[2] = g_theme_store_rows;
+            *(uint32_t *)((char *)rec + 0x1c) = g_theme_apply_state;
+            dbg_lo = g_theme_store_rev; /* raw overwrites with 0x28542c */
+            *(uint32_t *)(rec + 4) = (uint32_t)(g_theme_slot_valid != 0
+                                                && g_debug_extra != 0);
+            rec[3] = g_theme_store_bit38;
+            *(uint32_t *)((char *)rec + 0x3c) = dbg_lo;
+            *(uint32_t *)((char *)rec + 0x24) = (uint32_t)(g_theme_busy != 0);
+            *(uint64_t *)((char *)rec + 0x34) = g_theme_store_slots;
+            *(uint32_t *)(rec + 8) = g_theme_music_src;
+            *(uint32_t *)((char *)rec + 0x54) = g_theme_store_bit30;
+            *(uint32_t *)(rec + 9) = g_theme_music_prev;
+            *(uint64_t *)((char *)rec + 0x4c) = g_theme_store_sel;
+            *(uint32_t *)((char *)rec + 0x44) = (uint32_t)g_theme_music_a;
+            ui_status_line_format(rec + 0xd, (size_t)-1, 0x80,
+                                  g_format_1343dc, &g_theme_status_me12);
+            if (g_theme_music_hi != 0) {
+                ui_status_line_format(rec + 0x1d, (size_t)-1, 0x60,
+                                      g_format_1343dc, (void *)0x287944);
+                ui_status_line_format(rec + 0x35, (size_t)-1, 0x60,
+                                      g_format_1343dc, (void *)0x2879a4);
+                ui_status_line_format(rec + 0x41, (size_t)-1, 0x60,
+                                      g_format_1343dc, (void *)0x287a04);
+            }
+            if (g_theme_music_lo != 0)
+                ui_status_line_format(rec + 0x29, (size_t)-1, 0x60,
+                                      g_format_1343dc, g_theme_music_name);
+            if (g_theme_slot_valid != 0
+                && theme_page_parse((void *)0x285408, g_theme_slot_sel) != 0) {
+                rec[5] = g_theme_store_cap; /* raw 0x285418 */
+                if (g_theme_apply_state < 2) {
+                    rec[6] = g_theme_store_rows;
+                    if (g_theme_store_rows != 0) {
+                        uint32_t i;
+                        int32_t *row = (int32_t *)(rec + 0x4d);
+                        const uint8_t *names = g_theme_page_names + 0x68;
+
+                        for (i = 0; i < g_theme_store_rows; i++) {
+                            int32_t src_id = *(const int32_t *)(names - 0x68);
+                            uint32_t flags;
+                            const int32_t *sel_tbl;
+
+                            sel_tbl = (const int32_t *)0x285428;
+                            if (g_theme_apply_state != 0)
+                                sel_tbl = (const int32_t *)0x28542c;
+                            row[0] = (int32_t)i + 0x26020;
+                            row[1] = (int32_t)i;
+                            row[4] = src_id;
+                            flags = 0;
+                            if ((int32_t)rec[4] == 0
+                                || *(int32_t *)((char *)rec + 0x24) != 0)
+                                flags = 0;
+                            else if (g_theme_apply_state == 1)
+                                flags = 0;
+                            else
+                                flags = (uint32_t)names[-100] >> 1 & 1;
+                            row[2] = (int32_t)((flags & 0xffffffe0u)
+                                               | (flags & 7)
+                                               | (uint32_t)(src_id
+                                                            == *sel_tbl) << 1
+                                               | (*(const uint32_t *)
+                                                      (names - 100) >> 1 & 3)
+                                                     << 3);
+                            ui_status_line_format(row + 0x16, (size_t)-1,
+                                                  0x60, g_format_1343dc,
+                                                  names - 0x60);
+                            ui_status_line_format(row + 0x62, (size_t)-1,
+                                                  0x60, g_format_1343dc,
+                                                  names);
+                            ui_status_line_format(row + 0x7a, (size_t)-1,
+                                                  0x60, g_format_1343dc,
+                                                  names + 0x60);
+                            names += 0x128;
+                            row += 0x92;
+                        }
+                        g_menu_state_latch = 0;
+                        return 1;
+                    }
+                }
+            }
+        } else if (g_menu_open_char == 100) {
+            /* debug/about page */
+            rec[1] = 3;
+            rec[3] = g_debug_slots_b;
+            *(int32_t *)((char *)rec + 0x1c) = (int32_t)g_debug_state;
+            rec[2] = g_debug_slots_a;
+            rec[4] = g_debug_pending;
+            *(uint32_t *)((char *)rec + 0x24) = (uint32_t)(g_debug_state != 0);
+            rec[5] = 0x28;
+            rec[6] = 0x28;
+            ui_status_line_format(rec + 0xd, (size_t)-1, 0x80,
+                                  g_format_1343dc, g_debug_status_line);
+            if (0x100 < (uint32_t)rec[6]) {
+                g_menu_state_latch = 0;
+                return 0;
+            }
+            if ((uint32_t)rec[6] != 0) {
+                uint32_t i;
+                int32_t *row = (int32_t *)(rec + 0x4d);
+                const char *const *about = g_about_rows;
+
+                for (i = 0; i < (uint32_t)rec[6]; i++) {
+                    int32_t extra = *(const int32_t *)(about + 2);
+                    uint32_t base = *(const uint32_t *)(about - 2);
+                    uint32_t perm;
+                    uint32_t bit = 0;
+
+                    row[0] = (int32_t)i + 0x27020;
+                    row[1] = (int32_t)i;
+                    row[3] = extra;
+                    row[4] = (int32_t)base;
+                    if ((int32_t)rec[4] == 0
+                        || *(int32_t *)((char *)rec + 0x24) != 0) {
+                        perm = 0;
+                    } else {
+                        if (base < 0x100 && base < g_debug_bit_len)
+                            bit = g_debug_bits[base >> 3] >> (base & 0x1f) & 1;
+                        perm = (uint32_t)(bit != 0);
+                    }
+                    row[2] = (int32_t)perm;
+                    ui_status_line_format(row + 6, (size_t)-1, 0x40,
+                                          g_format_1343dc, about[-1]);
+                    ui_status_line_format(row + 0x16, (size_t)-1, 0x60,
+                                          g_format_1343dc, about[0]);
+                    ui_status_line_format(row + 0x2e, (size_t)-1, 0xd0,
+                                          g_format_1343dc, about[1]);
+                    if ((perm & 1) == 0) {
+                        const char *fallback;
+
+                        if ((int32_t)rec[4] == 0)
+                            fallback = "DEBUG PROVIDER UNAVAILABLE";
+                        else {
+                            fallback = "UNAVAILABLE IN THE CURRENT CONTEXT";
+                            if (*(int32_t *)((char *)rec + 0x24) != 0)
+                                fallback = "WAITING FOR INPUT OR ACTION";
+                        }
+                        ui_status_line_format(row + 0x2e, (size_t)-1, 0xd0,
+                                              g_format_1343dc, fallback);
+                    }
+                    if ((perm & 1) == 0 && g_debug_extra != 0
+                        && (strcmp(about[-1], "GFX_QUALITY_CYCLE") == 0
+                            || strcmp(about[-1], "MEM_QUALITY_CYCLE") == 0))
+                        ui_status_line_format(row + 0x2e, (size_t)-1, 0xd0,
+                                              g_format_1343dc,
+                                              "DISABLE MAX OPTIMIZATION FIRST");
+                    about += 5;
+                    row += 0x92;
+                }
+                g_menu_state_latch = 0;
+                return 1;
+            }
+        } else {
+            if (g_menu_open_char != 0x51) {
+                g_menu_state_latch = 0;
+                return 1;
+            }
+            /* server page */
+            rec[1] = 1;
+            if (g_theme_store != 0x918 || 0x20 < g_theme_store_count) {
+                g_menu_state_latch = 0;
+                return 1;
+            }
+            if ((uint32_t)(g_theme_store_def + 1) < 2) {
+                /* raw overflow check on def+1 */
+            }
+            if (g_theme_store_count != 0) {
+                uint32_t i;
+
+                for (i = 0; i < g_theme_store_count; i++) {
+                    if (999999 < (uint32_t)g_theme_store_ids[i * 0x12]
+                        || memchr(g_theme_store_names + (uint64_t)i * 0x48, 0,
+                                  0x40) == NULL)
+                        break; /* raw rejects the whole snapshot */
+                    {
+                        uint32_t j;
+
+                        for (j = 0; j < i; j++)
+                            if (g_theme_store_ids[i * 0x12]
+                                == g_theme_store_ids[j * 0x12])
+                                break;
+                        if (j != i)
+                            break;
+                    }
+                }
+                if (i != g_theme_store_count) {
+                    /* raw falls through to the 1 return */
+                }
+            }
+            rec[7] = (uint64_t)(int64_t)g_theme_store_def;
+            rec[5] = g_theme_store_count;
+            rec[2] = g_theme_store_sel_id;
+            rec[6] = g_theme_store_count;
+            *(uint32_t *)(rec + 0xb) = g_theme_store_flag;
+            rec[4] = (uint32_t)(*(const int32_t *)0x284afc != 0);
+            if (g_theme_store_count != 0) {
+                uint32_t i;
+                uint64_t *row = rec + 0x58;
+                const char *name = g_theme_store_names;
+
+                for (i = 0; i < g_theme_store_count; i++) {
+                    *(int32_t *)(row - 0xb) = (int32_t)i + 0x24010;
+                    *(int32_t *)((char *)row - 0x54) = (int32_t)i;
+                    {
+                        uint64_t pair = *(const uint64_t *)(name - 8);
+
+                        row[-9] = pair;
+                        *(uint32_t *)(row - 10) =
+                            (uint32_t)((int32_t)rec[4] != 0)
+                            | (uint32_t)((int32_t)pair
+                                         == g_theme_store_def) << 1;
+                    }
+                    ui_status_line_format(row, (size_t)-1, 0x60,
+                                          g_format_1343dc, name);
+                    name += 0x48;
+                    row += 0x49;
+                }
+                g_menu_state_latch = 0;
+                return 1;
+            }
+        }
+    }
+    g_menu_state_latch = 0;
+    return 1;
+}
+
+/* menu_engine chain chunk 13: covers raw lines 6601-7050 (nexus_menu_section_snapshot tail .. nexus_menu_section_present finished at raw 7030; menu_feature_preset_apply begins at 7032 and straddles — completed here) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* menu_engine p4 @ 00193f80 */
+extern void ui_status_line_format(void *buf, size_t a, size_t b,
+                                  const char *fmt, ...); /* misc @ 00183ac8 */
+extern void theme_store_reset(void *buf, uint32_t size); /* misc @ 00191920 */
+extern int settings_values_commit(void *values); /* misc @ 001846b8 */
+
+/* menu state block (earlier chunks own the definitions) */
+extern uint32_t g_menu_state_latch;  /* 0x284688 — state test-and-set latch */
+extern uint32_t g_menu_owner_id;     /* 0x284694 — owning id (tid gate) */
+extern uint8_t  g_menu_battle_flag;  /* 0x28469e — in-battle flag */
+extern uint8_t  g_menu_open_char;    /* 0x28469d — open screen char */
+extern uint32_t g_menu_generation;   /* 0x2846a0 — state generation */
+extern uint8_t  g_menu_visible;      /* 0x28469c — menu visible flag */
+extern int32_t  g_menu_settings[0x76]; /* 0x2846b0 — 118 setting slots */
+
+/* feature registry (rodata pointer tables) */
+extern const void *const g_feature_names; /* 0x1a36f8 — name/lo/hi triples
+                                             ("nexus sx spin" table) */
+
+/* theme machine state (chunk 10/12 externs) */
+extern uint32_t g_theme_apply_state;   /* 0x287b90 */
+extern uint32_t g_theme_slot_sel;      /* 0x287b94 */
+extern uint32_t g_theme_slot_valid;    /* 0x287b98 */
+extern uint32_t g_theme_busy;          /* 0x287ba4 */
+extern uint32_t g_theme_gen;           /* 0x287bac */
+extern uint32_t g_theme_prev_gen;      /* 0x287bb0 */
+extern uint32_t g_theme_slots_used;    /* 0x287bb4 */
+extern uint32_t g_theme_settings_rev;  /* 0x287c40 */
+extern uint32_t g_theme_store_rows;    /* 0x285414 */
+extern uint32_t g_theme_store_rev;     /* 0x285420 */
+extern uint32_t g_theme_store_cap;     /* 0x285418 */
+extern int32_t  g_theme_page_ids[];    /* 0x287bc0 */
+extern int32_t  g_theme_page_src_tbl[];   /* 0x28543c */
+
+/* about/debug page blocks (chunk 12 externs) */
+extern uint32_t g_debug_slots_a;       /* 0x28a3d8 */
+extern uint32_t g_debug_slots_b;       /* 0x28a3dc */
+extern uint32_t g_debug_bit_len;       /* 0x28a3e0 */
+extern uint32_t g_debug_bits[];        /* 0x28a3e4 */
+extern uint32_t g_debug_pending;       /* 0x28a428 */
+
+/* theme store block (raw 0x284af0; chunk 12 externs) */
+extern uint64_t g_theme_store;         /* 0x284af0 — 0x918 store buffer */
+extern uint32_t g_theme_store_count;   /* 0x284af4 — store count (<= 0x20) */
+extern uint32_t g_theme_store_sel_id;  /* 0x284af8 — selected server id */
+extern uint32_t g_theme_store_ids[];   /* 0x284b08 — server ids (0x12 stride) */
+
+/* rodata tables */
+extern const char *const g_about_rows[0x28 * 5]; /* 0x19cf58 — ABOUT table */
+extern const int32_t g_about_ids[0x28];  /* 0x19cf48 — about row ids */
+extern const char *const g_dodge_names[6]; /* 0x19e960 — "reaction pct" names */
+extern const uint32_t g_outline_presets[7 * 3]; /* 0x14073c — {r,g,b} per
+                                                    preset */
+
+static long feature_index_me13(const char *name);
+static bool range_ok_me13(long idx, int32_t a, int32_t b);
+static bool write_triple_me13(int32_t *values, const char *name, uint32_t v);
+
+/*
+ * nexus_menu_section_present — validate that a 0x24a68 snapshot still
+ * matches the live section (owner-gated, visible, not in battle). Gates:
+ * magic 1, size 0x24a68, row count <= 0x100, the snapshot screen char and
+ * generation match the live state. Kind 1 ('Q' server): the selected id,
+ * count and every row id must match the theme store; returns 1. Kind 3
+ * ('d' debug): requires the about-block ids to match, then rebuilds the
+ * 0x28a404 permission bitfield from the snapshot rows (setting the first
+ * `count` bits) when the debug pending flag is set. Kind 2 ('t' theme):
+ * the store revision and apply state must match; the theme page rows must
+ * match the live page table; on match with a loaded slot in state < 2 the
+ * committed generation adopts the live one and the slot-selection bitmask
+ * is rebuilt from the rows. Returns 1 present, 0 otherwise.
+ * @ 0018cd34
+ */
+int nexus_menu_section_present(void *snapshot_ptr, uint64_t len, int owner_id)
+{
+    int *snapshot = (int *)snapshot_ptr;
+    int kind;
+    int i;
+
+    if (snapshot == NULL || len != 0x24a68)
+        return 0;
+    if (snapshot[0] != 1 || snapshot[1] != 0x24a68 || 0x100 < (uint32_t)snapshot[0xc])
+        return 0;
+    if ((ui_latch_test_and_set(1, &g_menu_state_latch) & 1) != 0)
+        return 0;
+    if (owner_id < 1 || (int)g_menu_owner_id != owner_id
+        || g_menu_visible == 0 || g_menu_battle_flag != 0) {
+        g_menu_state_latch = 0;
+        return 0;
+    }
+
+    if ((uint32_t)snapshot[5] != (uint32_t)g_menu_open_char
+        || g_menu_generation != (uint32_t)snapshot[3]) {
+        g_menu_state_latch = 0;
+        return 0;
+    }
+    kind = snapshot[2];
+    i = 0x2400f;
+
+    if (kind == 1) {
+        /* server page: ids and count must match the store */
+        if (g_menu_open_char == 0x51
+            && (uint32_t)snapshot[4] == g_theme_store_sel_id
+            && (uint32_t)snapshot[0xc] == g_theme_store_count) {
+            uint64_t left = (uint64_t)(uint32_t)snapshot[0xc];
+            int *row = snapshot + 0x9e; /* first row (0x92 stride) */
+            const uint32_t *store_id = g_theme_store_ids;
+
+            while (left != 0) {
+                i = i + 1;
+                if (i != row[-4])
+                    break;
+                if (*row != (int)*store_id) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                row += 0x92;
+                left = left - 1;
+                store_id += 0x12;
+            }
+            if (left == 0) {
+                g_menu_state_latch = 0;
+                return 1;
+            }
+        }
+    } else if (kind == 3) {
+        /* debug page: about-block ids must match, then rebuild the
+         * permission bitfield from the rows when pending */
+        if (g_menu_open_char == 100
+            && g_debug_slots_a == (uint32_t)snapshot[4]
+            && snapshot[0xc] == 0x28) {
+            uint64_t idx;
+            int *row = snapshot + 0x9a;
+            const int32_t *about_id = g_about_ids;
+
+            for (idx = 0; (uint32_t)snapshot[0xc] != idx; idx++) {
+                if (idx != (uint64_t)(uint32_t)row[1]) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                if ((int)idx + 0x2701f != *row) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                if (row[4] != *about_id) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                row += 0x92;
+                about_id += 10; /* raw 0x28-stride walk of the id table */
+            }
+            if (g_debug_pending == 0) {
+                g_menu_state_latch = 0;
+                return 1;
+            }
+            /* rebuild the 0x28a404 bitfield: bits 0..count-1 set */
+            memset((void *)0x28a404, 0, 0x1c);
+            if (snapshot[0xc] != 0) {
+                uint32_t bit;
+
+                for (bit = 0; bit < (uint32_t)snapshot[0xc]; bit++)
+                    ((uint32_t *)0x28a404)[bit >> 5] |= 1u << (bit & 0x1f);
+            }
+            g_menu_state_latch = 0;
+            return 1;
+        }
+    } else if (kind == 2 && g_menu_open_char == 0x74
+               && g_theme_store_rows == (uint32_t)snapshot[4]
+               && g_theme_apply_state == (uint32_t)snapshot[7]) {
+        /* theme page: rows must match the live page table */
+        int expect_rows = (int)g_theme_store_rows;
+
+        if (1 < g_theme_apply_state || g_theme_slot_valid == 0)
+            expect_rows = 0;
+        if (snapshot[0xc] != expect_rows) {
+            g_menu_state_latch = 0;
+            return 0;
+        }
+        {
+            uint64_t idx;
+            int *row = snapshot + 0x9a;
+            const int32_t *src = g_theme_page_src_tbl;
+
+            for (idx = 0; (uint32_t)snapshot[0xc] != idx; idx++) {
+                if (idx != (uint64_t)(uint32_t)row[1]
+                    || (int)idx + 0x2601f != *row) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                if (row[4] != *src) {
+                    g_menu_state_latch = 0;
+                    return 0;
+                }
+                row += 0x92;
+                src += 0x4a;
+            }
+            if (g_theme_slot_valid == 0) {
+                g_menu_state_latch = 0;
+                return 1;
+            }
+            if (g_theme_apply_state < 2) {
+                /* adopt the committed generation + slot bitmask */
+                g_theme_prev_gen = g_theme_gen;
+                if (snapshot[0xc] != 0) {
+                    uint64_t j;
+                    int *sel_row = snapshot + 0x9e;
+
+                    g_theme_slots_used = 0;
+                    for (j = 0; j < (uint64_t)(uint32_t)snapshot[0xc]; j++) {
+                        g_theme_page_ids[j] = *sel_row;
+                        g_theme_slots_used |= 1u << ((uint32_t)j & 0x1f);
+                        sel_row += 0x92;
+                    }
+                } else {
+                    g_theme_slots_used = 0;
+                }
+            }
+            g_menu_state_latch = 0;
+            return 1;
+        }
+    }
+    g_menu_state_latch = 0;
+    return 0;
+}
+
+/* ===== feature preset apply ===== */
+
+/*
+ * menu_feature_preset_apply — apply a feature preset (id-keyed) to the
+ * 118-slot settings cache and commit it. Copies the cache (0x1d8 bytes)
+ * then, per preset id: 0x40 'target mode' zeroes nexus_sx_aop_target_mode
+ * and cascades (aura range 0x1068, fire interval 1000, reaction 0, lead
+ * 100); 0x4a 'autofarm follow' toggles nexus_autofarm_follow_target;
+ * 0x5c 'autododge' version-gates the six nexus[_vN]_dodge_*_reaction_pct
+ * slots (0xb4 default, slot 5 = 0x424, others 100), zeroes
+ * nexus_autododge_require_hold and sets the 0x3ff blacklist mask;
+ * 0x70 'outline color' cycles nexus_sx_outline_color_preset
+ * ((v+1)%7) and writes the matching {r,g,b} preset triple from
+ * 0x14073c; 0x91 'bolt smooth' pins nexus_sx_bolt_smooth to 0x55, wall
+ * lookahead 500, target range 0x578, exit hold 0x28a. Every slot write
+ * is range-checked against the registry {lo, hi} (walk of the 0x1a36f8
+ * name/lo/hi table); on success settings_values_commit pushes the cache.
+ * Returns the commit verdict (4 on any range failure / unknown id).
+ * @ 0018d64c
+ */
+void menu_feature_preset_apply(int preset_id)
+{
+    int32_t values[0x76];
+    uint64_t verdict = 4;
+
+    memcpy(values, (const void *)g_menu_settings, 0x1d8);
+
+    if (preset_id < 0x5c) {
+        if (preset_id == 0x40) {
+            /* target-mode preset */
+            long idx = feature_index_me13("nexus_sx_aop_target_mode");
+
+            if (idx >= 0 && range_ok_me13(idx, 1, 0)) {
+                long aura = feature_index_me13("nexus_sx_combat_aura_range");
+
+                values[idx] = 0;
+                if (aura >= 0 && range_ok_me13(aura, 0x1068, 0x1068)) {
+                    long fire =
+                        feature_index_me13("nexus_sx_combat_fire_interval");
+
+                    values[aura] = 0x1068;
+                    if (fire >= 0 && range_ok_me13(fire, 1000, 1000)) {
+                        long react =
+                            feature_index_me13("nexus_sx_aop_reaction_ms");
+
+                        values[fire] = 1000;
+                        if (react >= 0 && range_ok_me13(react, 0, 0)) {
+                            long lead =
+                                feature_index_me13("nexus_sx_aop_lead_scale");
+
+                            values[react] = 0;
+                            if (lead >= 0
+                                && range_ok_me13(lead, 100, 100)) {
+                                values[lead] = 100;
+                                verdict = (uint64_t)settings_values_commit(values);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (preset_id == 0x4a) {
+            /* autofarm follow toggle */
+            long idx = feature_index_me13("nexus_autofarm_follow_target");
+
+            if (idx >= 0) {
+                uint32_t newv = (uint32_t)(values[idx] == 0);
+
+                if (range_ok_me13(idx, (int32_t)newv, (int32_t)newv)) {
+                    values[idx] = (int32_t)newv;
+                    verdict = (uint64_t)settings_values_commit(values);
+                }
+            }
+        }
+    } else if (preset_id == 0x5c) {
+        /* autododge preset */
+        long idx = feature_index_me13("nexus_autododge_version");
+
+        if (idx >= 0) {
+            int version = *(int *)((char *)g_menu_settings + idx * 4);
+
+            if ((uint32_t)(version - 6) > 0xfffffffa)
+                version = 3;
+            {
+                long slot;
+
+                for (slot = 0; slot < 6; slot++) {
+                    char name[0x60];
+                    uint32_t cap = slot != 5 ? 100 : 0x424;
+                    uint32_t def = slot != 0 ? cap : 0xb4;
+                    long target;
+
+                    if (version == 1)
+                        ui_status_line_format(name, 0x60, 0x60,
+                                              "nexus_dodge_%s",
+                                              g_dodge_names[slot]);
+                    else
+                        ui_status_line_format(name, 0x60, 0x60,
+                                              "nexus_v%d_dodge_%s", version,
+                                              g_dodge_names[slot]);
+                    target = feature_index_me13(name);
+                    if (target < 0
+                        || !range_ok_me13(target, (int32_t)def,
+                                          (int32_t)def))
+                        goto out;
+                    values[target] = (int32_t)def;
+                }
+                {
+                    long hold =
+                        feature_index_me13("nexus_autododge_require_hold");
+
+                    if (hold >= 0 && range_ok_me13(hold, 0, 0)) {
+                        long mask =
+                            feature_index_me13("nexus_dodge_blacklist_mask");
+
+                        values[hold] = 0;
+                        if (mask >= 0 && range_ok_me13(mask, 0x3ff, 0x3ff)) {
+                            values[mask] = 0x3ff;
+                            verdict = (uint64_t)settings_values_commit(values);
+                        }
+                    }
+                }
+            }
+        }
+    } else if (preset_id == 0x70) {
+        /* outline color preset cycle */
+        long idx = feature_index_me13("nexus_sx_outline_color_preset");
+
+        if (idx >= 0) {
+            uint32_t preset = (uint32_t)(values[idx] + 1) % 7;
+
+            if (range_ok_me13(idx, (int32_t)preset, (int32_t)preset)) {
+                const uint32_t *rgb = g_outline_presets + preset * 3;
+
+                if (write_triple_me13(values, "nexus_sx_outline_color_preset",
+                                      preset)
+                    && write_triple_me13(values, "nexus_sx_outline_r", rgb[0])
+                    && write_triple_me13(values, "nexus_sx_outline_g", rgb[1])
+                    && write_triple_me13(values, "nexus_sx_outline_b", rgb[2]))
+                    verdict = (uint64_t)settings_values_commit(values);
+            }
+        }
+    } else if (preset_id == 0x91) {
+        /* bolt-smooth preset */
+        long idx = feature_index_me13("nexus_sx_bolt_smooth");
+
+        if (idx >= 0 && range_ok_me13(idx, 0x56, 0x54)) {
+            long look =
+                feature_index_me13("nexus_sx_bolt_wall_lookahead");
+
+            values[idx] = 0x55;
+            if (look >= 0 && range_ok_me13(look, 500, 500)) {
+                long range =
+                    feature_index_me13("nexus_sx_bolt_target_range");
+
+                values[look] = 500;
+                if (range >= 0 && range_ok_me13(range, 0x578, 0x578)) {
+                    long hold = feature_index_me13("nexus_sx_bolt_exit_hold");
+
+                    values[range] = 0x578;
+                    if (hold >= 0 && range_ok_me13(hold, 0x28a, 0x28a)) {
+                        values[hold] = 0x28a;
+                        verdict = (uint64_t)settings_values_commit(values);
+                    }
+                }
+            }
+        }
+    }
+
+out:
+    (void)verdict;
+}
+
+/*
+ * feature_index_me13 — index of the named feature in the rodata registry
+ * (0x1a36f8 name/lo/hi triples, 0x18-byte stride walked as {name, lo, hi});
+ * -1 when not found. @ inline (raw 0x1a36f8 table walk)
+ */
+static long feature_index_me13(const char *name)
+{
+    const char *const *tbl = (const char *const *)&g_feature_names;
+    long i;
+
+    for (i = 0; i < 0x76; i++) {
+        if (strcmp(tbl[i], name) == 0)
+            return i;
+        tbl += 3; /* raw walks piVar9 += 6 ints = 3 qwords */
+    }
+    return -1;
+}
+
+/*
+ * range_ok_me13 — true when the feature's {lo, hi} range covers [a, b]
+ * (raw checks lo <= b && a <= hi, with the slot index validated).
+ * @ inline
+ */
+static bool range_ok_me13(long idx, int32_t a, int32_t b)
+{
+    const int32_t *triple;
+
+    if (idx < 0)
+        return false;
+    triple = (const int32_t *)((const uint8_t *)&g_feature_names
+                               + (uint64_t)idx * 0x18);
+    /* triple[3] = lo, triple[4] = hi relative to the name pointer */
+    {
+        const int32_t *rec = (const int32_t *)((const uint8_t *)&g_feature_names
+                                               + (uint64_t)idx * 0x18);
+
+        (void)triple;
+        return rec[3] <= b && a <= rec[4];
+    }
+}
+
+/* write one feature slot when the value fits its range; false otherwise */
+static bool write_triple_me13(int32_t *values, const char *name, uint32_t v)
+{
+    long idx = feature_index_me13(name);
+
+    if (idx < 0 || !range_ok_me13(idx, (int32_t)v, (int32_t)v))
+        return false;
+    values[idx] = (int32_t)v;
+    return true;
+}
+/* menu_engine chain chunk 14: covers raw lines 7414-7900 (p4 begins: engine register/observe, stopped log, quick header render; button pool init straddles into 7896+ and is finished in chunk 15) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* p4 @ 00193f80 (below) */
+extern uint64_t nexus_menu_status(void);   /* @ 00183d70 */
+extern uint64_t nexus_menu_scroll_battle(int dir, int tid); /* @ 00184900 */
+extern uint32_t nexus_menu_dispatch(uint32_t op, int a, int b, int tid); /* @ 00194730 */
+extern void nexus_menu_view(void *view_out, int owner_id);  /* @ 001856f8 */
+extern uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out); /* @ 001841f0 */
+extern int theme_menu_status_set(int code, int tid, const char *reason); /* misc @ 00183cdc */
+extern int channel2_context_cache_validate(void);  /* misc @ 0018e668 */
+extern uint64_t channel2_read_ptr(uint64_t addr);  /* misc @ 0018edcc */
+extern int channel2_ancestor_chain_check(uint64_t node, uint64_t target); /* misc @ 0018ee70 */
+extern int channel2_child_link_valid(uint64_t node, uint64_t parent); /* misc @ 0018f750 */
+extern int menu_button_label_set(int slot, const char *text); /* widgets @ 0018f988 */
+extern void text_vformat_128(void *buf);            /* misc @ 0018fb04 */
+extern int channel2_root_node_check(uint64_t node); /* misc @ 0018fba0 */
+extern int menu_quick_header_render(float w, float h); /* @ 0018e880 (below) */
+extern uint64_t menu_button_pool_init(void);        /* @ 0018ef84 (chunk 15) */
+
+/* engine ops block (raw 0x28fac0..0x28fb38, filled by register) */
+extern uint64_t g_engine_ctx;        /* 0x28fac8 — engine ctx handle */
+extern uint64_t g_engine_remote;     /* 0x28fad0 — remote-read bias */
+extern uint64_t g_engine_read_mem;   /* 0x28fae0 — read_mem fn */
+extern uint64_t g_engine_alloc;      /* 0x28fae8 — alloc fn */
+extern uint64_t g_engine_ctor_a;     /* 0x28faf0 — ctor a */
+extern uint64_t g_engine_ctor_b;     /* 0x28faf8 — ctor b */
+extern uint64_t g_engine_movie_load; /* 0x28fb00 — movie load fn */
+extern uint64_t g_engine_movie_bind; /* 0x28fb08 — movie bind fn */
+extern uint64_t g_engine_frame_set;  /* 0x28fb10 — frame set fn */
+extern uint64_t g_engine_stage_fn;   /* 0x28fb18 — stage fn */
+extern uint64_t g_engine_pos_fn;     /* 0x28fb20 — set-position fn */
+extern uint64_t g_engine_add_child;  /* 0x28fb28 — add-child fn */
+extern uint64_t g_engine_remove_child; /* 0x28fb30 — remove-child fn */
+extern uint64_t g_engine_log_fn;     /* 0x28fb38 — engine log sink */
+extern uint32_t g_engine_log_count;  /* 0x28fb54 — capped-0x80 counter */
+extern uint32_t g_engine_latch;      /* 0x28fb40 — register/observe latch */
+extern uint8_t  g_engine_registered; /* 0x28fb44 — ops installed */
+extern int32_t  g_engine_state;      /* 0x28fb48 — observe state (-1..2) */
+extern uint32_t g_engine_owner_id;   /* 0x28fb4c — owning tid */
+extern uint32_t g_engine_probe_count; /* 0x28fb50 — asset probe count */
+extern uint32_t g_engine_click_count; /* 0x28fb54 (shared w/ log cap) */
+extern uint64_t g_engine_asset_start; /* 0x28fb60 — asset window start */
+extern uint64_t g_engine_next_poll;  /* 0x28fb68 — next poll deadline */
+extern uint64_t g_engine_stage_root; /* 0x28fb70 — cached stage root */
+extern uint64_t g_engine_stage_view; /* 0x28fb78 — cached stage view */
+extern uint64_t g_engine_buttons[0x18]; /* 0x28fb80 — 24 button handles */
+extern uint8_t  g_engine_button_live[0x18]; /* 0x28fca0 — live flags */
+extern uint32_t g_engine_button_ops[0x18];  /* 0x28fc40 — button opcodes */
+extern uint64_t g_engine_view_rev;   /* 0x28fcb8 — last view generation */
+
+/* raw float caches for the render (0x28fd80/0x28fde0 blocks) */
+extern float g_engine_pos_cache[0x18]; /* 0x28fd80 — last set x */
+extern float g_engine_pos_cache_y[0x18]; /* 0x28fde0 — last set y */
+extern uint8_t g_engine_pos_valid[0x19]; /* 0x28fe40 — position-valid flags */
+
+/* engine ops-block layout (raw record, 0x80 bytes) */
+typedef struct {
+    uint64_t magic;        /* +0x00 — {1, 0x80} */
+    uint64_t size;         /* +0x08 — >= 0x1000 */
+    uint64_t remote_bias;  /* +0x10 (raw +4 qword = remote bias) */
+    uint64_t ctx;          /* +0x18 */
+    uint64_t read_mem;     /* +0x18 */
+    uint64_t alloc;        /* +0x20 */
+    uint64_t ctor_a;       /* +0x28 */
+    uint64_t ctor_b;       /* +0x30 */
+    uint64_t movie_load;   /* +0x38 */
+    uint64_t movie_bind;   /* +0x40 */
+    uint64_t frame_set;    /* +0x48 */
+    uint64_t stage_fn;     /* +0x50 */
+    uint64_t pos_fn;       /* +0x58 */
+    uint64_t add_child;    /* +0x60 */
+    uint64_t remove_child; /* +0x68 */
+    uint64_t log_fn;       /* +0x70 */
+    const char *build_hash; /* +0x30 (raw +6 ints) — must equal the pinned
+                               sha "a10aeb6b...ede3" */
+} engine_ops_t;
+
+static void menu_stopped_log(const char *reason);
+
+/*
+ * nexus_menu_engine_register — install the engine ops block (one-shot,
+ * under the 0x28fb40 latch). The 0x80-byte block must carry {1, 0x80}, a
+ * build hash equal to
+ * "a10aeb6b4085fb2a15d969a130cd9608231998b5269a40aed41129d99624ede3",
+ * size >= 0x1000 and non-null fns at +0x20/+0x28/+0x30/+0x38/+0x40/+0x48/
+ * +0x50/+0x58/+0x60/+0x68/+0x70. On the first successful registration the
+ * whole block is copied to 0x28fac0 (14 fn/ctx qwords), the registered
+ * flag set and 'waiting_rooted_mainloop_text' published. Returns 1
+ * installed, 4 bad block/already registered, 3 busy. @ 0018e174
+ */
+uint64_t nexus_menu_engine_register(int *block)
+{
+    engine_ops_t *ops = (engine_ops_t *)(void *)block;
+
+    if (block == NULL || ops->magic != ((uint64_t)1 << 32 | 0x80))
+        return 4;
+    if (ops->size < 0x1000)
+        return 4;
+    if (ops->build_hash == NULL
+        || strcmp(ops->build_hash,
+                  "a10aeb6b4085fb2a15d969a130cd9608231998b5269a40aed41129d99624ede3")
+               != 0)
+        return 4;
+    if (ops->alloc == 0 || ops->ctor_a == 0)
+        return 4;
+    if (ops->ctor_b == 0)
+        return 4;
+    if (ops->movie_load == 0 || ops->movie_bind == 0
+        || ops->frame_set == 0 || ops->stage_fn == 0
+        || ops->pos_fn == 0 || ops->add_child == 0
+        || ops->remove_child == 0 || ops->log_fn == 0)
+        return 4;
+
+    if ((ui_latch_test_and_set(1, &g_engine_latch) & 1) != 0)
+        return 3;
+    if (g_engine_registered != 0) {
+        g_engine_latch = 0;
+        return 4;
+    }
+
+    g_engine_alloc = ops->alloc;
+    g_engine_read_mem = ops->read_mem;
+    g_engine_ctor_b = ops->ctor_b;
+    g_engine_ctor_a = ops->ctor_a;
+    g_engine_ctx = ops->ctx;
+    g_engine_remote = ops->remote_bias;
+    g_engine_pos_fn = ops->pos_fn;
+    g_engine_add_child = ops->add_child;
+    g_engine_remove_child = ops->remove_child;
+    g_engine_movie_bind = ops->movie_bind;
+    g_engine_movie_load = ops->movie_load;
+    g_engine_stage_fn = ops->stage_fn;
+    g_engine_frame_set = ops->frame_set;
+    g_engine_log_fn = ops->log_fn;
+    g_engine_registered = 1;
+    theme_menu_status_set(2, 0, "waiting_rooted_mainloop_text");
+    g_engine_latch = 0;
+    return 1;
+}
+
+/*
+ * nexus_menu_engine_observe — per-frame engine observation pump (the
+ * rooted-mainloop text path). Gates: label "Mainloop", tid >= 1, phase <= 1,
+ * engine registered, state >= 0, owner match, finite w/h with w >= 960,
+ * h >= 560, both <= 8192, menu status non-zero. State 2 (attached): the
+ * poll throttle (>= param_7) guards channel2_context_cache_validate; a
+ * click phase (1) walks the 24 button slots and dispatches the live one
+ * (opcodes 0x20000/0x20001 -> scroll battle -1/+1, else
+ * nexus_menu_dispatch with 'nexus_menu_click' acknowledged/pending/blocked
+ * logged), then menu_quick_header_render renders the frame. State < 2
+ * (attaching): the stage identity chain (bias+0x12eb9f0 root, +0x90 view,
+ * frame object == bias+0x11abad8, ancestor check) with the 500ms asset
+ * probe ('popover_button_blue', probe budget 0x1f / 0x752 window, owner
+ * adoption, status -1 -> 'asset_readiness_budget' stop), then
+ * menu_button_pool_init builds the 24 buttons. Failures route through
+ * menu_stopped_log. Returns 1 rendered, 2 waiting, 3 busy, 0 gated,
+ * 0xffffffff stopped. @ 0018e2b4
+ */
+uint64_t nexus_menu_engine_observe(float w, float h, uint32_t phase,
+                                   long frame_obj, int tid, char *thread_name,
+                                   uint64_t now_ms)
+{
+    if (thread_name == NULL || tid < 1 || 1 < phase)
+        return 0;
+    if (g_engine_registered == 0 || (int32_t)g_engine_state < 0)
+        return 0;
+    if (strcmp(thread_name, "Mainloop") != 0)
+        return 0;
+    if (!isfinite(w))
+        return 0;
+    if (g_engine_owner_id != 0 && g_engine_owner_id != (uint32_t)tid)
+        return 0;
+    if (h != 8192.0f && !(h < 8192.0f))
+        return 0;
+    if (w != 8192.0f && !(w < 8192.0f))
+        return 0;
+    if (h < 560.0f || w < 960.0f)
+        return 0;
+    if (!isfinite(h))
+        return 0;
+    if ((int) nexus_menu_status() == 0)
+        return 0;
+    if ((ui_latch_test_and_set(1, &g_engine_latch) & 1) != 0)
+        return 3;
+
+    if (g_engine_state == 2) {
+        /* attached: click dispatch + render */
+        if (phase == 0 && now_ms < g_engine_next_poll) {
+            g_engine_latch = 0;
+            return 1;
+        }
+        g_engine_next_poll = now_ms + 100;
+        if (channel2_context_cache_validate() != 0) {
+            if (phase == 1) {
+                long i;
+
+                for (i = 0; i < 0x18; i++) {
+                    if (g_engine_button_live[i] != 0
+                        && g_engine_buttons[i] == (uint64_t)frame_obj) {
+                        uint32_t op = g_engine_button_ops[i];
+                        int verdict;
+
+                        if ((op & 0xfffffffe) == 0x20000)
+                            verdict = (int)nexus_menu_scroll_battle(
+                                op == 0x20001 ? 1 : -1, tid);
+                        else
+                            verdict = (int)nexus_menu_dispatch(op, 0, 0, tid);
+                        if (g_engine_click_count < 0x80
+                            && g_engine_log_fn != 0) {
+                            const char *reason =
+                                verdict == 2 ? "pending" : "blocked";
+                            const char *final =
+                                verdict == 1 ? "acknowledged" : reason;
+
+                            ((void (*)(uint64_t, const char *, const char *,
+                                       uint32_t))g_engine_log_fn)(
+                                g_engine_ctx, "nexus_menu_click", final,
+                                g_engine_button_ops[i]);
+                        }
+                        g_engine_click_count = g_engine_click_count + 1;
+                        break;
+                    }
+                }
+            }
+            {
+                uint64_t verdict = (uint64_t)menu_quick_header_render(w, h);
+
+                g_engine_latch = 0;
+                return verdict;
+            }
+        }
+        menu_stopped_log("stage_generation_or_membership");
+        g_engine_latch = 0;
+        return 0xffffffff;
+    }
+
+    /* attaching: stage identity + asset probe + button pool */
+    {
+        uint64_t stage_root = channel2_read_ptr(g_engine_remote + 0x12eb9f0);
+        uint64_t stage_view = 0;
+        uint64_t frame_check = 0;
+
+        if (stage_root != 0
+            && (stage_view = channel2_read_ptr(stage_root + 0x90)) != 0
+            && (frame_check = channel2_read_ptr((uint64_t)frame_obj))
+                   == g_engine_remote + 0x11abad8
+            && channel2_ancestor_chain_check((uint64_t)frame_obj,
+                                             stage_view) != 0) {
+            if (g_engine_asset_start == 0)
+                g_engine_asset_start = now_ms;
+            if (g_engine_next_poll <= now_ms) {
+                if (0x1f < g_engine_probe_count
+                    || (now_ms - g_engine_asset_start) >> 5 > 0x752) {
+                    menu_stopped_log("asset_readiness_budget");
+                    g_engine_latch = 0;
+                    return 0xffffffff;
+                }
+                g_engine_probe_count = g_engine_probe_count + 1;
+                g_engine_next_poll = now_ms + 500;
+                {
+                    /* engine alloc('popover_button_blue') probe */
+                    long probe = (long)((long (*)(uint64_t, const char *))
+                                            g_engine_alloc)(
+                        g_engine_ctx, "popover_button_blue");
+
+                    if (probe != 0) {
+                        extern int ui_thread_adopt(int tid); /* misc @ 00183c78 */
+
+                        g_engine_owner_id = (uint32_t)tid;
+                        if (ui_thread_adopt(tid) == 0) {
+                            g_engine_latch = 0;
+                            g_engine_owner_id = 0;
+                            return 3;
+                        }
+                        g_engine_state = 1;
+                        g_engine_stage_root = stage_root;
+                        g_engine_stage_view = stage_view;
+                        {
+                            uint64_t verdict = menu_button_pool_init();
+
+                            if ((int)verdict != 1) {
+                                g_engine_latch = 0;
+                                return verdict;
+                            }
+                            verdict = (uint64_t)menu_quick_header_render(w, h);
+                            g_engine_latch = 0;
+                            return verdict;
+                        }
+                    }
+                }
+            }
+        }
+        g_engine_latch = 0;
+        return 2;
+    }
+}
+
+/*
+ * menu_stopped_log — mark the engine stopped: state -> -1, publish the
+ * theme status (-1, owner, reason) and log 'nexus_menu_stopped' through
+ * the engine sink (capped 0x80). @ 0018e804
+ */
+void menu_stopped_log(const char *reason)
+{
+    g_engine_state = 0xffffffff;
+    theme_menu_status_set(-1, (int)g_engine_owner_id, reason);
+    {
+        uint32_t prev = g_engine_click_count;
+
+        g_engine_click_count = g_engine_click_count + 1;
+        if (prev < 0x80 && g_engine_log_fn != 0)
+            ((void (*)(uint64_t, const char *, const char *, uint32_t))
+                 g_engine_log_fn)(g_engine_ctx, "nexus_menu_stopped",
+                                  reason, 0);
+    }
+}
+
+/*
+ * menu_quick_header_render — render the quick-menu header via
+ * nexus_menu_view (owner = engine owner id). Row cap 0x17 (else
+ * 'view_capacity' stop). Reads the quick-menu offset settings
+ * (nexus_quick_menu_offset_x/y through the settings-name table),
+ * positions the NEXUS badge (y + 90 / x + 40 from the offsets) and the
+ * NEXUS MENU title (w*0.5 + 92.0 raw fmadd, (h - 600.0) * 0.5, shifted by
+ * +100/-370 when in battle), then syncs the 23 view rows: hidden or
+ * off-position rows park at 0xc61c3c00, live rows (row slot bitmap kinds
+ * 0x3/0x5/0x8 with text_vformat_128 labels) move to title + row offset,
+ * each through the engine set-position fn with the last-position caches.
+ * Returns 1 rendered, 0xffffffff on label/capacity failure, 3 busy.
+ * @ 0018e880
+ */
+int menu_quick_header_render(float w, float h)
+{
+    struct {
+        uint32_t generation;   /* +0x00 */
+        uint32_t row_count;    /* +0x04 */
+        uint8_t flag;          /* +0x08 */
+        char screen;           /* +0x09 */
+        uint8_t battle;        /* +0x0a */
+        uint8_t battle_row;    /* +0x0b */
+        uint32_t rows[0x9a * 4]; /* 0x690 body: 0x40-stride rows */
+    } view;
+    uint64_t offsets = 0;
+
+    nexus_menu_view(&view, (int)g_engine_owner_id); /* raw drops the verdict */
+    if (view.row_count < 0x17) {
+        const char **names;
+        uint64_t count = 0;
+
+        /* read the quick-menu offsets by setting name */
+        {
+            extern const char **nexus_menu_settings(uint64_t *count_out); /* below */
+
+            names = nexus_menu_settings(&count);
+        }
+        if (count != 0) {
+            uint64_t i;
+
+            for (i = 0; i < count; i++) {
+                if (strcmp(names[i], "nexus_quick_menu_offset_x") == 0)
+                    nexus_menu_setting_value((uint32_t)i,
+                                             (int32_t *)&offsets + 1);
+                if (strcmp(names[i], "nexus_quick_menu_offset_y") == 0)
+                    nexus_menu_setting_value((uint32_t)i,
+                                             (int32_t *)&offsets);
+                names += 3; /* raw walks 3-qword triples */
+            }
+        }
+
+        g_engine_button_ops[0] = view.battle != 0 ? 0x82 : 1;
+        g_engine_button_live[0] = 1;
+        if (menu_button_label_set(0, "NEXUS") == 1) {
+            float badge_y = (float)(offsets >> 32) + 90.0f;
+            float badge_x = (float)(uint32_t)offsets + 40.0f;
+
+            if (g_engine_pos_valid[0] == 0
+                || g_engine_pos_cache[0] != badge_y
+                || g_engine_pos_cache_y[0] != badge_x) {
+                ((void (*)(float, float, uint64_t, uint64_t))g_engine_pos_fn)(
+                    badge_y, badge_x, g_engine_ctx, g_engine_buttons[0]);
+                g_engine_pos_valid[0] = 1;
+                g_engine_pos_cache[0] = badge_y;
+                g_engine_pos_cache_y[0] = badge_x;
+            }
+            g_engine_button_ops[1] = 0;
+            g_engine_button_live[1] = 0;
+            if (menu_button_label_set(1, "NEXUS MENU") == 1) {
+                float title_x = w * 0.5f + 92.0f; /* raw fmadd 0x3f000000/0x42b40000 */
+                float title_y = (h - 600.0f) * 0.5f;
+                float park_y = -9999.0f;
+                float park_x = -9999.0f;
+
+                if (view.battle != 0) {
+                    park_y = title_y + 100.0f;
+                    park_x = title_x - 370.0f;
+                }
+                if (g_engine_pos_valid[1] == 0
+                    || g_engine_pos_cache[1] != park_x
+                    || g_engine_pos_cache_y[1] != park_y) {
+                    ((void (*)(float, float, uint64_t, uint64_t))
+                        g_engine_pos_fn)(park_x, park_y, g_engine_ctx,
+                                         g_engine_buttons[1]);
+                    g_engine_pos_valid[1] = 1;
+                    g_engine_pos_cache[1] = park_x;
+                    g_engine_pos_cache_y[1] = park_y;
+                }
+                {
+                    long row;
+                    long x_off = 0x1e2; /* button slot base */
+                    long pos_idx = 0x188;
+                    long btn_idx = 0xd0;
+
+                    for (row = 0; row < 0x17; row++) {
+                        g_engine_button_live[x_off] = 0;
+                        g_engine_pos_cache[pos_idx >> 2] = 0;
+                        if (view.battle == 0
+                            || (uint32_t)view.row_count
+                                   <= (uint32_t)(row - 0x1e2 + 0x1e2)) {
+                            /* hidden/off rows: park at the force color */
+                            if (g_engine_pos_valid[x_off] == 0
+                                || g_engine_pos_cache[pos_idx >> 2] != -9999.0f
+                                || g_engine_pos_cache_y[pos_idx >> 2]
+                                       != -9999.0f) {
+                                ((void (*)(float, float, uint64_t, uint64_t))
+                                    g_engine_pos_fn)(
+                                    0xc61c3c00, 0xc61c3c00, g_engine_ctx,
+                                    g_engine_buttons[btn_idx >> 3]);
+                                g_engine_pos_cache[pos_idx >> 2] =
+                                    0xc61c3c00;
+                                g_engine_pos_cache_y[pos_idx >> 2] =
+                                    0xc61c3c00;
+                                g_engine_pos_valid[x_off] = 1;
+                                goto next_row;
+                            }
+                        } else {
+                            /* live row: format the label and move it */
+                            char label[0x80];
+                            uint8_t kind = ((uint8_t *)&view)
+                                [0x10 + (uint64_t)(row - 0x1e2) * 0x40
+                                 + 0x6c8];
+
+                            if (kind < 8) {
+                                uint32_t mask = 1u << (kind & 0x1f);
+
+                                if ((mask & 0xd8) != 0
+                                    || (mask & 0x24) != 0)
+                                    text_vformat_128(label);
+                                else
+                                    text_vformat_128(label);
+                            } else {
+                                text_vformat_128(label);
+                            }
+                            if (menu_button_label_set(
+                                    (int)row - 0x1e0, label) != 1)
+                                return 0xffffffff;
+                            {
+                                uint32_t src = view.rows[(uint64_t)row * 4
+                                                         + 0x1a];
+                                float ry = *(float *)&src;
+                                float rx = *(float *)((uint8_t *)&view
+                                                     + 0x10 + (uint64_t)row
+                                                           * 0x40 + 0x14);
+                                float x = title_x + rx;
+                                float y = title_y + ry;
+
+                                g_engine_button_live[x_off] = 1;
+                                if (g_engine_pos_valid[x_off] == 0
+                                    || g_engine_pos_cache[pos_idx >> 2] != x
+                                    || g_engine_pos_cache_y[pos_idx >> 2]
+                                           != y) {
+                                    ((void (*)(float, float, uint64_t,
+                                               uint64_t))g_engine_pos_fn)(
+                                        x, y, g_engine_ctx,
+                                        g_engine_buttons[btn_idx >> 3]);
+                                    g_engine_pos_cache[pos_idx >> 2] = x;
+                                    g_engine_pos_cache_y[pos_idx >> 2] = y;
+                                    g_engine_pos_valid[x_off] = 1;
+                                }
+                            }
+                        }
+next_row:
+                        x_off = x_off + 1;
+                        pos_idx = pos_idx + 4;
+                        btn_idx = btn_idx + 8;
+                    }
+                }
+                g_engine_view_rev = view.generation;
+                return 1;
+            }
+            return 0xffffffff;
+        }
+        return 0xffffffff;
+    }
+
+    /* capacity exceeded: stop */
+    g_engine_state = 0xffffffff;
+    theme_menu_status_set(-1, (int)g_engine_owner_id, "view_capacity");
+    {
+        uint32_t prev = g_engine_click_count;
+
+        g_engine_click_count = prev + 1;
+        if (prev < 0x80 && g_engine_log_fn != 0)
+            ((void (*)(uint64_t, const char *, const char *, uint32_t))
+                 g_engine_log_fn)(g_engine_ctx, "nexus_menu_stopped",
+                                  "view_capacity", 0);
+    }
+    return 0xffffffff;
+}
+
+/*
+ * nexus_menu_actions — table of the 0xa8 action ids (rodata 0x19eab8);
+ * *count_out (when non-null) receives 0xa8. @ 0018fde4
+ */
+const void *nexus_menu_actions(uint64_t *count_out)
+{
+    if (count_out != NULL)
+        *count_out = 0xa8;
+    return (const void *)(uintptr_t)0x19eab8;
+}
+
+/*
+ * nexus_menu_settings — table of the 0x76 setting-name triples (rodata
+ * 0x1a19f8); *count_out (when non-null) receives 0x76. @ 0018fdfc
+ */
+const char **nexus_menu_settings(uint64_t *count_out)
+{
+    if (count_out != NULL)
+        *count_out = 0x76;
+    return (const char **)(uintptr_t)0x1a19f8;
+}
+
+/*
+ * nexus_menu_cells — table of the 0x9a cells (rodata 0x1a2508);
+ * *count_out receives 0x9a. @ 0018fe14
+ */
+const void *nexus_menu_cells(uint64_t *count_out)
+{
+    if (count_out != NULL)
+        *count_out = 0x9a;
+    return (const void *)(uintptr_t)0x1a2508;
+}
+
+/*
+ * nexus_menu_tabs — table of the 6 tabs (rodata 0x1a2ea8);
+ * *count_out receives 6. @ 0018fe2c
+ */
+const void *nexus_menu_tabs(uint64_t *count_out)
+{
+    if (count_out != NULL)
+        *count_out = 6;
+    return (const void *)(uintptr_t)0x1a2ea8;
+}
+
+/*
+ * nexus_script_port_ui_server_thread — script-port veneer: syscall 0xb2
+ * (gettid) then forward to nexus_menu_server_thread. — dlsym export
+ * thunk @ 00191908
+ */
+void nexus_script_port_ui_server_thread__export(void)
+{
+    extern bool nexus_menu_server_thread(int tid);
+
+    (void)syscall(0xb2);
+    nexus_menu_server_thread((int)gettid());
+}
+/* menu_engine chain chunk 15: covers raw lines 7901-8400 (menu_button_pool_init tail from raw 7896; then menu_script_port_bind straddles past 8400 and continues) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+
+/* dlfcn veneers: chunk 3 of this chain already provides Dl_info/dladdr
+ * (dl_info_me3_t/dladdr_me3) for the concatenated unit; standalone builds
+ * reuse the same names via the c03 guard macro when present, else declare
+ * local copies with the me15 suffix */
+#ifndef DLINFO_ME3_DECLARED
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const void *dli_saddr;
+    const char *dli_sname;
+} dl_info_me15_t;
+#define Dl_info dl_info_me15_t
+extern int dladdr(const void *addr, dl_info_me15_t *info);
+#endif
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* p4 @ 00193f80 */
+extern int theme_menu_status_set(int code, int tid, const char *reason); /* misc @ 00183cdc */
+extern int menu_button_label_set(int slot, const char *text); /* widgets @ 0018f988 */
+extern int channel2_child_link_valid(uint64_t node, uint64_t parent); /* misc @ 0018f750 */
+extern int channel2_root_node_check(uint64_t node); /* misc @ 0018fba0 */
+extern void sha256_init(void *state);              /* misc @ 00191314 */
+extern void sha256_update(void *state, const void *data, size_t len); /* misc @ 00191338 */
+extern void sha256_final(void *state, void *out32); /* misc @ 00191678 */
+extern int memfd_module_fd_open(uint64_t handle, const char *soname,
+                                const char *sha_hex); /* misc @ 00192f58 */
+extern int memfd_fd_path_resolve(const char *path, void *out); /* misc @ 0019339c */
+extern uint64_t dlsym_module_verified(void *handle, const char *name,
+                                      uint64_t base); /* misc @ 00193324 */
+
+/* engine ops block (chunk 14 externs) */
+extern uint64_t g_engine_ctx;        /* 0x28fac8 — engine ctx handle */
+extern uint64_t g_engine_remote;     /* 0x28fad0 — remote-read bias */
+extern uint64_t g_engine_read_mem;   /* 0x28fae0 — read_mem fn */
+extern uint64_t g_engine_alloc;      /* 0x28fae8 — alloc fn */
+extern uint64_t g_engine_ctor_a;     /* 0x28faf0 — ctor a */
+extern uint64_t g_engine_ctor_b;     /* 0x28faf8 — ctor b */
+extern uint64_t g_engine_movie_load; /* 0x28fb00 — movie load fn */
+extern uint64_t g_engine_movie_bind; /* 0x28fb08 — movie bind fn */
+extern uint64_t g_engine_frame_set;  /* 0x28fb10 — frame set fn */
+extern uint64_t g_engine_remove_child; /* 0x28fb30 — remove-child fn */
+extern uint64_t g_engine_log_fn;     /* 0x28fb38 — engine log sink */
+extern uint32_t g_engine_click_count; /* 0x28fb54 — capped-0x80 counter */
+extern int32_t  g_engine_state;      /* 0x28fb48 — observe state */
+extern uint32_t g_engine_owner_id;   /* 0x28fb4c — owning tid */
+extern uint64_t g_engine_stage_root; /* 0x28fb70 — cached stage root */
+extern uint64_t g_engine_stage_view; /* 0x28fb78 — cached stage view */
+extern uint64_t g_engine_buttons[0x18]; /* 0x28fb80 — 24 button handles */
+extern uint8_t  g_engine_button_live[0x18]; /* 0x28fca0 — live flags */
+extern float g_engine_pos_cache[0x18];   /* 0x28fd80 — last set x */
+extern float g_engine_pos_cache_y[0x18]; /* 0x28fde0 — last set y */
+extern uint8_t g_engine_pos_valid[0x19]; /* 0x28fe40 — position-valid flags */
+extern const char g_empty_text_me15[]; /* 0x134f22 — shared "" rodata */
+
+/* body-guard region table (raw 0x19e9e8: {lo, size} pairs + 0x19e9f0 ptrs) */
+extern const uint64_t g_guard_regions[9 * 3]; /* 0x19e9e8 — {size, lo, ptr} */
+
+extern uint64_t g_engine_pos_fn;    /* 0x28fb20 — set-position fn (chunk 14) */
+#define g_engine_pos_fn_me15 g_engine_pos_fn
+
+/*
+ * menu_button_pool_init — build the 24 quick-menu buttons and attach them
+ * to the stage root. First verifies the 9 engine body-guard regions
+ * (16-byte chunks read through the engine read fn against the pinned
+ * rodata at 0x19e9f0; any mismatch -> 'a10_body_guard' stop). Then for
+ * each of the 24 buttons: alloc 0x260, ctor_b, ctor_a contract check
+ * ('button_allocation' / 'button_constructor_contract' stops), load the
+ * 'popover_button_blue' movie and validate it (vtable == bias+0x11ad208,
+ * frame count at +0xbe >= 1, 'movie_type_or_frame_count' stop), bind and
+ * verify ('movie_binding_contract'), set frame 0, park at 0xc61c3c00 when
+ * off-position, intern the empty label; finally re-verify the cached stage
+ * root/view (bias+0x12eb9f0 / +0x90), add each button to the root and
+ * verify membership ('stage_root_membership' / 'stage_changed_during_
+ * build'), then state -> 2 and 'nexus_menu_attached' /
+ * 'all_root_membership_verified'. Returns 1 built, 0xffffffff stopped.
+ * @ 0018ef84
+ */
+uint64_t menu_button_pool_init(void)
+{
+    uint64_t region;
+
+    /* 9 body-guard regions, 16-byte granules */
+    for (region = 0; region < 9; region++) {
+        uint64_t size = g_guard_regions[region * 3];
+        uint64_t lo = g_guard_regions[region * 3 + 1];
+        uint64_t expect = g_guard_regions[region * 3 + 2];
+        uint64_t off = 0;
+
+        while (off < size) {
+            uint64_t chunk = size - off;
+            uint64_t buf[2];
+
+            if (0xf < chunk)
+                chunk = 0x10;
+            {
+                uint64_t addr = lo + off + g_engine_remote;
+
+                if (addr < 0x1000
+                    || (uint64_t)(~lo - g_engine_remote) < chunk
+                    || ((int (*)(uint64_t, uint64_t, void *, uint64_t))
+                            g_engine_read_mem)(g_engine_ctx, addr, buf,
+                                               chunk) != 1
+                    || memcmp(buf, (const void *)(expect + off),
+                              (size_t)chunk) != 0)
+                    goto body_guard_fail;
+            }
+            off = off + 0x10;
+        }
+    }
+
+    /* 24 buttons */
+    {
+        uint32_t i;
+        long pos_idx = 0x2c0;
+
+        for (i = 0; i < 0x18; i++) {
+            long btn = (long)((long (*)(uint64_t, uint64_t))g_engine_ctor_a)(
+                g_engine_ctx, 0x260);
+
+            g_engine_buttons[i] = (uint64_t)btn;
+            if (btn == 0) {
+                g_engine_state = 0xffffffff;
+                theme_menu_status_set(-1, (int)g_engine_owner_id,
+                                      "button_allocation");
+                {
+                    uint32_t prev = g_engine_click_count;
+
+                    g_engine_click_count = prev + 1;
+                    if (prev < 0x80 && g_engine_log_fn != 0)
+                        ((void (*)(uint64_t, const char *, const char *,
+                                   uint32_t))g_engine_log_fn)(
+                            g_engine_ctx, "nexus_menu_stopped",
+                            "button_allocation", 0);
+                }
+                return 0xffffffff;
+            }
+            ((void (*)(uint64_t, long))g_engine_ctor_b)(g_engine_ctx, btn);
+            if (channel2_root_node_check((uint64_t)btn) == 0) {
+                g_engine_state = 0xffffffff;
+                theme_menu_status_set(-1, (int)g_engine_owner_id,
+                                      "button_constructor_contract");
+                {
+                    uint32_t prev = g_engine_click_count;
+
+                    g_engine_click_count = prev + 1;
+                    if (prev < 0x80 && g_engine_log_fn != 0)
+                        ((void (*)(uint64_t, const char *, const char *,
+                                   uint32_t))g_engine_log_fn)(
+                            g_engine_ctx, "nexus_menu_stopped",
+                            "button_constructor_contract", 0);
+                }
+                return 0xffffffff;
+            }
+
+            /* movie load + validate */
+            {
+                uint64_t movie = (uint64_t)((long (*)(uint64_t, const char *))
+                                                g_engine_movie_load)(
+                    g_engine_ctx, "popover_button_blue");
+                uint64_t qword = 0;
+                uint16_t frames = 0;
+                bool ok = movie != 0;
+
+                if (ok) {
+                    if ((movie + 8) >> 3 < 0x201)
+                        ok = false;
+                    else
+                        ok = ((int (*)(uint64_t, uint64_t, void *, uint64_t))
+                                  g_engine_read_mem)(g_engine_ctx, movie,
+                                                     &qword, 8) == 1;
+                }
+                if (ok && !(0xfff < qword && (qword & 7) == 0))
+                    qword = 0;
+                if (ok
+                    && (qword != g_engine_remote + 0x11ad208
+                        || movie + 0xbe < 0x1000
+                        || (movie & 0xfffffffffffffffeULL)
+                               == 0xffffffffffffff40ULL))
+                    ok = false;
+                if (ok)
+                    ok = ((int (*)(uint64_t, uint64_t, void *, uint64_t))
+                              g_engine_read_mem)(g_engine_ctx, movie + 0xbe,
+                                                 &frames, 2) == 1
+                         && frames >= 1;
+                if (!ok) {
+                    g_engine_state = 0xffffffff;
+                    theme_menu_status_set(-1, (int)g_engine_owner_id,
+                                          "movie_type_or_frame_count");
+                    {
+                        uint32_t prev = g_engine_click_count;
+
+                        g_engine_click_count = prev + 1;
+                        if (prev < 0x80 && g_engine_log_fn != 0)
+                            ((void (*)(uint64_t, const char *, const char *,
+                                       uint32_t))g_engine_log_fn)(
+                                g_engine_ctx, "nexus_menu_stopped",
+                                "movie_type_or_frame_count", 0);
+                    }
+                    return 0xffffffff;
+                }
+
+                ((void (*)(uint64_t, long, uint64_t))g_engine_movie_bind)(
+                    g_engine_ctx, btn, movie);
+
+                /* binding contract: +0x80 qword plausible and ctor re-check */
+                qword = 0;
+                {
+                    bool bind_ok;
+
+                    if ((uint64_t)(btn + 0x88) >> 3 < 0x201)
+                        bind_ok = false;
+                    else
+                        bind_ok = ((int (*)(uint64_t, uint64_t, void *,
+                                            uint64_t))g_engine_read_mem)(
+                                      g_engine_ctx, btn + 0x80, &qword, 8)
+                                  == 1;
+                    if (bind_ok && !(0xfff < qword && (qword & 7) == 0))
+                        qword = 0;
+                    if (bind_ok)
+                        bind_ok = qword >= 0x1000
+                                  && channel2_root_node_check((uint64_t)btn)
+                                         != 0;
+                    if (!bind_ok) {
+                        g_engine_state = 0xffffffff;
+                        theme_menu_status_set(-1, (int)g_engine_owner_id,
+                                              "movie_binding_contract");
+                        {
+                            uint32_t prev = g_engine_click_count;
+
+                            g_engine_click_count = prev + 1;
+                            if (prev < 0x80 && g_engine_log_fn != 0)
+                                ((void (*)(uint64_t, const char *,
+                                           const char *, uint32_t))
+                                     g_engine_log_fn)(
+                                    g_engine_ctx, "nexus_menu_stopped",
+                                    "movie_binding_contract", 0);
+                        }
+                        return 0xffffffff;
+                    }
+                }
+
+                ((void (*)(uint64_t, uint64_t, int))g_engine_frame_set)(
+                    g_engine_ctx, movie, 0);
+
+                /* park off-position buttons at the force color */
+                if (g_engine_pos_valid[i + 2] == 0
+                    || g_engine_pos_cache[pos_idx >> 2] != -9999.0f
+                    || g_engine_pos_cache_y[pos_idx >> 2] != -9999.0f) {
+                    ((void (*)(float, float, uint64_t, uint64_t))
+                        g_engine_pos_fn_me15)(0xc61c3c00, 0xc61c3c00,
+                                              g_engine_ctx,
+                                              g_engine_buttons[i]);
+                    g_engine_pos_cache[pos_idx >> 2] = 0xc61c3c00;
+                    g_engine_pos_cache_y[pos_idx >> 2] = 0xc61c3c00;
+                    g_engine_pos_valid[i + 2] = 1;
+                }
+                if (menu_button_label_set((int)i, g_empty_text_me15) != 1)
+                    return 0xffffffff;
+            }
+            pos_idx = pos_idx + 4;
+        }
+
+        if (g_engine_click_count < 0x80 && g_engine_log_fn != 0)
+            ((void (*)(uint64_t, const char *, const char *, uint32_t))
+                 g_engine_log_fn)(g_engine_ctx, "nexus_menu_constructed",
+                                  "24_0x260_frame0_buttons", 0);
+        g_engine_click_count = g_engine_click_count + 1;
+    }
+
+    /* re-verify the stage and attach the buttons */
+    {
+        uint64_t qword = 0;
+        bool ok;
+
+        if ((g_engine_remote + 0x12eb9f8) >> 3 < 0x201)
+            ok = false;
+        else
+            ok = ((int (*)(uint64_t, uint64_t, void *, uint64_t))
+                      g_engine_read_mem)(g_engine_ctx,
+                                         g_engine_remote + 0x12eb9f0,
+                                         &qword, 8) == 1;
+        if (ok && !(0xfff < qword && (qword & 7) == 0))
+            qword = 0;
+        if (qword == g_engine_stage_root) {
+            uint64_t view_q = 0;
+
+            if ((qword + 0x98) >> 3 < 0x201)
+                ok = false;
+            else
+                ok = ((int (*)(uint64_t, uint64_t, void *, uint64_t))
+                          g_engine_read_mem)(g_engine_ctx, qword + 0x90,
+                                             &view_q, 8) == 1;
+            if (ok && !(0xfff < view_q && (view_q & 7) == 0))
+                view_q = 0;
+            if (view_q == g_engine_stage_view) {
+                long off;
+
+                for (off = 0; off < 0xc0; off += 8) {
+                    uint64_t btn = *(const uint64_t *)((const uint8_t *)
+                                                           g_engine_buttons
+                                                       + off);
+
+                    ((void (*)(uint64_t, uint64_t, uint64_t))
+                         g_engine_remove_child)(g_engine_ctx,
+                                                g_engine_stage_root, btn);
+                    if (channel2_child_link_valid(btn,
+                                                  g_engine_stage_view) == 0) {
+                        g_engine_state = 0xffffffff;
+                        theme_menu_status_set(-1, (int)g_engine_owner_id,
+                                              "stage_root_membership");
+                        {
+                            uint32_t prev = g_engine_click_count;
+
+                            g_engine_click_count = prev + 1;
+                            if (prev < 0x80 && g_engine_log_fn != 0)
+                                ((void (*)(uint64_t, const char *,
+                                           const char *, uint32_t))
+                                     g_engine_log_fn)(
+                                    g_engine_ctx, "nexus_menu_stopped",
+                                    "stage_root_membership", 0);
+                        }
+                        return 0xffffffff;
+                    }
+                }
+                g_engine_state = 2;
+                theme_menu_status_set(3, (int)g_engine_owner_id, "attached");
+                {
+                    uint32_t prev = g_engine_click_count;
+
+                    g_engine_click_count = prev + 1;
+                    if (prev < 0x80 && g_engine_log_fn != 0)
+                        ((void (*)(uint64_t, const char *, const char *,
+                                   uint32_t))g_engine_log_fn)(
+                            g_engine_ctx, "nexus_menu_attached",
+                            "all_root_membership_verified", 0);
+                }
+                return 1;
+            }
+        }
+        g_engine_state = 0xffffffff;
+        theme_menu_status_set(-1, (int)g_engine_owner_id,
+                              "stage_changed_during_build");
+        {
+            uint32_t prev = g_engine_click_count;
+
+            g_engine_click_count = prev + 1;
+            if (prev < 0x80 && g_engine_log_fn != 0)
+                ((void (*)(uint64_t, const char *, const char *, uint32_t))
+                     g_engine_log_fn)(g_engine_ctx, "nexus_menu_stopped",
+                                      "stage_changed_during_build", 0);
+        }
+        return 0xffffffff;
+    }
+
+body_guard_fail:
+    g_engine_state = 0xffffffff;
+    theme_menu_status_set(-1, (int)g_engine_owner_id, "a10_body_guard");
+    {
+        uint32_t prev = g_engine_click_count;
+
+        g_engine_click_count = prev + 1;
+        if (prev < 0x80 && g_engine_log_fn != 0)
+            ((void (*)(uint64_t, const char *, const char *, uint32_t))
+                 g_engine_log_fn)(g_engine_ctx, "nexus_menu_stopped",
+                                  "a10_body_guard", 0);
+    }
+    return 0xffffffff;
+}
+
+
+/*
+ * menu_script_port_bind — bind the script-port module (raw 8151-8524):
+ * opens the verified "libNexusEvasionRuntime69252.so" memfd (sha
+ * "571dcf2fac82e67c84db6e11f79bbe0031dfb9508fd3974db3ce989e4a5dadf2",
+ * 0xc46e0 bytes, SHA-256 streamed in 0x4000 chunks with the pinned digest
+ * qwords 0x7ce682ac2fcf1d57 / 0xbe9bf7116edb84 / 0x4d97d38f50b9df31 /
+ * -0xd52a2b56167314d), resolves its fd path, dlopens it (RTLD_LAZY|
+ * RTLD_LOCAL, with the "/memfd:nexus-* (deleted)" readlink fallback +
+ * 'resident lookup failed' log), then dlsym-and-dladdr-verifies the export
+ * family against the module base: nexus_script_port_query/set (the
+ * contract pair), chat_snapshot, reset, hud_snapshot, battle_snapshot
+ * (via dlsym_module_verified), chat_action, server_snapshot,
+ * server_select, camera_snapshot, camera_control — each stored into the
+ * bind record at +0x10/+0x18/+0x2c/+0x34/+0x38/+0x40/+0x48/+0x50/+0x58/
+ * +0x60 (raw param_3 slots). The raw body continues past line 8400 and is
+ * finished in the next chunk (camera_control tail + remaining slots).
+ * @ 0019265c
+ */
+uint64_t menu_script_port_bind(long *handle_rec, void *unused, int *out_rec)
+{
+    uint64_t handle;
+    int fd;
+    struct stat st;
+    uint8_t sha_state[112];
+    uint64_t got = 0;
+    bool failed = true;
+    static uint8_t chunk_buf[0x4000];
+
+    (void)unused;
+    handle = (uint64_t)handle_rec[1];
+    if (handle == 0)
+        return 0;
+
+    fd = memfd_module_fd_open(handle, "libNexusEvasionRuntime69252.so",
+                              "571dcf2fac82e67c84db6e11f79bbe0031dfb9508fd3974db3ce989e4a5dadf2");
+    if (fd < 0)
+        return 0;
+    out_rec[0] = out_rec[0] + 1;
+
+    if (fstat(fd, &st) == 0 && st.st_size == 0xc46e0) {
+        while (got < 0xc46e0) {
+            uint64_t chunk = 0xc46e0 - got;
+            ssize_t n;
+
+            if (0x3fff < chunk)
+                chunk = 0x4000;
+            n = pread(fd, chunk_buf, chunk, (off_t)got);
+            if (n < 0) {
+                if (errno != 4) /* EINTR */
+                    break;
+                continue;
+            }
+            if (n == 0)
+                break;
+            sha256_update(sha_state, chunk_buf, (size_t)n);
+            got = (uint64_t)n + got;
+            if (0xc46df < got)
+                break;
+        }
+        if (got == 0xc46e0)
+            failed = false;
+    }
+    close(fd);
+
+    {
+        uint8_t digest[32];
+
+        sha256_final(sha_state, digest);
+        if (failed || got != 0xc46e0)
+            return 0;
+        /* pinned digest qwords (raw st_ino-adjacent slots) */
+        {
+            uint64_t d0, d1, d2, d3;
+
+            memcpy(&d0, digest, 8);
+            memcpy(&d1, digest + 8, 8);
+            memcpy(&d2, digest + 16, 8);
+            memcpy(&d3, digest + 24, 8);
+            if (d0 != 0x7ce682ac2fcf1d57ULL || d1 != 0xbe9bf7116edb84ULL
+                || d2 != 0x4d97d38f50b9df31ULL
+                || d3 != (uint64_t)-0xd52a2b56167314dULL)
+                return 0;
+        }
+    }
+
+    {
+        char fd_path[0x100];
+
+        if (memfd_fd_path_resolve((const char *)(uintptr_t)handle, fd_path)
+            == 0)
+            return 0;
+        fd = memfd_module_fd_open((uint64_t)(uintptr_t)fd_path, NULL, NULL);
+        if (fd < 0)
+            return 0;
+
+        {
+            void *mod = dlopen(fd_path, 6 /* RTLD_LAZY|RTLD_LOCAL */);
+
+            if (mod == NULL) {
+                /* "/memfd:nexus-* (deleted)" readlink fallback */
+                char proc_path[0x100];
+                char resident[0x140];
+                ssize_t n;
+
+                if (memfd_fd_path_resolve(fd_path, proc_path) == 0)
+                    goto bind_fail;
+                n = readlink(proc_path, resident, 0x13f);
+                if (n < 0 || n - 0x13f > -0x13f || n <= 0x17)
+                    goto bind_fail;
+                resident[n] = '\0';
+                if (memcmp(resident, "/memfd:nexus-", 13) != 0
+                    || memcmp(resident + 13, "dnexus-su", 9) != 0
+                    || strcmp(resident + n - 23, " (deleted)") != 0
+                    || (size_t)(n - 0x17) >= 0x100)
+                    goto bind_fail;
+                memmove(resident, resident + 23, (size_t)(n - 0x17));
+                resident[n - 0x17] = '\0';
+                if (strlen(resident) > 0x41) {
+                    mod = dlopen(resident + 1, 6);
+                    if (mod != NULL)
+                        goto loaded;
+                }
+bind_fail:
+                {
+                    const char *dl_err = dlerror();
+                    const void *soname = strlen(resident) >= 0x42
+                                             ? (const void *)resident
+                                             : (const void *)g_empty_text_me15;
+                    const char *err_text =
+                        dl_err != NULL ? dl_err : "unknown";
+
+                    __android_log_print(
+                        6, "NexusMem",
+                        "resident lookup failed descriptor=%s soname=%s error=%s",
+                        fd_path, soname, err_text);
+                }
+                close(fd);
+                return 0;
+            }
+
+loaded:
+            close(fd);
+            {
+                long query = (long)dlsym(mod, "nexus_script_port_query");
+                long set = (long)dlsym(mod, "nexus_script_port_set");
+                Dl_info info;
+                uint64_t base;
+
+                if (query == 0 || set == 0
+                    || dladdr((void *)query, &info) == 0)
+                    return 0;
+                base = (uint64_t)info.dli_fbase;
+                if (base != (uint64_t)handle_rec[0])
+                    return 0;
+                *(long *)(out_rec + 2) = query;
+                *(long *)(out_rec + 4) = set;
+
+                /* remaining exports: each dlsym + dladdr-verified */
+                {
+                    long sym;
+
+                    sym = (long)dlsym(mod, "nexus_script_port_chat_snapshot");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 6) = sym;
+                    sym = (long)dlsym(mod, "nexus_script_port_reset");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 10) = sym;
+                    sym = (long)dlsym(mod, "nexus_script_port_hud_snapshot");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 8) = sym;
+                    *(uint64_t *)(void *)(out_rec + 0xe) =
+                        dlsym_module_verified(
+                            mod, "nexus_script_port_battle_snapshot", base);
+                    sym = (long)dlsym(mod, "nexus_script_port_chat_action");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 0xc) = sym;
+                    sym = (long)dlsym(mod, "nexus_script_port_server_snapshot");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 0x10) = sym;
+                    sym = (long)dlsym(mod, "nexus_script_port_server_select");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 0x12) = sym;
+                    sym = (long)dlsym(mod,
+                                      "nexus_script_port_camera_snapshot");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 0x14) = sym;
+                    sym = (long)dlsym(mod,
+                                      "nexus_script_port_camera_control");
+                    if (sym != 0 && dladdr((void *)sym, &info) != 0
+                        && (uint64_t)info.dli_fbase == base)
+                        *(long *)(out_rec + 0x16) = sym;
+                    /* raw continues past 8400: the remaining export slots
+                     * land in the next chunk of this chain */
+                }
+                return 1;
+            }
+        }
+    }
+}
+/* menu_engine chain chunk 16 (FINAL): covers raw lines 8401-8898 (menu_script_port_bind tail from raw 8401; the atomics; the dlsym export thunks at the file tail) */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <math.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
+
+extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+pid_t gettid(void);
+int pthread_getname_np(pthread_t, char *, size_t);
+
+/* ---- carried declarations (earlier chunks own the definitions) ---- */
+extern int ui_latch_test_and_set(int which, void *addr); /* below @ 00193f80 */
+extern uint64_t dlsym_module_verified(void *handle, const char *name,
+                                      uint64_t base); /* misc @ 00193324 */
+extern const char g_empty_text_me16[]; /* 0x134f22 — shared "" rodata */
+
+/* dlfcn veneers: chunk 3 provides Dl_info/dladdr for the concatenated unit
+ * (dl_info_me3_t/dladdr_me3); standalone builds declare local copies. */
+#ifndef DLINFO_ME3_DECLARED
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const void *dli_saddr;
+    const char *dli_sname;
+} dl_info_me16_t;
+#define Dl_info dl_info_me16_t
+extern int dladdr(const void *addr, dl_info_me16_t *info);
+#endif
+
+/*
+ * menu_script_port_bind_tail — remaining export slots of
+ * menu_script_port_bind (raw 8401-8523): fast replay snapshot/claim
+ * (+0x18/+0x1a, camera pair cleared together at +0x14/+0x16 and the
+ * server pair at +0x10/+0x12 when either half is missing), then the
+ * dlsym_module_verified family — theme snapshot/command (+0x1c/+0x1e),
+ * client debug snapshot/apply (+0x20/+0x22), client performance query/
+ * apply (+0x24/+0x26), profile snapshot/open/set_name (+0x28/+0x2a/+0x2c),
+ * client editor snapshot/apply/tick (+0x2e/+0x30/+0x32), font query/
+ * apply/body_current (+0x34/+0x36/+0x38) — each pair (triple) cleared
+ * together when any member is missing, and the module is dlclosed at the
+ * end (raw drops the close verdict). Split from chunk 15's entry half;
+ * both halves together reconstruct the raw body @ 0019265c (tail)
+ */
+void menu_script_port_bind_tail(void *mod, uint64_t base, int *out_rec)
+{
+    long sym;
+
+    /* fast replay pair */
+    sym = (long)dlsym(mod, "nexus_script_port_fast_replay_snapshot");
+    if (sym != 0) {
+        Dl_info info;
+
+        if (dladdr((void *)sym, &info) != 0
+            && (uint64_t)info.dli_fbase == base)
+            *(long *)(out_rec + 0x18) = sym;
+    }
+    sym = (long)dlsym(mod, "nexus_script_port_fast_replay_claim");
+    if (sym != 0) {
+        Dl_info info;
+
+        if (dladdr((void *)sym, &info) != 0
+            && (uint64_t)info.dli_fbase == base)
+            *(long *)(out_rec + 0x1a) = sym;
+    }
+    if (*(long *)(out_rec + 0x18) == 0 || *(long *)(out_rec + 0x1a) == 0) {
+        *(long *)(out_rec + 0x18) = 0;
+        out_rec[0x1a] = 0;
+        out_rec[0x1b] = 0;
+    }
+    if (*(long *)(out_rec + 0x14) == 0 || *(long *)(out_rec + 0x16) == 0) {
+        *(long *)(out_rec + 0x14) = 0;
+        out_rec[0x16] = 0;
+        out_rec[0x17] = 0;
+    }
+    if (*(long *)(out_rec + 0x10) == 0 || *(long *)(out_rec + 0x12) == 0) {
+        *(long *)(out_rec + 0x10) = 0;
+        out_rec[0x12] = 0;
+        out_rec[0x13] = 0;
+    }
+
+    /* theme pair */
+    *(long *)(out_rec + 0x1c) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_theme_snapshot", base);
+    sym = (long)dlsym_module_verified(mod, "nexus_script_port_theme_command",
+                                      base);
+    *(long *)(out_rec + 0x1e) = sym;
+    if (*(long *)(out_rec + 0x1c) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x1c) = 0;
+        out_rec[0x1e] = 0;
+        out_rec[0x1f] = 0;
+    }
+
+    /* client debug pair */
+    *(long *)(out_rec + 0x20) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_debug_snapshot", base);
+    sym = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_debug_apply", base);
+    *(long *)(out_rec + 0x22) = sym;
+    if (*(long *)(out_rec + 0x20) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x20) = 0;
+        out_rec[0x22] = 0;
+        out_rec[0x23] = 0;
+    }
+
+    /* client performance pair */
+    *(long *)(out_rec + 0x24) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_performance_query", base);
+    sym = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_performance_apply", base);
+    *(long *)(out_rec + 0x26) = sym;
+    if (*(long *)(out_rec + 0x24) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x24) = 0;
+        out_rec[0x26] = 0;
+        out_rec[0x27] = 0;
+    }
+
+    /* profile triple */
+    *(long *)(out_rec + 0x28) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_profile_snapshot", base);
+    *(uint64_t *)(void *)(out_rec + 0x2a) = dlsym_module_verified(
+        mod, "nexus_script_port_profile_open", base);
+    sym = (long)dlsym_module_verified(
+        mod, "nexus_script_port_profile_set_name", base);
+    *(long *)(out_rec + 0x2c) = sym;
+    if (*(long *)(out_rec + 0x28) == 0
+        || *(long *)(out_rec + 0x2a) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x28) = 0;
+        out_rec[0x2a] = 0;
+        out_rec[0x2b] = 0;
+        out_rec[0x2c] = 0;
+        out_rec[0x2d] = 0;
+    }
+
+    /* client editor triple */
+    *(long *)(out_rec + 0x2e) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_editor_snapshot", base);
+    *(uint64_t *)(void *)(out_rec + 0x30) = dlsym_module_verified(
+        mod, "nexus_script_port_client_editor_apply", base);
+    sym = (long)dlsym_module_verified(
+        mod, "nexus_script_port_client_editor_tick", base);
+    *(long *)(out_rec + 0x32) = sym;
+    if (*(long *)(out_rec + 0x2e) == 0
+        || *(long *)(out_rec + 0x30) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x2e) = 0;
+        out_rec[0x30] = 0;
+        out_rec[0x31] = 0;
+        out_rec[0x32] = 0;
+        out_rec[0x33] = 0;
+    }
+
+    /* font triple */
+    *(long *)(out_rec + 0x34) = (long)dlsym_module_verified(
+        mod, "nexus_script_port_font_query", base);
+    *(uint64_t *)(void *)(out_rec + 0x36) = dlsym_module_verified(
+        mod, "nexus_script_port_font_apply", base);
+    sym = (long)dlsym_module_verified(
+        mod, "nexus_script_port_font_body_current", base);
+    *(long *)(out_rec + 0x38) = sym;
+    if (*(long *)(out_rec + 0x34) == 0
+        || *(long *)(out_rec + 0x36) == 0 || sym == 0) {
+        *(long *)(out_rec + 0x34) = 0;
+        out_rec[0x36] = 0;
+        out_rec[0x37] = 0;
+        out_rec[0x38] = 0;
+        out_rec[0x39] = 0;
+    }
+
+    dlclose(mod); /* raw drops the close verdict */
+}
+
+/* ===== atomics (LSE monitor / exclusive-load-store paths) ===== */
+
+/* CPU-features flag (raw 0x2a1f88: non-zero = LSE available) */
+extern uint8_t g_cpu_has_lse; /* 0x2a1f88 — arm64 LSE atomics available */
+
+/* arm64 exclusive-monitor intrinsics (raw ExclusiveMonitorPass/Status,
+ * LOAcquire/LORelease) */
+extern int ExclusiveMonitorPass(void *addr, size_t size);
+extern int ExclusiveMonitorsStatus(void);
+extern void LOAcquire(void);
+extern void LORelease(void);
+
+/*
+ * ui_int_compare_swap — compare-and-swap on an int: stores newv when
+ * *p == expected; returns the previous value. Uses the plain LL/SC-free
+ * path when LSE is available (raw single load+store), otherwise the
+ * exclusive-monitor retry loop. @ 001939e0
+ */
+int ui_int_compare_swap(int expected, int newv, int *p)
+{
+    if (g_cpu_has_lse != 0) {
+        int prev = *p;
+
+        if (prev == expected)
+            *p = newv;
+        return prev;
+    }
+    {
+        int prev;
+
+        do {
+            prev = *p;
+            if (*p != expected)
+                return prev;
+        } while (ExclusiveMonitorPass(p, 0x10) ? (*p = newv,
+                                                  !ExclusiveMonitorsStatus())
+                                               : 1);
+        return prev;
+    }
+}
+
+/*
+ * ui_latch_test_and_set — atomic byte test-and-set: stores the new byte
+ * and returns the previous value. LSE path: LOAcquire, load, store.
+ * Monitor path: exclusive retry loop. The chain-wide signature is
+ * (which, addr) with `which` used as the new byte value (raw 00193f80
+ * passes the literal 1 at every call site; `which` carries it through).
+ * @ 00193f80
+ */
+int ui_latch_test_and_set(int which, void *addr)
+{
+    uint8_t newv = (uint8_t)which;
+    uint8_t *p = (uint8_t *)addr;
+
+    if (g_cpu_has_lse == 0) {
+        uint8_t prev;
+
+        do {
+            prev = *p;
+        } while (ExclusiveMonitorPass(p, 0x10)
+                 ? (*p = newv, !ExclusiveMonitorsStatus())
+                 : 1);
+        return (int)prev;
+    }
+    LOAcquire();
+    {
+        uint8_t prev = *p;
+
+        *p = newv;
+        return (int)prev;
+    }
+}
+
+/*
+ * ui_int_exchange_release — atomic int exchange with release semantics:
+ * stores newv, returns the previous value. LSE path: load, store,
+ * LORelease. @ 00193fb0
+ */
+uint32_t ui_int_exchange_release(uint32_t newv, uint32_t *p)
+{
+    if (g_cpu_has_lse == 0) {
+        uint32_t prev;
+
+        do {
+            prev = *p;
+        } while (ExclusiveMonitorPass(p, 0x10)
+                 ? (*p = newv, !ExclusiveMonitorsStatus())
+                 : 1);
+        return prev;
+    }
+    {
+        uint32_t prev = *p;
+
+        *p = newv;
+        LORelease();
+        return prev;
+    }
+}
+
+/*
+ * ui_int_exchange_acqrel — atomic int exchange with acquire+release
+ * semantics: LOAcquire, load, store, LORelease on the LSE path.
+ * @ 00193fe0
+ */
+uint32_t ui_int_exchange_acqrel(uint32_t newv, uint32_t *p)
+{
+    if (g_cpu_has_lse == 0) {
+        uint32_t prev;
+
+        do {
+            prev = *p;
+        } while (ExclusiveMonitorPass(p, 0x10)
+                 ? (*p = newv, !ExclusiveMonitorsStatus())
+                 : 1);
+        return prev;
+    }
+    LOAcquire();
+    {
+        uint32_t prev = *p;
+
+        *p = newv;
+        LORelease();
+        return prev;
+    }
+}
+
+/*
+ * menu_scroll_revision_bump — atomic fetch-and-add on the scroll
+ * revision: *p += delta, returns the previous value (LSE path ends with
+ * LORelease). @ 00194010
+ */
+int menu_scroll_revision_bump(int delta, int *p)
+{
+    if (g_cpu_has_lse == 0) {
+        int prev;
+
+        do {
+            prev = *p;
+        } while (ExclusiveMonitorPass(p, 0x10)
+                 ? (*p = prev + delta, !ExclusiveMonitorsStatus())
+                 : 1);
+        return prev;
+    }
+    {
+        int prev = *p;
+
+        *p = prev + delta;
+        LORelease();
+        return prev;
+    }
+}
+
+/* ===== dlsym export thunks (file tail) =====
+ * Each tail-calls through a PLT slot (raw pointer tables at 0x1a3760..);
+ * reconstructed as forwarding wrappers to the chain-local definitions. */
+
+/*
+ * nexus_menu_server_thread — dlsym export thunk @ 001940b0
+ */
+void nexus_menu_server_thread__export(void)
+{
+    extern bool nexus_menu_server_thread(int tid);
+
+    nexus_menu_server_thread((int)gettid());
+}
+
+/*
+ * nexus_menu_ui_state — dlsym export thunk @ 00194160
+ */
+void nexus_menu_ui_state__export(void)
+{
+    extern int nexus_menu_ui_state(void *state_out, int tid);
+
+    nexus_menu_ui_state(NULL, (int)gettid());
+}
+
+/*
+ * nexus_menu_setting_value — dlsym export thunk @ 001941e0
+ */
+void nexus_menu_setting_value__export(void)
+{
+    extern uint64_t nexus_menu_setting_value(uint32_t id, int32_t *value_out);
+
+    (void)nexus_menu_setting_value(0, NULL);
+}
+
+/*
+ * nexus_menu_init — dlsym export thunk @ 001942e0
+ */
+void nexus_menu_init__export(void)
+{
+    extern uint64_t nexus_menu_init(void);
+
+    (void)nexus_menu_init();
+}
+
+/*
+ * nexus_menu_register_storage — dlsym export thunk @ 00194320
+ */
+void nexus_menu_register_storage__export(void)
+{
+    extern uint64_t nexus_menu_register_storage(int *block);
+
+    (void)nexus_menu_register_storage(NULL);
+}
+
+/*
+ * nexus_menu_register_backend — dlsym export thunk @ 00194330
+ */
+void nexus_menu_register_backend__export(void)
+{
+    extern uint64_t nexus_menu_register_backend(uint32_t kind, int *block);
+
+    (void)nexus_menu_register_backend(0, NULL);
+}
+
+/*
+ * nexus_menu_status — dlsym export thunk @ 001944a0
+ */
+void nexus_menu_status__export(void)
+{
+    extern uint64_t nexus_menu_status(void);
+
+    (void)nexus_menu_status();
+}
+
+/*
+ * nexus_menu_start — dlsym export thunk @ 00194520
+ */
+void nexus_menu_start__export(void)
+{
+    extern void nexus_menu_start(void);
+
+    nexus_menu_start();
+}
+
+/*
+ * nexus_menu_import — dlsym export thunk @ 00194650
+ */
+void nexus_menu_import__export(void)
+{
+    extern void nexus_menu_import(void *blob, uint64_t len, int owner_id);
+
+    nexus_menu_import(NULL, 0, (int)gettid());
+}
+
+/*
+ * nexus_menu_scroll_battle — dlsym export thunk @ 00194660
+ */
+void nexus_menu_scroll_battle__export(void)
+{
+    extern uint64_t nexus_menu_scroll_battle(int delta, int owner_id);
+
+    (void)nexus_menu_scroll_battle(0, (int)gettid());
+}
+
+/*
+ * nexus_menu_server_open — dlsym export thunk @ 00194670
+ */
+void nexus_menu_server_open__export(void)
+{
+    extern uint64_t nexus_menu_server_open(int owner_id);
+
+    (void)nexus_menu_server_open((int)gettid());
+}
+
+/*
+ * nexus_menu_server_action — dlsym export thunk @ 00194680
+ */
+void nexus_menu_server_action__export(void)
+{
+    extern uint32_t nexus_menu_server_action(uint32_t action, int owner_id);
+
+    (void)nexus_menu_server_action(0, (int)gettid());
+}
+
+/*
+ * nexus_menu_theme_action — dlsym export thunk @ 001946c0
+ */
+void nexus_menu_theme_action__export(void)
+{
+    extern uint64_t nexus_menu_theme_action(uint32_t action, int owner_id);
+
+    (void)nexus_menu_theme_action(0, (int)gettid());
+}
+
+/*
+ * nexus_menu_profile_open — dlsym export thunk @ 001946f0
+ */
+void nexus_menu_profile_open__export(void)
+{
+    extern uint64_t nexus_menu_profile_open(int owner_id);
+
+    (void)nexus_menu_profile_open((int)gettid());
+}
+
+/*
+ * nexus_menu_profile_action — dlsym export thunk @ 00194700
+ */
+void nexus_menu_profile_action__export(void)
+{
+    extern uint64_t nexus_menu_profile_action(int action, int owner_id);
+
+    (void)nexus_menu_profile_action(0, (int)gettid());
+}
+
+/*
+ * nexus_menu_dispatch — dlsym export thunk @ 00194730
+ */
+void nexus_menu_dispatch__export(void)
+{
+    extern uint32_t nexus_menu_dispatch(uint32_t op, int a, int b, int tid);
+
+    (void)nexus_menu_dispatch(0, 0, 0, (int)gettid());
+}
+
+/*
+ * nexus_menu_theme_pump — dlsym export thunk @ 00194740
+ */
+void nexus_menu_theme_pump__export(void)
+{
+    extern int nexus_menu_theme_pump(int tid, uint64_t now_ms);
+
+    (void)nexus_menu_theme_pump((int)gettid(), 0);
+}
+
+/*
+ * nexus_menu_profile_pump — dlsym export thunk @ 00194760
+ */
+void nexus_menu_profile_pump__export(void)
+{
+    extern void nexus_menu_profile_pump(int owner_id, uint64_t now_ms);
+
+    nexus_menu_profile_pump((int)gettid(), 0);
+}
+
+/*
+ * nexus_menu_set_value — dlsym export thunk @ 001947c0 (body lives in
+ * widgets/misc; forwarded with neutral args)
+ */
+void nexus_menu_set_value__export(void)
+{
+    extern uint64_t nexus_menu_set_value(uint32_t id, uint32_t value, int tid);
+
+    (void)nexus_menu_set_value(0, 0, (int)gettid());
+}
+
+/*
+ * nexus_menu_set_battle — dlsym export thunk @ 001947d0
+ */
+void nexus_menu_set_battle__export(void)
+{
+    extern uint64_t nexus_menu_set_battle(int in_battle, int owner_id);
+
+    (void)nexus_menu_set_battle(0, (int)gettid());
+}
+
+/*
+ * nexus_menu_view — dlsym export thunk @ 001947e0
+ */
+void nexus_menu_view__export(void)
+{
+    extern void nexus_menu_view(void *view_out, int owner_id);
+
+    nexus_menu_view(NULL, (int)gettid());
+}
+
+/*
+ * nexus_menu_action_status — dlsym export thunk @ 00194830
+ */
+void nexus_menu_action_status__export(void)
+{
+    extern void nexus_menu_action_status(uint32_t id, void *status_out,
+                                         int owner_id);
+
+    nexus_menu_action_status(0, NULL, (int)gettid());
+}
+
+/*
+ * nexus_menu_section_snapshot — dlsym export thunk @ 00194840
+ */
+void nexus_menu_section_snapshot__export(void)
+{
+    extern uint64_t nexus_menu_section_snapshot(void *out, uint64_t len,
+                                                int owner_id);
+
+    (void)nexus_menu_section_snapshot(NULL, 0x24a68, (int)gettid());
+}
+
+/*
+ * nexus_menu_section_present — dlsym export thunk @ 00194850
+ */
+void nexus_menu_section_present__export(void)
+{
+    extern int nexus_menu_section_present(void *out, uint64_t len, int owner_id);
+
+    (void)nexus_menu_section_present(NULL, 0x24a68, (int)gettid());
+}
+
+/*
+ * nexus_menu_main_count — dlsym export thunk @ 001948f0
+ */
+void nexus_menu_main_count__export(void)
+{
+    extern int nexus_menu_main_count(void);
+
+    (void)nexus_menu_main_count();
+}
+
+/*
+ * nexus_menu_settings — dlsym export thunk @ 00194960
+ */
+void nexus_menu_settings__export(void)
+{
+    extern const char **nexus_menu_settings(uint64_t *count_out);
+
+    (void)nexus_menu_settings(NULL);
+}
